@@ -147,3 +147,17 @@ export const aiLimiter: (req: Request, res: Response, next: NextFunction) => voi
       max: 30,
       keyFn: (req) => `ai:${req.orgId || req.ip}`,
     });
+
+// Connector test-connection endpoints: 10 requests per org per 15 min. Layered on
+// top of apiLimiter (500/15min) for POST /api/workflow-credentials/:connector/test
+// only — every call makes a real outbound HTTP request to a third party
+// (Jira/Salesforce/ServiceNow/Zendesk/Slack), so a mashed "Test Connection" button
+// or a buggy retry loop must not be able to hammer a third party at the same
+// volume as ordinary CRUD reads/writes on this router. See
+// docs/automation-hub/INTEGRATIONS_BACKEND_REVIEW.md §5.
+export const connectorTestLimiter: (req: Request, res: Response, next: NextFunction) => void | Promise<void> = _skipRateLimit
+  ? _noopMiddleware
+  : makeRateLimiter({
+      max: 10,
+      keyFn: (req) => `connector-test:${req.orgId || req.ip}`,
+    });

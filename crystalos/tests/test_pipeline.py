@@ -670,3 +670,68 @@ class TestNodeDeltaCompute:
             result = await node_delta_compute(state)
         assert result["delta_from_prior"] is None
         assert result["meaningful_delta"] is True
+
+    # ── Xperiq Actions Wave 3 — ai_trigger_baseline_negative_pct propagation ────
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_sets_ai_trigger_baseline_none(self):
+        state = _make_state(is_bootstrap=True, metrics={"nps": {"score": 40.0}})
+        with patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()):
+            result = await node_delta_compute(state)
+        assert result["ai_trigger_baseline_negative_pct"] is None
+
+    @pytest.mark.asyncio
+    async def test_no_prior_blob_sets_ai_trigger_baseline_none(self):
+        pool = self._make_cursor_pool(fetchall_return=[])
+        state = _make_state(is_bootstrap=False, metrics={"nps": {"score": 40.0}})
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.graphs.insights.db._pool_conn", return_value=pool),
+        ):
+            result = await node_delta_compute(state)
+        assert result["ai_trigger_baseline_negative_pct"] is None
+
+    @pytest.mark.asyncio
+    async def test_prior_blob_with_ai_trigger_field_is_read_forward(self):
+        """A prior blob written post-Wave-3 carries ai_trigger_negative_pct —
+        node_delta_compute must surface it as this run's sentiment_spike baseline."""
+        from datetime import datetime, timezone
+        rows = [(3, "ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3")]
+        pool = self._make_cursor_pool(fetchall_return=rows)
+        prior_blob = {
+            "nps_at_checkpoint": 45.0,
+            "csat_at_checkpoint": 4.0,
+            "response_count_at_checkpoint": 50,
+            "topics": [{"name": "Billing"}],
+            "ai_trigger_negative_pct": 22.5,
+        }
+        state = _make_state(is_bootstrap=False, metrics={"nps": {"score": 40.0}}, topic_signals={"Billing": {}})
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.graphs.insights.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.checkpoint_store.read_checkpoint_blob", new=AsyncMock(return_value=prior_blob)),
+        ):
+            result = await node_delta_compute(state)
+        assert result["ai_trigger_baseline_negative_pct"] == pytest.approx(22.5)
+
+    @pytest.mark.asyncio
+    async def test_prior_blob_without_ai_trigger_field_degrades_to_none(self):
+        """A prior blob from BEFORE Wave 3 has no ai_trigger_negative_pct key —
+        must not KeyError, just report no baseline (sentiment_spike won't fire
+        yet for this survey until one post-wave checkpoint exists)."""
+        from datetime import datetime, timezone
+        rows = [(3, "ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3")]
+        pool = self._make_cursor_pool(fetchall_return=rows)
+        prior_blob = {
+            "nps_at_checkpoint": 45.0,
+            "response_count_at_checkpoint": 50,
+            "topics": [],
+        }
+        state = _make_state(is_bootstrap=False, metrics={"nps": {"score": 40.0}})
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.graphs.insights.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.checkpoint_store.read_checkpoint_blob", new=AsyncMock(return_value=prior_blob)),
+        ):
+            result = await node_delta_compute(state)
+        assert result["ai_trigger_baseline_negative_pct"] is None

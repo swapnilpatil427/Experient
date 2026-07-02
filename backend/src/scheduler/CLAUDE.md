@@ -12,13 +12,21 @@ library code and dependencies — no separate `node_modules`. Same pattern as `e
   sweeps, notification delivery) or the **CrystalOS scheduler** jobs (insight regen, SLA
   sweeps, survey auto-close). Those stay in their services; this one only adds a heartbeat to
   them via shared metrics.
+  - **One deliberate, narrow exception:** `renotify-stale-approvals` (2026-07-01) calls
+    `lib/notifications.ts::createNotification` — it's a workflow-approval nudge, not a new
+    delivery pipeline. It was placed here (rather than as a third `eventEngine/processor.ts`
+    `setInterval`, which is where `cronTick`/`alertSweep` — the actual per-minute workflow/alert
+    sweeps — live) because it directly mirrors `expire-stale-broadcasts`'s exact shape (a
+    low-frequency, DB-row-staleness sweep over a single table) and the audit's explicit ask was
+    to mirror that job. If this job's scope grows (e.g. more approval-adjacent notification
+    types), reconsider moving it to `eventEngine/processor.ts` alongside `alertSweep`.
 
 ## Files
 | File | Role |
 |---|---|
 | `registry.ts` | Declarative job list — the single in-code source of truth. `{ name, intervalSec, enabled, handler }`, all env-overridable. |
 | `runner.ts` | Tick loop: stamps heartbeat every tick; runs due jobs with per-job locks + metrics; isolates failures. Pure `dueJobs()` + `runJob()` are unit-tested. |
-| `jobs/*.ts` | One file per job (all live): `expireStaleBroadcasts`, `reconciliation` (ledger-integrity invariants), `costDownDividend` (COGS/credit metric; dry-run apply), `creditLedgerMaintenance` (partition provisioning + retention). |
+| `jobs/*.ts` | One file per job (all live): `expireStaleBroadcasts`, `reconciliation` (ledger-integrity invariants), `costDownDividend` (COGS/credit metric; dry-run apply), `creditLedgerMaintenance` (partition provisioning + retention), `credentialHealth` (integration key validity/expiry probes), `reNotifyStaleApprovals` (workflow-approval TTL nudge — never auto-rejects). |
 | `leader.ts` | Postgres advisory-lock leader election — run N replicas; one leads, standbys fail over. |
 | `index.ts` | Entrypoint: HTTP server (`/health`, `/health/live`, `/health/ready`, `/metrics`) + starts the runner. |
 

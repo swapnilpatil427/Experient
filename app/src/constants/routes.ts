@@ -32,6 +32,7 @@ export const ROUTES = {
   WORKFLOWS:          '/app/workflows',
   WORKFLOW_BUILD:     '/app/workflows/build',
   WORKFLOW_CANVAS:    '/app/workflows/canvas',
+  WORKFLOW_NL_BUILD:  '/app/workflows/build/nl',
   ALERTS:             '/app/alerts',
   NOTIFICATION_PREFS:      '/app/settings/notifications',
   NOTIFICATION_ANALYTICS:  '/app/settings/notification-analytics',
@@ -45,6 +46,7 @@ export const ROUTES = {
   SETTINGS_SEATS:        '/app/settings/users/seats',
   SETTINGS_AUDIT:        '/app/settings/users/audit',
   SETTINGS_TAGS:         '/app/settings/tags',
+  SETTINGS_INTEGRATIONS: '/app/settings/integrations',
   DATA:               '/app/data',
 
   // Prism — data ingestion / migration wizard

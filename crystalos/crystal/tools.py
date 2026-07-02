@@ -1034,22 +1034,76 @@ async def execute_propose_distribution(ctx: CrystalContext, params: dict) -> dic
 
 
 async def execute_propose_workflow(ctx: CrystalContext, params: dict) -> dict:
-    """Propose an automation workflow based on response patterns."""
+    """Propose an automation workflow based on response patterns.
+
+    Reconciled (Xperiq Actions Wave 3) to emit the SAME modern `nodes`/`edges`
+    engine graph shape as the dedicated NL builder's `POST /workflows/parse-nl`
+    endpoint, via the shared `crystal.workflow_nl.parse_workflow_nl()` core —
+    previously this returned an old flat `trigger`/`action_type: "notify"`/
+    `action_config` shape that the graph engine (`workflowEngine.ts`) cannot
+    execute. Both "AI creates a workflow" paths (in-chat proposal vs. the NL
+    builder page) now produce engine-compatible output.
+
+    NOTE (flagged for a frontend follow-up, out of this wave's scope):
+    `CrystalPanel.tsx`'s `create_workflow` proposal handler still reads only
+    `params.trigger` / `params.action_type` / `params.action_config` and calls
+    `api.createWorkflow()` — it does not yet read `params.nodes`/`params.edges`
+    or call `api.createGraphWorkflow()`. Until that handler is updated, an
+    in-chat "create this workflow" confirm will create a workflow row with the
+    new `trigger_type`/`nodes`/`edges` fields present in the POST body (the
+    backend's `createWorkflowSchema` already accepts them) but the handler
+    itself won't pass them through. This tool now emits the CORRECT shape so
+    that frontend fix is a small, isolated change rather than a second
+    reconciliation of the tool's output later.
+    """
+    from crystalos.crystal.workflow_nl import parse_workflow_nl, FALLBACK_REGISTRY
+
     survey_id         = params.get("survey_id") or ctx.survey_id
     trigger_condition = params.get("trigger_condition", "")
     desired_outcome   = params.get("desired_outcome", "")
+    description = f"When {trigger_condition}, {desired_outcome}".strip() if trigger_condition or desired_outcome else ""
+
+    if not description:
+        return {
+            "proposal_type": "workflow",
+            "title": "Create response automation",
+            "description": "Not enough detail to propose a workflow yet.",
+            "requires_confirmation": True,
+            "params": {"survey_id": survey_id, "trigger_type": None, "nodes": [], "edges": []},
+            "cta_label": "Create Workflow",
+            "business_rationale": "Describe both a trigger and desired outcome so Crystal can propose a working automation.",
+        }
+
+    result = await parse_workflow_nl(description, FALLBACK_REGISTRY)
+
+    if not result.ok:
+        return {
+            "proposal_type": "workflow",
+            "title": "Create response automation",
+            "description": result.message or f"Trigger: {trigger_condition} → Action: {desired_outcome}",
+            "requires_confirmation": True,
+            "params": {"survey_id": survey_id, "trigger_type": None, "nodes": [], "edges": []},
+            "cta_label": "Create Workflow",
+            "business_rationale": (
+                f"Automatically {desired_outcome or 'responds'} when {trigger_condition or 'the trigger fires'}, "
+                f"cutting manual follow-up time and ensuring no at-risk response slips through."
+            )[:159],
+        }
 
     return {
         "proposal_type": "workflow",
-        "title": "Create response automation",
-        "description": f"Trigger: {trigger_condition} → Action: {desired_outcome}",
+        "title": result.name or "Create response automation",
+        "description": result.description or f"Trigger: {trigger_condition} → Action: {desired_outcome}",
         "requires_confirmation": True,
         "params": {
-            "survey_id":       survey_id,
-            "trigger":         trigger_condition,
-            "name":            f"Auto: {trigger_condition[:50]}",
-            "action_type":     "notify",
-            "action_config":   {"message": desired_outcome},
+            "survey_id":    survey_id,
+            "name":         result.name,
+            "description":  result.description,
+            "trigger_type": result.trigger_type,
+            "nodes":        result.nodes,
+            "edges":        result.edges,
+            "confidence":   result.confidence,
+            "warnings":     result.warnings,
         },
         "estimated_time": "2 minutes to configure",
         "cta_label": "Create Workflow",

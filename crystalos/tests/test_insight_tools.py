@@ -807,6 +807,113 @@ class TestCrystalToolOrgScoping:
         assert result == {"error": "survey_id required"}
 
 
+class TestProposeWorkflowModernShape:
+    """execute_propose_workflow (crystal/tools.py) — reconciled (Xperiq Actions
+    Wave 3) to emit the SAME nodes/edges engine graph shape as
+    POST /workflows/parse-nl, via the shared crystal.workflow_nl core, instead
+    of the old flat trigger/action_type/action_config shape."""
+
+    def _ctx(self):
+        from crystalos.crystal.context import CrystalContext
+        return CrystalContext(org_id="org-1", user_id="u1", survey_id="survey-1", scope="survey")
+
+    def _draft(self, **overrides):
+        from crystalos.crystal.workflow_nl import (
+            WorkflowNLDraft, WorkflowNLTriggerDraft, WorkflowNLConditionDraft, WorkflowNLActionDraft,
+        )
+        defaults = dict(
+            name="NPS drop alert",
+            description="Notify CSM when NPS drops below 30",
+            trigger=WorkflowNLTriggerDraft(trigger_type="score.nps_drop"),
+            conditions=[WorkflowNLConditionDraft(field="nps", op="lt", value="30")],
+            actions=[WorkflowNLActionDraft(action="notify.slack", config={})],
+            confidence=0.9,
+            warnings=[],
+            unparseable=False,
+            unparseable_reason=None,
+        )
+        defaults.update(overrides)
+        return WorkflowNLDraft(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_produces_nodes_and_edges_not_legacy_flat_shape(self):
+        from crystalos.crystal.tools import execute_propose_workflow
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=self._draft())):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "NPS drops below 30", "desired_outcome": "notify CSM on Slack"},
+            )
+        assert result["proposal_type"] == "workflow"
+        params = result["params"]
+        # Modern shape present ...
+        assert "nodes" in params and "edges" in params
+        assert isinstance(params["nodes"], list) and len(params["nodes"]) >= 1
+        assert params["trigger_type"] == "score.nps_drop"
+        # ... and the OLD flat shape must be gone (this was the reconciliation bug).
+        assert "action_type" not in params
+        assert "action_config" not in params
+        assert "trigger" not in params or params.get("trigger") is None
+
+    @pytest.mark.asyncio
+    async def test_confidence_and_warnings_carried_into_params(self):
+        from crystalos.crystal.tools import execute_propose_workflow
+        draft = self._draft(warnings=["Assumed Slack channel #cx"], confidence=0.72)
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "NPS drops below 30", "desired_outcome": "notify CSM"},
+            )
+        assert result["params"]["confidence"] == pytest.approx(0.72)
+        assert "Assumed Slack channel #cx" in result["params"]["warnings"]
+
+    @pytest.mark.asyncio
+    async def test_proposal_type_still_aliases_to_create_workflow(self):
+        """agents/crystal.py's _PROPOSAL_TYPE_ALIASES must still map this tool's
+        proposal_type ('workflow') to the frontend handler name — unaffected by
+        the shape reconciliation since only `params` changed, not `proposal_type`."""
+        from crystalos.crystal.tools import execute_propose_workflow
+        from crystalos.agents.crystal import _normalize_proposal
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=self._draft())):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "NPS drops below 30", "desired_outcome": "notify CSM"},
+            )
+        normalized = _normalize_proposal(result)
+        assert normalized["type"] == "create_workflow"
+
+    @pytest.mark.asyncio
+    async def test_no_trigger_condition_or_outcome_returns_empty_graph_proposal(self):
+        from crystalos.crystal.tools import execute_propose_workflow
+        result = await execute_propose_workflow(self._ctx(), {})
+        assert result["proposal_type"] == "workflow"
+        assert result["params"]["nodes"] == []
+        assert result["params"]["edges"] == []
+
+    @pytest.mark.asyncio
+    async def test_unparseable_description_returns_empty_graph_not_a_crash(self):
+        from crystalos.crystal.tools import execute_propose_workflow
+        draft = self._draft(unparseable=True, unparseable_reason="not a workflow")
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "NPS drops below 30", "desired_outcome": "notify CSM"},
+            )
+        assert result["proposal_type"] == "workflow"
+        assert result["params"]["nodes"] == []
+        assert result["params"]["edges"] == []
+
+    @pytest.mark.asyncio
+    async def test_uses_fallback_registry_not_the_node_side_file(self):
+        """The chat-tool path has no Node request to forward a live registry
+        from — it must use FALLBACK_REGISTRY (crystal/workflow_nl.py), never
+        crash for lack of one. A trigger only in the FULL registry (not the
+        fallback mirror) should be dropped."""
+        from crystalos.crystal.tools import execute_propose_workflow
+        from crystalos.crystal.workflow_nl import WorkflowNLTriggerDraft
+        draft = self._draft(trigger=WorkflowNLTriggerDraft(trigger_type="external.webhook"))  # not in FALLBACK_REGISTRY's triggers
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "a webhook fires", "desired_outcome": "notify CSM"},
+            )
+        assert result["params"]["nodes"] == []
+
+
 class TestProposeAlert:
     """Tests for the propose_alert action tool + proposal normalisation."""
 
@@ -897,13 +1004,20 @@ class TestProposeAlert:
             execute_propose_workflow,
             execute_propose_alert,
         )
+        from crystalos.lib.openrouter import AgentOutputError
         ctx = self._ctx()
-        with patch("crystalos.crystal.tools.db._pool_conn") as mock_pool:
+        with patch("crystalos.crystal.tools.db._pool_conn") as mock_pool, \
+             patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(side_effect=AgentOutputError("no LLM in tests"))):
             # survey_creation queries the DB for the survey title; make it a no-op
             mock_conn = MagicMock()
             mock_pool.return_value.connection.return_value.__aenter__ = AsyncMock(
                 side_effect=Exception("skip db")
             )
+            # execute_propose_workflow's LLM call is mocked to fail fast (see patch
+            # above) rather than genuinely reaching OpenRouter — it still returns a
+            # valid business_rationale via its own fallback branch either way, but
+            # this keeps the test offline per crystalos/CLAUDE.md's testing rules
+            # ("Never make real LLM calls in tests").
             results = [
                 await execute_propose_survey_creation(
                     ctx, {"purpose": "understand churn", "target_audience": "detractors"}

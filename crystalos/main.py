@@ -14,6 +14,7 @@ Endpoints:
   POST /prism/map                                      — Prism schema-mapper (field mapping proposals)
   POST /prism/taxonomy                                 — Prism taxonomy-mapper (topic-label reconciliation)
   POST /prism/parity                                   — Prism metric-parity (metric-gap explainer)
+  POST /workflows/parse-nl                             — NL description → workflow graph (Xperiq Actions)
   GET  /agents/registry                                — List all agent manifests
   GET  /health
   GET  /metrics
@@ -33,7 +34,7 @@ from typing import Any
 import dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST
 from prometheus_client.exposition import generate_latest
 
@@ -1088,6 +1089,77 @@ async def start_insight_run(
     if report_id:
         resp["report_id"] = report_id
     return resp
+
+
+# ── Workflow NL parsing (Xperiq Actions Wave 3) ───────────────────────────────
+
+@app.post("/workflows/parse-nl", summary="Parse a natural-language description into a workflow graph")
+async def parse_workflow_nl_endpoint(
+    request: Request,
+    _: None = Depends(require_internal_key),
+) -> dict:
+    """Turn a plain-English workflow description into an engine-ready graph.
+
+    The Node backend's `POST /api/workflows/parse-nl` proxy calls this with the
+    internal key, forwarding its own `workflowRegistry.ts` catalog as `registry`
+    so there is exactly one source of truth for valid triggers/condition-fields/
+    actions (this service never hand-maintains a duplicate copy). Body:
+      { description: str, org_id: str, registry: { triggers, conditionFields,
+        conditionOperators, actions } }
+
+    Returns 200 with { name, description, triggerType, nodes, edges, confidence,
+    warnings } on a usable parse (including low-confidence — the frontend
+    decides how to render below its own threshold), or 422 with a FLAT
+    (non-nested) { error: 'unparseable', message, suggestions } body.
+
+    NOTE on the 422 shape: this deliberately returns `JSONResponse` directly
+    rather than `raise HTTPException(422, detail={...})`. FastAPI always wraps
+    `HTTPException.detail` under a top-level `"detail"` key on the wire
+    (`{"detail": {...}}`), but the Node proxy (`agentsClient.parseWorkflowNL`,
+    per docs/automation-hub/WORKFLOW_SIGNAL_CONTRACT.md §1.3.2) re-parses the
+    raw response body text expecting `message`/`suggestions` at the TOP level.
+    A `detail`-wrapped body would silently degrade every unparseable/low-
+    confidence response to a generic fallback message with an empty
+    `suggestions` array — exactly the highest-risk mismatch that doc flags.
+    """
+    body = await request.json()
+    description = (body.get("description") or "").strip()
+    registry = body.get("registry") or {}
+    org_id = body.get("org_id") or ""
+
+    if not description or len(description) > 1000:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "unparseable",
+                "message": "Description must be between 1 and 1000 characters.",
+                "suggestions": [],
+            },
+        )
+
+    logger.info("workflow_nl_parse_requested", org_id=org_id, description_length=len(description))
+    from crystalos.crystal.workflow_nl import parse_workflow_nl
+    result = await parse_workflow_nl(description, registry)
+
+    if not result.ok:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "unparseable",
+                "message": result.message,
+                "suggestions": result.suggestions,
+            },
+        )
+
+    return {
+        "name": result.name,
+        "description": result.description,
+        "triggerType": result.trigger_type,
+        "nodes": result.nodes,
+        "edges": result.edges,
+        "confidence": result.confidence,
+        "warnings": result.warnings,
+    }
 
 
 # ── Custom Analysis (Insight Pipeline v2 — Phase 6, fully isolated) ───────────────

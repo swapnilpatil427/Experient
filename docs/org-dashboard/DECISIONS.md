@@ -1,0 +1,202 @@
+# Org Intelligence Dashboard — Decision Log
+
+Append-only. See `TEAM.md` for the entry format and escalation rules.
+
+---
+
+## Decision 21: Live-update mechanism — resolved (closes an item open since the first design round)
+
+**Date:** 2026-07-01
+**Decision-maker:** Joint Architecture Review (Dariusz, Yuki, Amara, Jordan)
+**Context:** Flagged as unresolved across four separate design rounds: which mechanism notifies the UI when a manual summary finishes generating, given the user may navigate away mid-job. Three candidates were on the table: page-scoped polling, a new `useOrgDashboardLive` WebSocket hook, or the existing app-wide `notification_events`/SSE system.
+
+**Decision:** Use the existing `notification_events`/SSE stream (`/api/notifications/stream`) for all three cases that needed a live-update answer:
+1. **Manual summary completion** — the bell/toast notification consumer gains a new event-type handler. No polling as a completion contract (in-dialog polling may still show cosmetic progress text while the page happens to be open, but the actual "done" signal is the SSE event).
+2. **"Compare to previous" readiness** — subscribes to the same stream, keyed by `(org_id, period_key)`, since manual regeneration upserts onto the same brief row per period.
+3. **Trust/hallucination score arriving after the rest of the brief** — a second SSE payload (`brief_trust_score_ready`) patches the already-open Crystal Brief Card's confidence indicator in place, closing the cache-ordering race flagged in ARCHITECTURE.md's Addendum 2.
+
+**No WebSocket infrastructure is needed for this feature.** This is a net reduction in planned scope, not just a resolved ambiguity — `useOrgDashboardLive` is not required for the generation/comparison/trust-score flows; the org-dashboard real-time layer (still needed for live KPI response counters and anomaly alerts, per the original v1 design) is unaffected and stays scoped to exactly that.
+
+**Rationale, against the team's own "Real-time Cost vs. Latency" decision tree (TEAM.md):** none of these three cases are "the user is actively watching a number change" (the only branch that justifies WebSocket cost) — the defining premise is the opposite: the user may have left the page. Reaching for a new WebSocket hook here would have been exactly the uncosted real-time expansion that decision tree exists to block, and would have required a written Decision Log justification (per TEAM.md's own rule) that never materialized across four rounds of flagging this as open. The existing SSE/`notification_events` system already satisfies the actual requirement (survives page unmount) with zero new infrastructure.
+
+**Reversibility:** Easy — additive event-type handlers on an existing consumer, no new service or schema.
+
+---
+
+## Decision 20: Figma is blocked — pivot to an exceptionally detailed written design spec, not code
+
+**Date:** 2026-07-01
+**Decision-maker:** Stakeholder
+**Context:** TEAM.md mandates Marcus produce Figma designs for all sections before engineering begins. Figma access is not currently usable (the same class of blocker Tag Report's own Appendix B hit — "Figma file creation was blocked this round by a view-only seat"). An initial version of this decision proposed building coded React component prototypes as the substitute artifact — the stakeholder corrected this: **no code is to be written at this stage.** Design and UX specification only.
+
+**Decision:** Skip Figma for this feature, and do not substitute it with code either. Instead, raise the written design spec itself to Figma-equivalent precision — exact spacing, color values, motion timing/easing curves, component anatomy, and state-by-state behavior described in enough detail that an engineer could build it without ambiguity, the same bar a redline'd Figma file would need to clear. This applies specifically to the components that were still under-specified relative to the rest of `DESIGN.md`: the Weekly Brief card, Tag Groups strip, generation status chip, and `CheckpointDiffPanel`.
+
+**Rationale:** The gap TEAM.md's Figma mandate exists to close is ambiguity between design intent and what gets built — that gap can be closed by precision of specification, not only by a visual tool. Given Figma is unavailable, the fallback is more rigorous prose, not code, since building code without the underlying design/UX decisions being fully settled first would risk locking in choices before they've had proper design scrutiny.
+
+**Reversibility:** Easy — nothing prevents producing Figma files later from this written spec if Figma access is restored.
+
+---
+
+## Decision 19: Failure states, responsive design, and loading states closed; multi-org switcher descoped; honest remaining-gap inventory
+
+**Date:** 2026-07-01
+**Decision-maker:** Stakeholder
+**Context:** Following Decision 18's cross-team sign-off, the stakeholder asked for the design to be closed out end-to-end: failure states, full responsiveness, loading states, and an honest completeness check.
+
+**Decision:**
+1. Multi-org switcher for CX agencies is explicitly out of scope for this design (not deferred-with-a-plan — simply not designed against speculatively).
+2. The Hub-vs-full-page split is now explicit: `/app/experience` shows teasers only; the complete Command Center (Brief Archive, manual generator, full Tag Intelligence grid, alerts, Checkpoint Compare) lives at `/app/experience/org/trends`.
+3. Failure states, responsive behavior (mobile/tablet/desktop), and loading states are specified for every component introduced this session — see `DESIGN.md`'s three new sections.
+
+**Honest remaining gaps — not closed by this decision, named explicitly rather than implied-done:**
+- **War Room Mode (dark theme) tokens are not yet verified for any component added this session** (Weekly Brief card, Tag Groups strip, `CheckpointDiffPanel`, the generation status chip). Theo's original dark-mode spec predates all of them.
+- **The live-update mechanism (WebSocket vs. notification-events vs. polling) is still unresolved** — this requires an actual Architecture Review conversation (Dariusz, Yuki, Amara, Jordan), not further doc-writing.
+- **No Figma artifacts exist for anything designed this session**, despite TEAM.md's mandate that Marcus "produce Figma designs for all 9 sections... before each phase begins engineering." Everything to date is a thorough written spec, not a visual mock — the same gap Tag Report's own Appendix B hit (blocked by Figma seat access) applies here by omission, not by blocker.
+- **No usability testing has occurred** — TEAM.md mandates at least 2 sessions per phase with real users before sign-off; none are possible within a design-only exercise.
+- **`CheckpointDiffPanel`'s mobile layout is now specified, but the component itself still has no visual mock** — only written interaction/layout rules.
+
+**Reversibility:** N/A — this decision records completion status, not a technical or product choice.
+
+---
+
+## Decision 18: ExperienceHubPage integration — resolved, additive-only, jointly signed off
+
+**Date:** 2026-07-01
+**Decision-makers:** Stakeholder (constraint), Marcus Osei (revised design), Morgan and Sam of Tag Report (joint cross-team sign-off — this closes the pending item from Decision 17)
+**Context:** Decision 17 proposed merging Command Center's hero into `ExperienceHubPage` by role-conditionally *replacing* the existing `crystalOpening` narrative, and flagged that the merge conflicted with Tag Report's Appendix C reasoning, requiring Morgan/Sam's actual sign-off before implementation. The stakeholder then imposed a hard constraint — verified against the real, shipped `ExperienceHubPage.tsx` (962 lines) — that no existing content may be removed, hidden, or replaced for any user; changes must be pure amendments. This decision replaces Decision 17's "role-conditional replace" design with a strictly additive one and records the actual sign-off obtained.
+
+**Final design (all four elements are pure insertions — nothing in `ExperienceHubPage.tsx` §1–§5 is touched or removed):**
+
+1. **Org Health Score** — a 5th tile in the existing KPI grid (`grid-cols-2 md:grid-cols-4` → `grid-cols-2 md:grid-cols-4 lg:grid-cols-5`), reusing the existing `KpiTile` component verbatim — no new visual vocabulary.
+2. **Crystal's Weekly Brief** — a new, distinctly-styled card inserted immediately after the existing `crystalOpening` paragraph (which remains exactly as-is, full weight, for everyone). Binding conditions from sign-off: must use existing card styling already established elsewhere in Command Center's spec (gradient background + border treatment), carry an explicit "Crystal's Weekly Brief for [org]" eyebrow label, and render at **visually subordinate weight** to `crystalOpening` (smaller/secondary treatment, e.g. collapsed-to-one-line with an expand affordance) — one primary hero voice per viewer, `crystalOpening`, always; the Brief is a clearly-labeled secondary artifact, never a competing equal.
+3. **Tag Groups strip** — a new section between the existing §3 (Live Intelligence) and §4 (Survey Intelligence Grid). Binding conditions: **hard-scoped at the data layer** (not just a UI filter) to `health_status != healthy` tag groups only — it must be structurally incapable of becoming a general tag browser; inline-expand shows aggregate NPS + top topic only; its only exit is a single CTA performing full navigation to the existing Tag Report route (`/app/experience/tags/:tagId/report`) — it must never render Tag Report's multi-metric/provenance/drill-down machinery inline, which would duplicate rather than tease.
+4. **Role-gating** applies only to whether these four new elements render — existing content is unconditional for all viewers, always. The permission check must be the exact one that already gates Tag Report access today — no new parallel permission system.
+
+**Sign-off obtained:**
+- **Morgan (Tag Report Product Owner) — APPROVE WITH CONDITIONS.** Verdict: pure insertion resolves the "replacement" risk but not the "cognitive competition" risk on its own — conditions above (subordinate Brief styling, reused permission check, teaser-only strip, progressive disclosure) are what close the gap. Flagged as a metric to watch: if Tag Report's own drill-down/backfill-disclosure engagement metrics (DESIGN.md §5) drop post-launch, that's the signal the strip became real competition for the Reports tab rather than a teaser, and this decision should be revisited.
+- **Sam (Tag Report UX) — APPROVE WITH CONDITIONS.** Verdict: coherent, not clutter, if and only if all three narrative-differentiation conditions ship together (distinct container, explicit label, role-gating) — not just the label alone. Requires the Tag Groups strip distinction to be behavioral (data-layer health-status scoping), not cosmetic.
+
+**This closes the "explicitly pending" item from Decision 17.** Implementation may proceed against the final design above.
+
+**Reversibility:** Easy — every element is additive; removing any of the four later restores the page to its current shipped state exactly, with no cleanup required elsewhere.
+
+---
+
+## Decision 17: Navigation strategy — Org → Tag → Survey → Response, role-conditional landing
+
+**Date:** 2026-07-01
+**Decision-maker:** Stakeholder, following review from Priya Rajan and Marcus Osei
+**Context:** Stakeholder wanted an org head to land on the Org-level report first, then drill into tag-level and survey-level reports. Review found this isn't a blank-slate design — it interacts with an already-shipped page (`ExperienceHubPage`, the current landing content at `/app/experience`) and an already-decided cross-feature placement (Tag Report's Appendix C, its own "Overview | Reports" segmented control).
+
+**Decision:**
+1. **Role-conditional hero, not a stacked or replaced one.** `ExperienceHubPage`'s hero slot (currently `crystalOpening`) renders the Command Center hero (Org Health Score, sparkline, Crystal's Weekly Brief, Past Briefs strip) for VP/C-suite-role viewers, and today's unchanged content for everyone else. The shared KPI strip below is extended (WoW delta, sentiment) rather than duplicated.
+2. **Drill-down rule:** inline-expand (200ms, matching the existing Programs Table / Brief Archive pattern) when the interaction answers "is this worth my attention" (Org hero → tag group card); full page navigation only when the destination is a genuinely separate trust/audit surface (Tag Report → Survey Insight Trail → Response Detail). Never inline-expand a citation trail into an already-dense page.
+3. **Shortcut:** when an Org Brief recommendation's `survey_id` field is populated (the common case per `generate_recommendations`), navigate directly to that survey's Insight Trail, skipping the Tag Report hop. Tag Group is the fallback path only when `survey_id` is null.
+4. **Checkpoint-diff (`CheckpointDiffPanel`) stays Org-level only for now.** Tag Report's own comparison primitive (Bracketed Snapshot, DESIGN.md §4.3) is a different shape and should not be forced to converge with Org-level's diff view before the latter has even shipped and proven out.
+5. **Accessibility fix required before ship:** `HealthPill`'s status palette and `npsColor()`'s thresholds (used by `SurveyCard`) are not currently unified — stacking Org/Tag/Survey health indicators on one page (especially on mobile, single-column) risks a colorblind/low-vision user being unable to tell which "red" belongs to which hierarchy level. Audit and unify before this ships; ensure text/icon redundancy everywhere color is used, not just in `HealthPill`.
+
+**Explicitly NOT decided here — requires cross-team sign-off:** merging Command Center's hero into `ExperienceHubPage` genuinely conflicts with Tag Report's own Appendix C reasoning (Morgan/Sam explicitly rejected embedding dense, deliberately-triggered report experiences into the Hub — "bloat the Hub into two different products on one page" — and Command Center's hero is denser than what they rejected). This is not Command Center's team's call to make unilaterally. **Proposed compromise, pending Morgan/Sam's actual approval:** Org hero above the fold (role-gated) + "Overview" tab unchanged (survey creators) + "Reports" tab unchanged (Tag Report's existing address). Do not implement the `ExperienceHubPage` merge until this sign-off is obtained and recorded as its own decision (in either this log or Tag Report's).
+
+**Also flagged, unresolved:** CX agencies (GTM.md tertiary ICP) break silently under this model — there is no multi-org switcher concept in the current design, and agencies should not simply inherit the same role-gate as internal org admins. Tracked as an open item, not solved by this decision.
+
+**Reversibility:** Easy for items 2–5 (additive UI patterns). Item 1 is reversible but touches a shipped page — should not be implemented ahead of item's cross-team sign-off resolving.
+
+---
+
+## Decision 16: Full-design review round — keep the LLM narrative, adopt all raised guardrails
+
+**Date:** 2026-07-01
+**Decision-maker:** Stakeholder, following a full internal-team review (all 9 TEAM.md members) plus two independent outside reviews (an unaffiliated AI/ML systems reviewer and a skeptical real-world VP-of-CX persona)
+**Context:** A full review of the cumulative design (Decisions 12–15) surfaced a fundamental question from both outside reviewers independently: should the org brief remain an LLM narrating over other LLMs' insights (current design), or ship v1 as a structured view of real cited insights + deterministic signals with no extra narrative LLM call? The stakeholder chose to keep the LLM narrative. This decision records the full set of guardrails and fixes raised during the review that must now be implemented as a condition of that choice.
+
+**Decision:** Keep `synthesize_narrative` consuming real survey-level insights as designed in Decision 14. Adopt, as binding scope, every fix below:
+
+1. **GGDPR/compliance sequencing (highest severity — Jordan's finding):** Org Dashboard must not ship citation-bearing briefs (real respondent verbatims in `org_crystal_briefs`/`org_custom_summaries`) until Tag Report's citation-erasure redaction hook (DESIGN.md §4.5 AC-3) is both approved and actually wired into Command Center's tables as a consumer — not merely "named" as a future consumer. This is now a hard release gate, not a parallel-track nice-to-have.
+2. **ROADMAP.md must be updated** to explicitly show Decision 15's Tag Report dependency as a Phase 2 blocker line, the same way Decision 12's prerequisites are already shown — an engineer reading only ROADMAP.md must see the blocker.
+3. **Range cap reconciled to 90 days** (Dariusz's recommendation) — the only value that satisfies both the servability constraint (Addendum 1) and the signal-logic-validity constraint (Amara's guards), since the 12-month option was conditional on guards that are themselves unshipped, review-gated scope.
+4. **Cost model re-baselined to "1 guaranteed + 1 conditional LLM call per brief"** (Amara) — the hallucination scorer's LLM-grounding fallback fires whenever deterministic numeric-match confidence is below 0.80, which is expected to be common, not rare, once qualitative claims enter the narrative via `grounding_insights_text`. All latency/cost estimates (`estimatedSeconds` on the regenerate endpoint, eval budget) must reflect this.
+5. **Hallucination scoring and lineage/delta computation split out of the main `org_brief_graph.py` DAG into a post-publish step** (Amara) — neither has a dependency on the synthesis nodes' live state beyond the already-persisted `narrative`/`input_snapshot`, so keeping them in-graph adds coupling without benefit, mirroring why Tag Report itself chose a new graph over extending an old one when the shape didn't fit.
+6. **Progressive disclosure is mandatory, not optional, for all new trust/citation/comparison UI** (Marcus, Sofia, Theo — independently converged): no inline "pass" badges (only surface on `flag`/`fail`), citations stay click-to-reveal with no added visual weight at rest, "Compare to previous" never renders by default alongside the live brief. Full spec in `DESIGN.md`.
+7. **Banned/required copy for trust signaling** (Sofia): never "hallucination," "low confidence," or "unverified" in user-facing copy — use "Crystal's best read" / "Early read" / "How sure is Crystal?" instead. Added to `GTM.md`'s Names to Avoid.
+8. **Reuse `ConfidenceChip`, do not fork a new trust-token system** (Theo) — same underlying question ("can I trust this text?") as the existing survey-level Reliable/Indicative/Low-signal vocabulary; map `hallucination_score`'s `pass/flag/fail` onto the existing three tiers rather than inventing a fourth state.
+9. **Data model fixes** (Leila): add `(survey_id, layer, trust_score DESC)` index to support the new insight-retrieval query; update the `org_report_history` view to expose `parent_checkpoint_id`/`compared_against_brief_id`/a comparability flag; resolve the `trust_score` naming collision between per-insight (`insights.trust_score`, 0-100 int) and per-brief (`hallucination_score`) by using distinct field names, not the same term at two different scales; use `CREATE INDEX CONCURRENTLY` on `survey_responses` and `NOT VALID` + `VALIDATE CONSTRAINT` for the new FK, since both tables may already hold production rows.
+10. **"Compare to previous" needs a real UX spec before any frontend work starts** (Yuki, confirmed by Marcus/Theo) — currently only a backend endpoint exists. Marcus owns producing this spec; it is a blocking prerequisite for the feature, not a parallel task.
+11. **Citation contract disambiguation** (Jordan): document explicitly in `ARCHITECTURE.md` that `insights.citations_json` (survey-level, read directly by `aggregate_org_metrics`) and Tag Report's `CitationRef.source_insight_id` (used only by cross-survey paths) are two distinct, non-interchangeable citation shapes — a future reader must not assume they're the same contract.
+12. **`checkpoint_store.py` org-scope reuse needs an explicit acceptance criterion**, not an assumption — confirm and document the key path used for org-scope blob writes (e.g., a sentinel value in place of `survey_id`).
+
+**Reversibility:** Mixed. Items 6–9, 11–12 are additive/low-risk. Items 1–2 are process/sequencing fixes with no schema impact. Item 5 (graph restructuring) is a design change that should happen before any `org_brief_graph.py` code is written, since it's much cheaper to design correctly upfront than to refactor after implementation.
+
+---
+
+## Decision 14: Org brief must consume real survey-level insights and score its own trust, not just narrate numbers
+
+**Date:** 2026-07-01
+**Decision-maker:** Stakeholder, following an Applied Scientist + CrystalOS Expert technical review
+**Context:** As originally specified, `aggregate_org_metrics` only reads pre-aggregated numeric tables (`org_metrics_weekly`, `survey_health_summary`, `org_topic_trends`) — never the survey-level `insights` table (headlines, narratives, `trust_score`, `citations_json`). Review found this makes the weekly brief structurally likely to "feel templated" (Amara's own stated risk in TEAM.md), since the LLM narrating it has no qualitative material to draw from.
+
+**Decision:** Adopt both recommendations in full:
+1. The org brief (all three modes) consumes top-trust-score survey-level insights as grounding input to `synthesize_narrative`, with citations traceable to specific `insights.id` rows (`source_insight_ids` on each recommendation).
+2. The org brief gets its own hallucination/trust-scoring pass (reusing the existing `score_insight()`/`hallucination_scorer.py` numeric-grounding check) before publish, since consuming LLM-generated insight text makes it a synthesis-of-a-synthesis with compounding hallucination risk.
+
+Full technical spec: `ARCHITECTURE.md`, "Addendum 2: Insight Consumption, Trust Scoring, and Checkpoint Lineage."
+
+**Alternatives considered:** Ship the numbers-only brief as originally spec'd and revisit only if user feedback confirms it feels templated (rejected — the risk was identified pre-emptively with a known, cheap fix available; no reason to ship the known-worse version first).
+
+**Reversibility:** Moderate — the citation/trust-scoring additions are additive schema (new JSONB fields, new columns), but they add LLM calls (insight retrieval doesn't need one; the hallucination pass does) to every brief generation, which is a real cost/latency change from the original design, not purely additive.
+
+---
+
+## Decision 15: Org report checkpoint lineage adopted for Automated/Manual; sequencing dependency on Tag Report locked in
+
+**Date:** 2026-07-01
+**Decision-maker:** Stakeholder
+**Context:** (1) The org-dashboard design had no checkpoint/lineage system — "Brief Archive" was a flat list with no real trail of how a brief's numbers changed week to week. (2) Tag Report is now confirmed to ship before Org Dashboard, and Org Dashboard's citation design (Decision 14) has a hard dependency on Tag Report exposing `source_insight_id`-level citations and a Response Detail viewer — neither of which were binding acceptance criteria in Tag Report's (final, implementation-ready) `DESIGN.md` at the time of this review.
+
+**Decision:**
+1. Adopt checkpoint lineage for Automated weekly briefs (`parent_checkpoint_id`/`delta_from_prior` directly on `org_crystal_briefs`, reusing `tools/delta.py`) and Manual regeneration (links into the same chain, does not fork). Custom Range summaries remain standalone by design, with an optional `compared_against_brief_id` pointer.
+2. Tag Report's `docs/tag-report/DESIGN.md` has been updated (new §4.5 "Citation Contract & Response Viewer — Cross-Feature Dependency") to promote the `source_insight_id` citation field, the Response Detail viewer (R-T5), and the citation-erasure redaction hook from TRACKER.md implementation notes to **binding Section 4 acceptance criteria**, since DESIGN.md — not TRACKER.md — is the document marked final/binding for Tag Report's implementation handoff.
+3. Org Dashboard's insight-consumption work (Decision 14) is blocked on Tag Report's §4.5 AC-1 shipping — this is now an explicit cross-feature sequencing dependency, not an assumption.
+
+**Alternatives considered:** Have Org Dashboard build its own independent survey_id/insight_id citation resolution, decoupled from Tag Report (rejected — duplicates work Tag Report is already positioned to do correctly once, and risks two divergent citation schemas across the platform).
+
+**Rationale:** Tag Report ships first; its citation contract becomes the platform-wide citation primitive rather than a Tag-Report-specific one. Fixing the gap in Tag Report's own DESIGN.md before its implementation begins is far cheaper than discovering the mismatch after Org Dashboard starts building against it.
+
+**Reversibility:** Easy for the Org Dashboard schema additions (additive, reversible). Harder for the Tag Report DESIGN.md promotion if Tag Report implementation has already started elsewhere by the time this is read — flag immediately to Devon (Tag Report Tech Lead) if so.
+
+---
+
+## Decision 12: Scope and phasing for Org Insight History and Manual Custom-Range Summary
+
+**Date:** 2026-07-01
+**Decision-maker:** Priya Rajan (recommendation), overridden by stakeholder decision
+**Context:** Two capabilities were approved for design that are not in the original v1 scope: (1) a browsable history of past org-level reports, and (2) an on-demand, user-triggered summary for an arbitrary date range, mirroring the existing per-survey Custom Analysis feature.
+
+**Decision:** Both features ship together in the same phase, rather than Priya's recommended sequencing (History first; Manual Summary deferred to a later phase pending weekly-brief telemetry).
+
+**Alternatives considered:**
+- Priya's original recommendation: History added to Phase 2 (low-risk, additive read over existing data); Manual Summary deferred to Phase 4+, gated on weekly-brief action-rate telemetry validating the AI narrative quality first.
+- Ship both now (chosen).
+
+**Rationale:** Stakeholder priority overrides the phased-risk-reduction sequencing. Accepted explicitly as part of this decision: the technical prerequisites Amara and Dariusz identified as blocking for Manual Summary are **not waived** by this decision — they must still be resolved before Manual Summary ships, specifically:
+- A single, reconciled max date-range cap (Dariusz proposed 90 days for matview-servability; Amara proposed 12 months for signal-logic validity — engineering must converge on one number, not ship with two different limits).
+- Amara's signal-logic guards for non-week-aligned ranges (`identify_top_programs` velocity normalization, `detect_org_signals`' "two weeks ago" comparison) must be implemented, not skipped, since these break silently outside the weekly cadence.
+- A minimum 6–8 new eval cases for custom ranges (short/medium/long) per Amara, in addition to — not instead of — the existing 10 weekly-brief cases.
+- A dedicated org-scale credit cost curve (Jordan flagged that reusing the survey-level `resolveCustomCost` tiers unchanged will systematically undercharge org-wide corpora).
+
+**Reversibility:** Easy — both features are additive to existing contracts; shipping them together vs. sequenced does not change the underlying schema or API design, only the delivery timeline and the amount of concurrent engineering risk carried in one phase.
+
+---
+
+## Decision 13: "Futuristic" is a design direction, not a customer-facing word
+
+**Date:** 2026-07-01
+**Decision-maker:** Stakeholder, following Sofia Reyes's positioning review
+**Context:** The stakeholder's brief for this design round asked for "the easiest thing to use, futuristic UI." Sofia's GTM review flagged that literally marketing this as "futuristic" risks reading as "unproven / beta" to a risk-averse enterprise VP buyer — directly undercutting Command Center's core pitch ("this should already exist, and now it does").
+
+**Decision:** Keep all the novel micro-interactions this design round produced (the crystal-motif status chip for in-progress generation, the shimmer-on-first-view treatment for freshly synthesized briefs, the animated timeline entry for new history items). Do not use the word "futuristic" — or close synonyms like "sci-fi," "next-gen" — in any customer-facing copy, tooltip, marketing material, or GTM.md positioning language. Internal engineering/design docs may continue to describe these as advanced/ambient interaction patterns for clarity among the team.
+
+**Alternatives considered:** Keep "futuristic" as the explicit external design/marketing direction (rejected).
+
+**Rationale:** Sofia's proposed replacement framing — "sharp and effortless" / "finally obvious" — delivers the same perceived novelty without the credibility tax. This is a wording and positioning decision only; it does not change any interaction design, animation, or component spec produced in this round.
+
+**Reversibility:** Easy — pure copy/positioning change, no code or schema impact.

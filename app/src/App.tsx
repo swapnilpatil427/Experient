@@ -27,6 +27,9 @@ import { BrandSettingsPage } from './pages/BrandSettingsPage';
 import { TemplateLibraryPage } from './pages/TemplateLibraryPage';
 import { TemplateEditorPage } from './pages/TemplateEditorPage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
+import { WorkflowBuilderPage } from './pages/WorkflowBuilderPage';
+import { WorkflowCanvasPage } from './pages/WorkflowCanvasPage';
+import { WorkflowNLBuilderPage } from './pages/WorkflowNLBuilderPage';
 import { DataPage } from './pages/DataPage';
 import { PrismHomePage } from './pages/prism/PrismHomePage';
 import { PrismConnectPage } from './pages/prism/PrismConnectPage';
@@ -51,6 +54,7 @@ import { CasesPage } from './pages/CasesPage';
 import { CaseDetailPage } from './pages/CaseDetailPage';
 import { OwnershipRoutingPage } from './pages/OwnershipRoutingPage';
 import { SettingsConnectionsPage } from './pages/SettingsConnectionsPage';
+import { IntegrationsSettingsPage } from './pages/settings/IntegrationsSettingsPage';
 import { NotificationAnalyticsPage } from './pages/NotificationAnalyticsPage';
 import { BillingPage } from './pages/BillingPage';
 import { BroadcastsPage } from './pages/BroadcastsPage';
@@ -130,6 +134,9 @@ export default function App() {
             <Route path={ROUTES.TEMPLATES}          element={<ErrorBoundary inline><TemplateLibraryPage /></ErrorBoundary>} />
             <Route path={ROUTES.TEMPLATE_EDITOR}    element={<ErrorBoundary inline><TemplateEditorPage /></ErrorBoundary>} />
             <Route path={ROUTES.WORKFLOWS}          element={<ErrorBoundary inline><WorkflowsPage /></ErrorBoundary>} />
+            <Route path={ROUTES.WORKFLOW_BUILD}     element={<ErrorBoundary inline><WorkflowBuilderPage /></ErrorBoundary>} />
+            <Route path={ROUTES.WORKFLOW_CANVAS}    element={<ErrorBoundary inline><WorkflowCanvasPage /></ErrorBoundary>} />
+            <Route path={ROUTES.WORKFLOW_NL_BUILD}  element={<ErrorBoundary inline><WorkflowNLBuilderPage /></ErrorBoundary>} />
             <Route path={ROUTES.SETTINGS}           element={<ErrorBoundary inline><BrandSettingsPage /></ErrorBoundary>} />
             <Route path={ROUTES.DATA}               element={<ErrorBoundary inline><DataPage /></ErrorBoundary>} />
 
@@ -154,6 +161,7 @@ export default function App() {
             <Route path={ROUTES.CASE_DETAIL}         element={<ErrorBoundary inline><CaseDetailPage /></ErrorBoundary>} />
             <Route path={ROUTES.SETTINGS_OWNERSHIP}     element={<ErrorBoundary inline><OwnershipRoutingPage /></ErrorBoundary>} />
             <Route path={ROUTES.SETTINGS_CONNECTIONS}   element={<ErrorBoundary inline><SettingsConnectionsPage /></ErrorBoundary>} />
+            <Route path={ROUTES.SETTINGS_INTEGRATIONS}  element={<ErrorBoundary inline><IntegrationsSettingsPage /></ErrorBoundary>} />
             <Route path={ROUTES.NOTIFICATION_ANALYTICS} element={<ErrorBoundary inline><NotificationAnalyticsPage /></ErrorBoundary>} />
             <Route path={ROUTES.BILLING}                element={<ErrorBoundary inline><BillingPage /></ErrorBoundary>} />
             <Route path={ROUTES.BROADCASTS}          element={<ErrorBoundary inline><BroadcastsPage /></ErrorBoundary>} />

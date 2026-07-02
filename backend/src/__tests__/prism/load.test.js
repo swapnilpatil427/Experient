@@ -50,12 +50,12 @@ beforeEach(() => {
   releaseSpy = vi.fn();
 });
 
-describe('load — responses upsert always carries a non-null survey_id ($3)', () => {
+describe('load — responses upsert always carries a non-null survey_id ($2)', () => {
   it('uses the batch surveyId when the row carries none', async () => {
     let surveyParam;
     clientQuery = vi.fn(async (text, params) => {
       if (text === 'BEGIN' || text === 'COMMIT') return { rows: [], rowCount: 0 };
-      surveyParam = params[2]; // $3 survey_id
+      surveyParam = params[1]; // $2 survey_id
       return { rows: [{ inserted: true }], rowCount: 1 };
     });
     const { load } = loadLoad();
@@ -71,7 +71,7 @@ describe('load — responses upsert always carries a non-null survey_id ($3)', (
     let surveyParam;
     clientQuery = vi.fn(async (text, params) => {
       if (text === 'BEGIN' || text === 'COMMIT') return { rows: [], rowCount: 0 };
-      surveyParam = params[2];
+      surveyParam = params[1];
       return { rows: [{ inserted: true }], rowCount: 1 };
     });
     const { load } = loadLoad();
@@ -93,7 +93,7 @@ describe('load — responses upsert always carries a non-null survey_id ($3)', (
     let surveyParam = 'unset';
     clientQuery = vi.fn(async (text, params) => {
       if (text === 'BEGIN' || text === 'COMMIT') return { rows: [], rowCount: 0 };
-      surveyParam = params[2];
+      surveyParam = params[1];
       return { rows: [{ inserted: true }], rowCount: 1 };
     });
     const { load } = loadLoad();
@@ -103,5 +103,19 @@ describe('load — responses upsert always carries a non-null survey_id ($3)', (
     // Signals target the signals table, not responses.
     const upsert = clientQuery.mock.calls.map((c) => c[0]).find((t) => /INSERT INTO signals/.test(t));
     expect(upsert).toBeTruthy();
+  });
+
+  it('upsert SQL uses contiguous $1..$9 placeholders (no skipped $1)', async () => {
+    clientQuery = vi.fn(async (text, params) => {
+      if (text === 'BEGIN' || text === 'COMMIT') return { rows: [], rowCount: 0 };
+      expect(params[0]).toBe('o1'); // $1 org_id — must not be a null padding slot
+      expect(params).toHaveLength(9);
+      return { rows: [{ inserted: true }], rowCount: 1 };
+    });
+    const { load } = loadLoad();
+    await load([stagedRow({ survey_id: 's1' })], null);
+    const upsert = clientQuery.mock.calls.map((c) => c[0]).find((t) => /INSERT INTO responses/.test(t));
+    expect(upsert).toMatch(/\$1/);
+    expect(upsert).not.toMatch(/\$10/);
   });
 });

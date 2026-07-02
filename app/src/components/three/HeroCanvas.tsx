@@ -5,7 +5,10 @@ import { Float, Icosahedron, Octahedron, Sphere, Stars, MeshDistortMaterial } fr
 import * as THREE from 'three';
 
 // Floating particle field
-function Particles({ count = 350 }) {
+// Exported so NLThinkingCrystal.tsx can reuse it at a smaller `count` for the
+// NL builder's thinking-state accent (see BUILDER_SPEC_WAVE2.md §3a) — same
+// component, no new geometry, just a different `count` prop.
+export function Particles({ count = 350 }) {
   const mesh = useRef<THREE.Points>(null);
   const positions = useMemo(() => {
     const arr = new Float32Array(count * 3);
@@ -51,7 +54,9 @@ function Particles({ count = 350 }) {
 }
 
 // Central crystal with wireframe overlay
-function CentralCrystal() {
+// Exported so NLThinkingCrystal.tsx can reuse it verbatim (same geometry/material)
+// at thumbnail scale for the NL builder's thinking-state accent (§3a).
+export function CentralCrystal() {
   const meshRef = useRef<THREE.Mesh>(null);
   const wireRef = useRef<THREE.Mesh>(null);
 

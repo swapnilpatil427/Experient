@@ -153,17 +153,62 @@ export interface WorkflowAction {
   config?: Record<string, unknown>;
 }
 
+export type WorkflowStatus = 'draft' | 'active' | 'paused' | 'archived' | 'error';
+
+// Scope (docs/automation-hub/BUILDER_REDESIGN_V2_SCOPE.md §2 / Nina's Wave 6
+// backend pass) — 'org' default for backward compat with every pre-scope row.
+export type WorkflowScopeType = 'org' | 'survey' | 'tag';
+
+// Mirrors backend/src/lib/workflowEngine.ts::computeCooldownStatus()'s exact
+// return shape (CooldownStatus) — snake_case, not camelCase, since it's
+// attached server-side via withCooldownStatus() and returned as-is on
+// GET /api/workflows and GET /api/workflows/:id.
+export interface WorkflowCooldownStatus {
+  in_cooldown: boolean;
+  cooldown_minutes: number;
+  last_fired_at: string | null;
+  cooldown_resets_at: string | null;
+}
+
 export interface Workflow {
   id: string;
   org_id?: string;
   name: string;
-  condition: WorkflowCondition;
-  action: WorkflowAction;
-  status: 'active' | 'paused';
+  description?: string | null;
+  // Legacy single-rule shape (still used by the "quick create" modal + builder pages).
+  condition?: WorkflowCondition;
+  action?: WorkflowAction;
+  // Graph shape (trigger/condition/action nodes) — what the registry-backed
+  // builder + canvas pages and the real backend rows use.
+  trigger_type?: string | null;
+  nodes?: unknown[];
+  edges?: unknown[];
+  status: WorkflowStatus;
   trigger_count?: number;
+  run_count?: number;
+  success_count?: number;
+  last_run_at?: string | null;
+  last_status?: string | null;
   created_by?: string;
   created_at?: string;
   updated_at?: string;
+  // Cooldown (Wave 5, BUILDER_REBUILD_SPEC.md §5.3) — proper typed fields
+  // replacing the `as unknown as {...}` cast that previously lived in
+  // WorkflowBuilderPage.tsx (Wave 5 follow-up item, closed in Wave 6).
+  cooldown_minutes?: number | null;
+  cooldown_status?: WorkflowCooldownStatus | null;
+  // Scope (Wave 6, BUILDER_REDESIGN_V2_SCOPE.md §2) — defaults to 'org' server-side
+  // when omitted; every pre-existing row is implicitly org-wide.
+  scope_type?: WorkflowScopeType;
+  scope_survey_id?: string | null;
+  scope_tag_id?: string | null;
+  // Optimistic-locking counter (Wave 11, Nina — TRACKER.md Wave 11 Part 2,
+  // backend/src/routes/workflows.ts). Present on every GET response (default
+  // 1, incremented on every successful PUT/toggle). Optional here only
+  // because pre-Wave-11 test fixtures/mocks may omit it — the backend always
+  // sends it on real rows.
+  version?: number;
+  updated_by?: string | null;
 }
 
 // ── Insights ──────────────────────────────────────────────────────────────────
@@ -931,6 +976,28 @@ export interface SyncLog {
   error_detail?: string | null;
   started_at: string;
   completed_at?: string | null;
+}
+
+// ── Workflow Credentials / Integrations Settings ──────────────────────────────
+// Backend shape per docs/automation-hub/INTEGRATIONS_BACKEND_REVIEW.md — one
+// GET call reports all 6 CONNECTORS entries (incl. slack, unified server-side;
+// webhook excluded from the settings-page card grid — see IntegrationsSettingsPage).
+export type WorkflowConnectorName = 'jira' | 'salesforce' | 'servicenow' | 'zendesk' | 'slack' | 'webhook';
+
+export type WorkflowConnectorStatus = 'org' | 'shared' | 'none';
+
+export interface WorkflowConnectorEntry {
+  connector: WorkflowConnectorName;
+  status: WorkflowConnectorStatus;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ConnectorTestResult {
+  success: boolean;
+  message?: string;
+  checks?: Record<string, string>;
+  failedCheck?: string;
 }
 
 // ── Activity Timeline (Tier 3) ────────────────────────────────────────────────

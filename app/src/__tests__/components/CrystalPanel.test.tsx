@@ -81,6 +81,7 @@ const mockApi = {
   getInsightRunStatus:      vi.fn().mockResolvedValue({ run_id: 'run-456', status: 'completed', stream_events: [] }),
   copilotRefine:            vi.fn().mockResolvedValue({}),
   createWorkflow:           vi.fn().mockResolvedValue({ id: 'wf-1' }),
+  createGraphWorkflow:      vi.fn().mockResolvedValue({ workflow: { id: 'wf-graph-1' } }),
   createAlertRule:          vi.fn().mockResolvedValue({ rule: { id: 'al-1' } }),
   triggerInsightGeneration: vi.fn().mockResolvedValue({}),
   dismissAction:            vi.fn().mockResolvedValue({}),
@@ -183,6 +184,7 @@ beforeEach(() => {
   mockApi.getInsightRunStatus.mockResolvedValue({ run_id: 'run-456', status: 'completed', stream_events: [] });
   mockApi.copilotRefine.mockResolvedValue({});
   mockApi.createWorkflow.mockResolvedValue({ id: 'wf-1' });
+  mockApi.createGraphWorkflow.mockResolvedValue({ workflow: { id: 'wf-graph-1' } });
   mockApi.triggerInsightGeneration.mockResolvedValue({});
   mockApi.dismissAction.mockResolvedValue({});
 
@@ -255,8 +257,7 @@ async function triggerProposals(proposals: ActionProposal[]) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TODO: rewrite — needs fetch ReadableStream mock aligned with crystal/stream SSE format
-describe.skip('CrystalPanel — action proposals rendering', () => {
+describe('CrystalPanel — action proposals rendering', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
   it('renders action proposals received via SSE', async () => {
@@ -286,15 +287,20 @@ describe.skip('CrystalPanel — action proposals rendering', () => {
       expect(screen.queryByText('Send to segment')).not.toBeInTheDocument();
     });
 
-    // dismissAction API called with correct args
+    // Dismissal is tracked via the outcome-telemetry funnel (recordProposalOutcome
+    // with status: 'dismissed'), not a dedicated dismissAction API call — matches
+    // CrystalPanel.tsx's actual dismissAction callback (see component source).
     await waitFor(() => {
-      expect(mockApi.dismissAction).toHaveBeenCalledWith('survey-abc', 'ap-dismiss');
+      expect(mockApi.recordProposalOutcome).toHaveBeenCalledWith(
+        'survey-abc',
+        expect.objectContaining({ proposalKey: 'ap-dismiss', status: 'dismissed' }),
+      );
     });
   });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-describe.skip('CrystalPanel — action execution: navigation', () => {
+describe('CrystalPanel — action execution: navigation', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
   it('create_survey action calls api.startRun and navigates to /surveys?run=...', async () => {
@@ -498,14 +504,75 @@ describe.skip('CrystalPanel — action execution: navigation', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-describe.skip('CrystalPanel — action execution: in-app actions', () => {
+describe('CrystalPanel — action execution: in-app actions', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
-  it('create_workflow calls api.createWorkflow with correct params', async () => {
+  it('create_workflow calls api.createGraphWorkflow with the modern graph shape', async () => {
+    // Modern shape emitted by CrystalOS's reconciled `execute_propose_workflow`
+    // (Wave 3): params.nodes/params.edges/params.trigger_type (snake_case on
+    // the wire), not the old flat trigger/action_type/action_config shape.
+    const nodes = [{ id: 'n1', type: 'trigger', data: {} }];
+    const edges: unknown[] = [];
     const proposal = makeProposal({
       id:    'ap-wf',
       type:  'create_workflow',
       title: 'Alert on NPS drop',
+      description: 'When NPS drops below 6, notify the team',
+      params: {
+        name:          'NPS Drop Alert',
+        description:   'When NPS drops below 6, notify the team',
+        trigger_type:  'response_submitted',
+        nodes,
+        edges,
+      },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.createGraphWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name:        'NPS Drop Alert',
+          description: 'When NPS drops below 6, notify the team',
+          triggerType: 'response_submitted',
+          nodes,
+          edges,
+          status:      'draft',
+        }),
+      );
+      expect(mockApi.createWorkflow).not.toHaveBeenCalled();
+    });
+  });
+
+  it('create_workflow adds a confirmation message after success (graph shape)', async () => {
+    const proposal = makeProposal({
+      id:    'ap-wf2',
+      type:  'create_workflow',
+      title: 'Auto-alert on churn',
+      params: { trigger_type: 'crystal.churn_risk', nodes: [{ id: 'n1' }], edges: [] },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Workflow created/i)).toBeInTheDocument();
+    });
+  });
+
+  it('create_workflow falls back to the legacy flat shape when a stale proposal lacks nodes/edges', async () => {
+    // Regression guard: a stale/cached proposal from before the Wave 3
+    // reconciliation may still carry the old flat shape. It must not crash —
+    // it should fall back to api.createWorkflow() rather than the graph path.
+    const proposal = makeProposal({
+      id:    'ap-wf-legacy',
+      type:  'create_workflow',
+      title: 'Alert on NPS drop (legacy)',
       params: {
         name:          'NPS Drop Alert',
         trigger:       'nps_below_6',
@@ -529,24 +596,7 @@ describe.skip('CrystalPanel — action execution: in-app actions', () => {
           enabled:     true,
         }),
       );
-    });
-  });
-
-  it('create_workflow adds a confirmation message after success', async () => {
-    const proposal = makeProposal({
-      id:    'ap-wf2',
-      type:  'create_workflow',
-      title: 'Auto-alert on churn',
-      params: { trigger: 'churn_risk', action_type: 'notify' },
-    });
-
-    await triggerProposals([proposal]);
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: /apply/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Workflow created/i)).toBeInTheDocument();
+      expect(mockApi.createGraphWorkflow).not.toHaveBeenCalled();
     });
   });
 

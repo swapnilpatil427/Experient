@@ -29,7 +29,7 @@ function AppShellInner() {
 
   const isMobile = breakpoint === 'mobile';
   const isTablet = breakpoint === 'tablet';
-  const isBuilder = /\/surveys\/[^/]+\/build/.test(location.pathname);
+  const isBuilder = /\/surveys\/[^/]+\/build/.test(location.pathname) || /\/app\/workflows\/build/.test(location.pathname);
 
   useEffect(() => {
     if (isTablet) setExpanded(false);

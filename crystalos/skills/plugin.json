@@ -16,6 +16,7 @@
     "./compliance-scanner",
     "./survey-recommender",
     "./crystal-analyst",
+    "./workflow-analyst",
     "./action-recommender",
     "./nps-action-advisor",
     "./ces-action-advisor",
@@ -79,6 +80,7 @@
     "propose_create_case": "crystalos.crystal.tools:execute_propose_create_case",
     "propose_assign_owner": "crystalos.crystal.tools:execute_get_ownership_route",
     "propose_slack_alert": "crystalos.crystal.tools:execute_propose_slack_alert",
+    "propose_workflow": "crystalos.crystal.tools:execute_propose_workflow",
     "get_unified_feedback": "crystalos.tools.prism_feedback:get_unified_feedback",
     "get_insight_sources": "crystalos.tools.prism_feedback:get_insight_sources"
   },

@@ -9,6 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 
 const AUTH_PATH   = _require.resolve(resolve(__dirname, '../middleware/auth'));
+const PERM_PATH   = _require.resolve(resolve(__dirname, '../middleware/requirePermission'));
 const DB_PATH     = _require.resolve(resolve(__dirname, '../lib/db'));
 const ENGINE_PATH = _require.resolve(resolve(__dirname, '../lib/workflowEngine'));
 const REG_PATH    = _require.resolve(resolve(__dirname, '../lib/workflowRegistry'));
@@ -19,6 +20,12 @@ function fakeMod(id, exports) { return { id, filename: id, loaded: true, exports
 function buildApp() {
   _require.cache[AUTH_PATH] = fakeMod(AUTH_PATH, {
     requireAuth: (req, res, next) => { req.orgId = 'o1'; req.userId = 'u1'; next(); },
+  });
+  // routes/workflows.ts now gates every route with requirePermission('workflows:manage')
+  // (see workflowsRoutesPermissions.test.js for dedicated allow/deny coverage) — pass
+  // through here so this file's tests exercise route logic, not RBAC.
+  _require.cache[PERM_PATH] = fakeMod(PERM_PATH, {
+    requirePermission: () => (req, res, next) => next(), invalidatePermissionCache: vi.fn(),
   });
   _require.cache[DB_PATH] = fakeMod(DB_PATH, { query: dbQuery, default: { query: dbQuery } });
   _require.cache[ENGINE_PATH] = fakeMod(ENGINE_PATH, { runWorkflow: runWorkflowMock });
@@ -48,7 +55,9 @@ describe('POST /api/workflows/executions/:id/retry (DLQ)', () => {
     const { status, body } = await api(buildApp(), 'POST', '/api/workflows/executions/e1/retry');
     expect(status).toBe(200);
     expect(body.result.status).toBe('completed');
-    expect(runWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'w1' }), { nps: 3 }, { orgId: 'o1' });
+    // Manual DLQ replay bypasses cooldown (explicit human action), matching the
+    // existing idempotency-bypass convention — see runWorkflow's bypassCooldown doc.
+    expect(runWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'w1' }), { nps: 3 }, { orgId: 'o1', bypassCooldown: true });
   });
 
   it('409s when the execution is not in a failed state', async () => {

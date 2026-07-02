@@ -406,6 +406,19 @@ export function ProgramsTable({ orgId }: ProgramsTableProps): React.JSX.Element;
 
 **Goal:** Crystal's Weekly Brief is live. Anomaly alerts are firing. The Org Health Score is computing on schedule. CrystalOS has the org brief graph running. The full Command Center payload is returned by the backend.
 
+**Added scope (Decision 12, `DECISIONS.md`, 2026-07-01):** Org Insight History (Brief Archive) and Manual Custom-Range Summary (On-Demand Brief) ship in this phase alongside the above, per stakeholder direction overriding Priya's original recommendation to sequence Manual Summary into a later phase. The technical prerequisites are **not waived** by this acceleration and are hard blockers before Manual Summary specifically can ship within this phase:
+- One reconciled max date-range cap — **resolved 2026-07-01: 90 days** (see ARCHITECTURE.md addendum).
+- `org_brief_graph.py`'s custom-range guards (period-type mode flag, non-week-aligned signal suppression) implemented and reviewed — this is new scope requiring standard architecture review, not Amara's verbosity fast-path.
+- 6–8 new eval cases for custom ranges (short/medium/long), plus a further 8–10 for insight-consumption/hallucination-scoring correctness (Decision 16) — 14–18 new cases total, in addition to the existing 10 weekly-brief cases.
+- A dedicated `resolveOrgSummaryCost` cost curve — do not reuse the survey-level Custom Analysis tiers unchanged.
+- The live-update mechanism for the generation status chip (WebSocket vs. notification-events vs. polling — see open item in DESIGN.md addendum) resolved at Architecture Review before `useOrgDashboardLive` work begins.
+
+**HARD EXTERNAL BLOCKER (Decision 15, confirmed as a real planning gap by review — added 2026-07-01): Phase 2's insight-consumption work (citing real survey-level insights in the brief, per Decision 14) cannot start until Tag Report ships `docs/tag-report/DESIGN.md` §4.5 AC-1 (`source_insight_id` on `CitationRef`).** This is a dependency on a different feature's implementation timeline, not an internal risk this team controls. Numeric-rollup-only brief generation, Org Health Score, and Brief Archive/History are NOT blocked by this and can proceed on schedule — only the insight-citation upgrade is gated. Track Tag Report's ship date explicitly; do not let engineers start insight-consumption work assuming it's unblocked.
+
+**ADDITIONAL RELEASE GATE (Decision 16, item 1 — compliance, non-negotiable): citation-bearing briefs (any brief containing `source_insight_ids` or cached verbatim quote text) may not go to production until Tag Report's citation-erasure redaction hook (DESIGN.md §4.5 AC-3) is both approved and Command Center's `org_crystal_briefs`/`org_custom_summaries` tables are wired in as consumers of it.** Shipping citation-bearing briefs ahead of this is a GDPR/erasure-compliance risk (a deleted respondent's verbatim text can persist indefinitely in cached brief text), not a feature gap — treat as a hard release gate.
+
+See DESIGN.md's "Org Insight History & Manual Summary Generator" section, the new "Trust, Citation & Comparison UI" section, and ARCHITECTURE.md's two addenda for full specs.
+
 ---
 
 ### File: crystalos/graphs/org_brief_graph.py

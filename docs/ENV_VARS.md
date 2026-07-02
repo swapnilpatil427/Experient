@@ -21,6 +21,7 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `OPENROUTER_API_KEY` | [req] | — | LLM gateway |
 | `AGENTS_INTERNAL_KEY` | [req] | `dev-internal-key-change-in-prod` | Shared secret: backend ↔ CrystalOS ↔ internal metering API. **Change in prod.** |
 | `AGENTS_URL` | [def] | `http://localhost:8001` | Where the backend reaches CrystalOS |
+| `BACKEND_INTERNAL_URL` | [def] | `http://localhost:3001` | Where CrystalOS reaches the Node backend (reverse direction of `AGENTS_URL`) — used by `lib/workflow_signal_client.py` to POST `workflow_signal` events to `/api/internal/workflows/signal` after an automated insight run detects an AI trigger. Auth reuses `AGENTS_INTERNAL_KEY` (same shared secret, both directions). |
 | `AGENTS_ENV` | [def] | `dev` | `dev` \| `dev-paid` \| `production` |
 | `NODE_ENV` | [def] | — | `production` gates startup validation + `/api/metrics` IP allow |
 | `PORT` | [def] | `3001` | Backend port |
@@ -67,6 +68,12 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | Var | Default | Purpose |
 |---|---|---|
 | `ENABLE_EVENT_ENGINE` | `false` (true in dev script) | Backend event/cron/notification processor |
+| `WORKFLOW_TRIGGER_STREAM` | `workflow:triggers` | Redis Streams key for the async workflow-trigger queue (`lib/workflowQueue.ts`); started alongside the notification processor under `ENABLE_EVENT_ENGINE` |
+| `WORKFLOW_RETRY_BASE_MS` | `30000` | Base backoff delay before the first workflow-execution retry |
+| `WORKFLOW_RETRY_FACTOR` | `2` | Exponential backoff multiplier per retry attempt |
+| `WORKFLOW_MAX_ATTEMPTS` | `5` | Attempts (incl. first) before a failed workflow execution is dead-lettered (`workflow_executions.dead_letter`) |
+| `WORKFLOW_CONNECTOR_TIMEOUT_MS` | `10000` | `AbortSignal.timeout()` applied to every outbound connector fetch (Jira/Salesforce/ServiceNow/Zendesk in `lib/connectors.ts` + `notify.webhook` in `lib/workflowEngine.ts`) so a hung TCP connection fails bounded instead of stalling the retry/backoff path |
+| `WORKFLOW_EXECUTING_TIMEOUT_MIN` | `5` | Minutes a `workflow_executions` row may sit in `status = 'executing'` before the stuck-row reaper (`lib/workflowQueue.ts::sweepDueRetries`) force-fails it into the normal retry/DLQ path |
 | `ENABLE_SCHEDULER` | `false` | CrystalOS in-process scheduler |
 | `ENABLE_STREAM_CONSUMER` | on when `REDIS_URL` set | CrystalOS progressive-tier consumer |
 | `SCHEDULER_PORT` | 8090 | Scheduler service HTTP (`/health`,`/metrics`) |
@@ -75,8 +82,9 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `SCHEDULER_LOCK_KEY` | 728190421 | Advisory-lock key |
 | `SCHEDULER_POLL_SEC` | 300 dev / 3600 prod | CrystalOS scheduler poll |
 | `INSIGHT_INTERVAL_FREE_MIN` / `INSIGHT_INTERVAL_PAID_MIN` | 120 / 15 | Auto insight cadence |
-| `JOB_{EXPIRE_BROADCASTS,RECONCILIATION,COST_DOWN_DIVIDEND,CREDIT_LEDGER_MAINTENANCE,CREDENTIAL_HEALTH}` (+ `_SEC`) | enabled / per-job | Scheduler job toggles + intervals (`JOB_CREDENTIAL_HEALTH_SEC` default 21600 = 6h) |
+| `JOB_{EXPIRE_BROADCASTS,RECONCILIATION,COST_DOWN_DIVIDEND,CREDIT_LEDGER_MAINTENANCE,CREDENTIAL_HEALTH,RENOTIFY_STALE_APPROVALS,RESUME_DELAYED_EXECUTIONS}` (+ `_SEC`) | enabled / per-job | Scheduler job toggles + intervals (`JOB_CREDENTIAL_HEALTH_SEC` default 21600 = 6h; `JOB_RENOTIFY_STALE_APPROVALS_SEC` default 3600 = 1h tick; `JOB_RESUME_DELAYED_EXECUTIONS_SEC` default 60 = 1min tick) |
 | `CREDENTIAL_EXPIRY_WARN_DAYS` | 14 | `credential-health` warns + alerts when a key's days-to-expiry drops below this |
+| `WORKFLOW_APPROVAL_RENOTIFY_HOURS` | 72 | `renotify-stale-approvals` job: re-notify a `workflow_approvals` row's owner after it's sat `pending` this many hours since request/last notify. Never auto-rejects — simple expiry + re-notify only. |
 
 ## Prism — data ingestion / migration engine (backend)
 
@@ -140,6 +148,19 @@ in `index.ts` and, in **staging/production**, refuses to start on any fatal misc
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | Jira ticket sync |
 | `SERVICENOW_INSTANCE_URL`, `SERVICENOW_USER`, `SERVICENOW_PASSWORD` | ServiceNow connector |
 | `SF_INSTANCE_URL`, `SF_ACCESS_TOKEN` | Salesforce connector |
+| `ZENDESK_SUBDOMAIN`, `ZENDESK_EMAIL`, `ZENDESK_API_TOKEN` | Zendesk ticket connector (`zendesk.create_ticket` workflow action) |
+
+## Workflow Automation — per-org connector credentials vault
+| Var | Status | Purpose |
+|---|---|---|
+| `WORKFLOW_CREDENTIALS_KEY` | [opt; req in prod for the vault] | 32-byte AES-256-GCM key (hex — 64 chars — or base64), used by `backend/src/lib/workflowCredentials.ts` to encrypt/decrypt the `workflow_connector_credentials` table (per-org Jira/Salesforce/ServiceNow/Zendesk/Slack/webhook credentials). Generate with `openssl rand -hex 32`. Absent/dev ⇒ vault disabled and every connector falls back to the shared env vars above (zero breaking change). Malformed (wrong decoded length) throws at read time — validated at startup, fails loud in production, warns in dev. |
+
+Jira/Salesforce/ServiceNow/Zendesk connectors (`backend/src/lib/connectors.ts`) now check
+`getCredentials(orgId, connector)` (per-org, vault-backed) FIRST, then fall back to the
+matching shared env var(s) above. The `notify.webhook` workflow action HMAC-SHA256 signs
+its JSON body (`X-Experient-Signature: sha256=<hex>` header) using `config.secret`
+(per-workflow) or the org's vaulted `webhook` credential's `secret` field, in that order;
+unsigned only when neither is set.
 
 ## Observability — optional
 | Var(s) | Purpose |
@@ -185,6 +206,7 @@ REDIS_URL=redis://localhost:6379
 OPENROUTER_API_KEY=
 AGENTS_INTERNAL_KEY=dev-internal-key-change-in-prod
 AGENTS_URL=http://localhost:8001
+# BACKEND_INTERNAL_URL=http://localhost:3001
 AGENTS_ENV=dev
 # NODE_ENV=production
 # PORT=3001

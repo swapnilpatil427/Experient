@@ -2978,6 +2978,7 @@ async def node_delta_compute(state: dict) -> dict:
             "delta_from_prior":           None,
             "meaningful_delta":           True,   # bootstrap always writes
             "prior_checkpoint_summaries": [],
+            "ai_trigger_baseline_negative_pct": None,
         }
 
     # Load prior checkpoints (Phase 0.5 has no parent_checkpoint_id — order by
@@ -3014,6 +3015,7 @@ async def node_delta_compute(state: dict) -> dict:
             "delta_from_prior":           None,
             "meaningful_delta":           True,
             "prior_checkpoint_summaries": [],
+            "ai_trigger_baseline_negative_pct": None,
         }
 
     current_metrics = extract_metrics_from_state(state)
@@ -3088,11 +3090,20 @@ async def node_delta_compute(state: dict) -> dict:
         topics_resolved=len(delta.get("topic_changes", {}).get("resolved", [])),
     )
 
+    # Xperiq Actions Wave 3 (AI triggers) — carry the prior blob's negative-
+    # sentiment share forward as the sentiment_spike baseline. Additive-only
+    # read of a field node_publish started writing this wave
+    # (`ai_trigger_negative_pct`); absent on older blobs, so this is None for
+    # any survey whose most recent checkpoint predates this wave — the trigger
+    # simply doesn't fire until one post-wave checkpoint exists to seed it.
+    prior_negative_pct = prior_blob.get("ai_trigger_negative_pct")
+
     return {
         **state,
         "delta_from_prior":           delta,
         "meaningful_delta":           meaningful,
         "prior_checkpoint_summaries": prior_checkpoint_summaries,
+        "ai_trigger_baseline_negative_pct": prior_negative_pct,
     }
 
 
@@ -4390,6 +4401,151 @@ async def node_publish_manual(state: dict) -> dict:
     return {**state, "report_id": report_id, "manual_report_url": report_url}
 
 
+# ── AI-driven workflow triggers (Xperiq Actions Wave 3) ───────────────────────
+
+def _aggregate_negative_pct(topic_signals: dict[str, dict]) -> float | None:
+    """Response-count-weighted average `sentiment_negative_pct` across all
+    topics in this run — the survey-level negative-sentiment share used as the
+    sentiment_spike signal and persisted into the checkpoint blob as next
+    run's baseline. Returns None when there's no topic data at all (e.g. a
+    very early / no-open-text survey) rather than a misleading 0.0.
+    """
+    total_n = 0
+    weighted_sum = 0.0
+    for sig in (topic_signals or {}).values():
+        n = sig.get("response_count") or 0
+        pct = sig.get("sentiment_negative_pct")
+        if n <= 0 or pct is None:
+            continue
+        total_n += n
+        weighted_sum += pct * n
+    if total_n == 0:
+        return None
+    return weighted_sum / total_n
+
+
+async def node_ai_triggers(state: dict) -> dict:
+    """Detect sentiment_spike / new_theme_detected / anomaly_detected signals
+    and emit a `workflow_signal` for each one that fires, AFTER publish has
+    finalized this run's insights/checkpoint.
+
+    Deliberately placed as its own node after `publish` rather than folded
+    into `delta_compute`/`narrate`/`publish` themselves: every signal this
+    node needs (`delta_from_prior`, `meaningful_delta`, `topic_signals`,
+    `metrics`, `prior_checkpoint_summaries`, `ai_trigger_baseline_negative_pct`)
+    is already fully computed by the time `publish` returns — this node reads,
+    it never recomputes. Detection logic itself lives in `lib/ai_triggers.py`
+    (pure, unit-testable functions); this node is just the plumbing that reads
+    pipeline state, calls those functions, applies Redis-backed hysteresis, and
+    calls `lib/workflow_signal_client.emit_workflow_signal` for anything that
+    passes both the threshold AND the hysteresis check.
+
+    Never raises — a trigger-detection failure must not fail an otherwise-
+    successful insight run (the insights are already published by the time
+    this node runs). Skipped entirely when `state.get("skip_run")` or
+    `state.get("skipped_checkpoint")` — a run with no meaningful new signal
+    is definitionally not a candidate for a NEW AI trigger to fire on top of.
+
+    Also skipped for manual/refresh profiles (`manual_expert`, `manual_quick`,
+    `refresh`) — those are explicit, user-requested deep-dives over an
+    arbitrary window, not part of the regular automated checkpoint cadence the
+    hysteresis/baseline model (rolling vs. the immediately-prior AUTOMATED
+    checkpoint) assumes. Comparing a manual refresh's window against the
+    automated baseline would conflate two different sampling populations and
+    could fire (or wrongly suppress) a trigger based on a non-comparable
+    snapshot.
+    """
+    if state.get("skip_run") or state.get("skipped_checkpoint"):
+        return state
+
+    profile = state.get("profile") or INSIGHT_PROFILE_AUTOMATED
+    if profile != INSIGHT_PROFILE_AUTOMATED:
+        return state
+
+    survey_id = state.get("survey_id")
+    org_id = state.get("org_id")
+    run_id = state.get("run_id")
+    if not survey_id or not org_id:
+        return state
+
+    try:
+        from crystalos.lib import ai_triggers as at
+        from crystalos.lib.redis_keys import K
+        from crystalos.lib.workflow_signal_client import emit_workflow_signal
+
+        brand_id = None  # AI triggers are a first-party-org feature for v1; brand_id namespacing is a no-op today
+        delta = state.get("delta_from_prior") or {}
+        topic_signals = state.get("topic_signals") or {}
+        metrics = state.get("metrics") or {}
+        prior_summaries = state.get("prior_checkpoint_summaries") or []
+        detected_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        fired: list[at.TriggerSignal] = []
+
+        # ── sentiment_spike ────────────────────────────────────────────────
+        current_negative_pct = _aggregate_negative_pct(topic_signals)
+        baseline_negative_pct = state.get("ai_trigger_baseline_negative_pct")
+        new_response_count = len(state.get("new_response_ids") or []) or delta.get("response_count_delta", 0)
+        if current_negative_pct is not None:
+            key = K.ai_trigger_armed(brand_id, survey_id, "sentiment_spike")
+            armed_state = await at.get_armed_state(key)
+            was_armed = armed_state is not None
+            signal = at.detect_sentiment_spike(
+                current_negative_pct, baseline_negative_pct, new_response_count, was_armed=was_armed,
+            )
+            if signal and (not was_armed or at.cooldown_elapsed(armed_state, at.SENTIMENT_SPIKE_COOLDOWN_HOURS)):
+                fired.append(signal)
+                await at.set_armed_state(key)
+            elif not signal and was_armed:
+                await at.clear_armed_state(key)
+
+        # ── new_theme_detected ─────────────────────────────────────────────
+        emerged = (delta.get("topic_changes") or {}).get("emerged") or []
+        for signal in at.detect_new_theme(emerged, topic_signals):
+            topic_name = signal.payload.get("topic_name", "_")
+            key = K.ai_trigger_armed(brand_id, survey_id, "new_theme_detected", topic_name)
+            armed_state = await at.get_armed_state(key)
+            if armed_state is None or at.cooldown_elapsed(armed_state, at.NEW_THEME_COOLDOWN_HOURS):
+                fired.append(signal)
+                await at.set_armed_state(key)
+
+        # ── anomaly_detected (NPS today; extend metric_name list as more
+        # tracked metrics grow rolling history worth alarming on) ──────────
+        nps_history = [s["nps"] for s in prior_summaries if s.get("nps") is not None]
+        current_nps = (metrics.get("nps") or {}).get("score")
+        key = K.ai_trigger_armed(brand_id, survey_id, "anomaly_detected", "nps")
+        armed_state = await at.get_armed_state(key)
+        was_armed = armed_state is not None
+        signal = at.detect_metric_anomaly("NPS", current_nps, nps_history, was_armed=was_armed)
+        if signal and (not was_armed or at.cooldown_elapsed(armed_state, at.ANOMALY_COOLDOWN_HOURS)):
+            fired.append(signal)
+            await at.set_armed_state(key)
+        elif not signal and was_armed:
+            await at.clear_armed_state(key)
+
+        for sig in fired:
+            await emit_workflow_signal(
+                org_id=org_id,
+                signal_type=sig.trigger_type,
+                confidence=sig.confidence,
+                survey_id=survey_id,
+                detected_at=detected_at,
+                source_run_id=run_id,
+                payload={**sig.payload, "severity": sig.severity, "summary": sig.summary},
+            )
+
+        if fired:
+            logger.info(
+                "node_ai_triggers_fired",
+                survey_id=survey_id, run_id=run_id,
+                signal_types=[s.trigger_type for s in fired],
+            )
+    except Exception as exc:
+        logger.warning("node_ai_triggers_failed", survey_id=survey_id, run_id=run_id, error=str(exc))
+
+    return state
+
+
 async def node_publish(state: dict) -> dict:
     """Insert insight rows into DB, supersede old ones, and add per-window metrics."""
     survey_id = state["survey_id"]
@@ -4718,6 +4874,10 @@ async def node_publish(state: dict) -> dict:
             "topics": [{"name": t.get("name", ""), "volume": t.get("volume", 0)} for t in state.get("topics", [])[:20]],
             "metrics": metrics,
             "delta": prior_delta,
+            # Xperiq Actions Wave 3 (AI triggers) — additive field, read back by
+            # the NEXT run's node_delta_compute as the sentiment_spike rolling
+            # baseline. See lib/ai_triggers.py / WORKFLOW_SIGNAL_CONTRACT.md.
+            "ai_trigger_negative_pct": _aggregate_negative_pct(state.get("topic_signals") or {}),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
@@ -5325,6 +5485,9 @@ def build_insight_graph():
     verify:       Per-insight hallucination check against citation quotes.
     evaluate:     Holistic quality audit (coverage, balance, actionability, redundancy).
     publish:      DB upsert + per-window metric snapshots.
+    ai_triggers:  Xperiq Actions Wave 3 — detects sentiment_spike/new_theme_detected/
+                  anomaly_detected from already-published state and emits `workflow_signal`
+                  events to the backend for any that pass threshold + hysteresis.
     """
     g = StateGraph(InsightState)
     g.add_node("resolve_context",   node_resolve_context)
@@ -5344,6 +5507,7 @@ def build_insight_graph():
     g.add_node("verify",             node_verify)
     g.add_node("evaluate",           node_evaluate)
     g.add_node("publish",            node_publish)
+    g.add_node("ai_triggers",        node_ai_triggers)
 
     g.set_entry_point("resolve_context")
     g.add_edge("resolve_context",    "ingest")
@@ -5363,7 +5527,8 @@ def build_insight_graph():
     g.add_edge("merge_tracks",       "verify")
     g.add_edge("verify",             "evaluate")
     g.add_edge("evaluate",           "publish")
-    g.add_edge("publish",            END)
+    g.add_edge("publish",            "ai_triggers")
+    g.add_edge("ai_triggers",        END)
 
     return g.compile()
 

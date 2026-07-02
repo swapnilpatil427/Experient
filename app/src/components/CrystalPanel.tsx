@@ -26,7 +26,7 @@ import type { Insight, Survey, AgenticInsight, SurveyTopic } from '../types';
 
 // Streaming is always enabled — no env flag needed.
 // Falls back to REST only when the streaming endpoint is unreachable.
-const CRYSTAL_STREAMING = import.meta.env.VITE_CRYSTAL_STREAMING === 'true';
+const CRYSTAL_STREAMING = true;
 
 interface Message {
   id: string;
@@ -720,6 +720,31 @@ export function CrystalPanel({
         }
         case 'create_workflow': {
           if (!surveyId) { track('failed', undefined, 'no survey in scope'); break; }
+          // Primary path: modern graph shape emitted by CrystalOS's reconciled
+          // `execute_propose_workflow` (Wave 3) — `params.nodes`/`params.edges`/
+          // `params.trigger_type` (snake_case on the wire; `_normalize_proposal`
+          // passes `params` through untouched). Falls back to the legacy flat
+          // `trigger`/`action_type`/`action_config` shape only so a stale/cached
+          // proposal from before this fix doesn't crash — new proposals always
+          // carry `nodes`/`edges` and take the primary path.
+          const nodes = proposal.params.nodes as unknown[] | undefined;
+          const edges = proposal.params.edges as unknown[] | undefined;
+          if (Array.isArray(nodes) && Array.isArray(edges)) {
+            const created = await api.createGraphWorkflow({
+              name:        (proposal.params.name as string) || proposal.title,
+              description: (proposal.params.description as string) || proposal.description,
+              triggerType: (proposal.params.trigger_type as string) || 'manual',
+              nodes,
+              edges,
+              status:      'draft',
+            });
+            invalidate('workflows');
+            track('succeeded', (created as { workflow?: { id?: string } })?.workflow?.id);
+            note(`Workflow created: "${proposal.title}". Open Workflows to manage it.`);
+            break;
+          }
+
+          // Legacy fallback — old flat shape, kept only for stale proposals.
           const wf = {
             name:          (proposal.params.name as string) || proposal.title,
             trigger:       (proposal.params.trigger as string) || proposal.params.trigger_event as string,

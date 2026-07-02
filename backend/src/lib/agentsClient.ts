@@ -642,6 +642,103 @@ export async function getCheckpointReadUrl(ref: string, expiryMin: number = 15):
 }
 
 
+// ── Workflow automation: NL parsing (Wave 3) ────────────────────────────────────
+
+/**
+ * CrystalOS internal endpoint for NL → workflow structured-output parsing
+ * (Crystal Builder NL parser — TEAM.md's Amara Osei mandate, TRACKER Wave 3).
+ * Held as a const so the path is easy to fix once Amara's actual CrystalOS route
+ * lands — see docs/automation-hub/WORKFLOW_SIGNAL_CONTRACT.md for the
+ * reconciliation note: at the time this client function was written, Amara's
+ * CrystalOS-side implementation did not exist yet, so this path is a working
+ * assumption per BUILDER_SPEC_WAVE2.md §2.1, not a confirmed contract.
+ */
+export const PARSE_WORKFLOW_NL_PATH = '/workflows/parse-nl';
+
+export interface ParseWorkflowNLSuccess {
+  name: string;
+  description: string;
+  triggerType: string;
+  nodes: Record<string, unknown>[];
+  edges: Record<string, unknown>[];
+  confidence: number;
+  warnings: string[];
+}
+
+/**
+ * Thrown when CrystalOS returns a structured "unparseable" response (422) — the
+ * request succeeded at the transport level but Crystal could not produce a
+ * workflow it's confident enough to hand back. Distinct from AgentsError (network/
+ * non-2xx-without-structured-body) so the route handler can map this to the exact
+ * `{ error: 'unparseable', message, suggestions }` shape the frontend's
+ * `ParseWorkflowNLError`/`toParseWorkflowNLError` (app/src/lib/api.ts) expects.
+ */
+export class UnparseableWorkflowError extends Error {
+  suggestions: string[];
+  constructor(message: string, suggestions: string[] = []) {
+    super(message);
+    this.name = 'UnparseableWorkflowError';
+    this.suggestions = suggestions;
+  }
+}
+
+/**
+ * Parse a natural-language workflow description into a structured workflow via
+ * CrystalOS's NL parser skill. Passes the current workflowRegistry.ts catalog so
+ * CrystalOS validates triggerType/actions against the single source of truth
+ * (root CLAUDE.md: "CrystalOS proposes... the backend is the bridge").
+ *
+ * Uses LLM_TIMEOUT_MS (90s) since this is a full model-inference call, same class
+ * of operation as refineRun/addSkipLogic/applyRecommendation above. The Express
+ * route layers its own narrower client-facing timeout mapping (504) on top —
+ * see routes/workflows.ts's POST /parse-nl.
+ *
+ * @throws UnparseableWorkflowError on CrystalOS's structured 422 (low-confidence/
+ *   unparseable) response — callers should catch this distinctly from a generic
+ *   AgentsError (network failure, 5xx, or timeout).
+ */
+export async function parseWorkflowNL(
+  description: string,
+  registryPayload: unknown,
+  orgId: string,
+): Promise<ParseWorkflowNLSuccess> {
+  logger.info({ orgId, descriptionLength: description.length }, 'agents:parseWorkflowNL');
+  try {
+    return await _fetch(PARSE_WORKFLOW_NL_PATH, {
+      method: 'POST',
+      body: JSON.stringify({
+        org_id:      orgId,
+        description,
+        registry:    registryPayload,
+      }),
+    }, LLM_TIMEOUT_MS) as ParseWorkflowNLSuccess;
+  } catch (err: unknown) {
+    const agentsErr = err as AgentsError;
+    if (agentsErr.status === 422) {
+      // CrystalOS's error body was already stringified by _fetch's throw path
+      // (`Agents service error 422: <body>`) — but _fetch doesn't parse the body
+      // as JSON on the error path, only on success. Re-derive the structured
+      // fields defensively: if CrystalOS's 422 body is JSON matching
+      // { error: 'unparseable', message, suggestions }, surface those; otherwise
+      // fall back to a generic message so the route can still return a well-formed
+      // 422 rather than leaking a raw "Agents service error 422: ..." string.
+      const raw = agentsErr.message.replace(/^Agents service error 422:\s*/, '');
+      try {
+        const parsed = JSON.parse(raw) as { message?: string; suggestions?: string[] };
+        throw new UnparseableWorkflowError(
+          parsed.message ?? 'Crystal could not turn that into a workflow',
+          Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+        );
+      } catch (parseErr) {
+        if (parseErr instanceof UnparseableWorkflowError) throw parseErr;
+        throw new UnparseableWorkflowError('Crystal could not turn that into a workflow', []);
+      }
+    }
+    throw err;
+  }
+}
+
+
 // ── Registry + health ──────────────────────────────────────────────────────────
 
 /** List all agent capabilities (active + stubs). */
