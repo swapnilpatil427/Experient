@@ -215,8 +215,13 @@ describe('NotifyTargetPicker — A-2 combobox semantics + keyboard nav', () => {
     const input = screen.getByTestId('notify-target-people-search');
     await user.type(input, 'Jane');
     await screen.findByTestId('notify-target-person-u1');
-    // Result set defaults to the first row highlighted (activeIndex resets to 0).
-    expect(input).toHaveAttribute('aria-activedescendant', 'notify-target-option-u1');
+    // Result set defaults to the first row highlighted (activeIndex resets to 0)
+    // via a separate effect chained off the results update — wait for it rather
+    // than asserting synchronously with the row's own appearance (flaky race
+    // under full-suite parallel load: the two renders can land a tick apart).
+    await waitFor(() => {
+      expect(input).toHaveAttribute('aria-activedescendant', 'notify-target-option-u1');
+    });
     expect(screen.getByTestId('notify-target-person-u1')).toHaveAttribute('aria-selected', 'true');
   });
 
