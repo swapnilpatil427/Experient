@@ -550,41 +550,45 @@ describe('WorkflowsPage — error state', () => {
 });
 
 // ── Toolbar navigation ─────────────────────────────────────────────────────────
-// DEEP_AUDIT_FIX_SPECS.md Issue 2 / Rohan DEEP_AUDIT_UX_FINDINGS.md L-1 —
-// "Build Visually" and "New Workflow" used to be two different buttons
-// navigating to the identical route. "New Workflow" is now deleted entirely
-// (not repurposed into a dropdown); "Build Visually" is promoted to the sole
-// primary/solid CTA and both "Build Visually"/"Build on Canvas" gained
-// always-visible one-line subtext distinguishing them.
+// Wave 14 (docs/automation-hub/WAVE14_UNIFIED_BUILDER_SPEC.md §1) — the
+// previous 3 header buttons ("Build with Crystal" / "Build Visually" /
+// "Build on Canvas") collapse into exactly one "Build Workflow" button,
+// variant="default", navigating to ROUTES.WORKFLOW_BUILD. Neither
+// WorkflowNLBuilderPage nor WorkflowCanvasPage nor their routes are deleted —
+// this only asserts the header no longer links to them.
 describe('WorkflowsPage — toolbar navigation', () => {
-  it('"Build Visually" button navigates to ROUTES.WORKFLOW_BUILD', async () => {
+  it('renders exactly one build button, labeled "Build Workflow"', async () => {
+    render(<MemoryRouter><WorkflowsPage /></MemoryRouter>);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /workflows\.buildWorkflow\b/i })).toBeInTheDocument(),
+    );
+  });
+
+  it('"Build Workflow" button navigates to ROUTES.WORKFLOW_BUILD', async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><WorkflowsPage /></MemoryRouter>);
-    await user.click(await screen.findByRole('button', { name: /workflows\.buildVisually/i }));
+    await user.click(await screen.findByRole('button', { name: /workflows\.buildWorkflow\b/i }));
     expect(mockNavigate).toHaveBeenCalledWith(ROUTES.WORKFLOW_BUILD);
   });
 
-  it('"Build on Canvas" button navigates to ROUTES.WORKFLOW_CANVAS', async () => {
-    const user = userEvent.setup();
-    render(<MemoryRouter><WorkflowsPage /></MemoryRouter>);
-    await user.click(await screen.findByRole('button', { name: /workflows\.buildOnCanvas/i }));
-    expect(mockNavigate).toHaveBeenCalledWith(ROUTES.WORKFLOW_CANVAS);
-  });
-
-  it('only one button navigates to ROUTES.WORKFLOW_BUILD — "New Workflow" is gone, not a duplicate route', async () => {
+  it('only one button navigates to ROUTES.WORKFLOW_BUILD — no duplicate/legacy build buttons remain', async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><WorkflowsPage /></MemoryRouter>);
     expect(screen.queryByRole('button', { name: /workflows\.newWorkflowButton/i })).not.toBeInTheDocument();
-    const buildVisually = await screen.findByRole('button', { name: /workflows\.buildVisually/i });
-    await user.click(buildVisually);
+    const buildWorkflow = await screen.findByRole('button', { name: /workflows\.buildWorkflow\b/i });
+    await user.click(buildWorkflow);
     expect(mockNavigate).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenCalledWith(ROUTES.WORKFLOW_BUILD);
   });
 
-  it('"Build Visually" and "Build on Canvas" both render their always-visible subtext', async () => {
+  it('"Build with Crystal" and "Build on Canvas" buttons are absent from the DOM', async () => {
     render(<MemoryRouter><WorkflowsPage /></MemoryRouter>);
-    expect(await screen.findByText('workflows.buildVisuallySubtext')).toBeInTheDocument();
-    expect(screen.getByText('workflows.buildOnCanvasSubtext')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /workflows\.buildWorkflow\b/i })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /workflows\.buildWithCrystal/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /workflows\.buildVisually\b/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /workflows\.buildOnCanvas\b/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('workflows.buildVisuallySubtext')).not.toBeInTheDocument();
+    expect(screen.queryByText('workflows.buildOnCanvasSubtext')).not.toBeInTheDocument();
   });
 
   // Entry point to the Integrations settings page (Rohan's INTEGRATIONS_SETTINGS_PAGE_SPEC.md §5) —

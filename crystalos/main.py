@@ -1105,12 +1105,26 @@ async def parse_workflow_nl_endpoint(
     so there is exactly one source of truth for valid triggers/condition-fields/
     actions (this service never hand-maintains a duplicate copy). Body:
       { description: str, org_id: str, registry: { triggers, conditionFields,
-        conditionOperators, actions } }
+        conditionOperators, actions, surveys?, tags? } }
+
+    `registry.surveys`/`registry.tags` (Wave 12 — BUILDER_REDESIGN_V2_SCOPE.md,
+    optional): [{id, name}] — the org's real surveys/tags, used to resolve the
+    LLM draft's free-text scope mention onto a real id. Absent on older callers
+    (or the legacy chat-tool's FALLBACK_REGISTRY) — scope simply always
+    resolves to org in that case, same as before this list existed.
 
     Returns 200 with { name, description, triggerType, nodes, edges, confidence,
-    warnings } on a usable parse (including low-confidence — the frontend
-    decides how to render below its own threshold), or 422 with a FLAT
-    (non-nested) { error: 'unparseable', message, suggestions } body.
+    warnings, scopeType, scopeSurveyId, scopeTagId } on a usable parse
+    (including low-confidence — the frontend decides how to render below its
+    own threshold), or 422 with a FLAT (non-nested) { error: 'unparseable',
+    message, suggestions } body.
+
+    scopeType/scopeSurveyId/scopeTagId default to 'org'/null/null whenever the
+    description doesn't name a real survey/tag — IDENTICAL to this endpoint's
+    pre-Wave-12 behavior (every NL workflow was implicitly org-wide). Scope
+    inference is purely additive; see `workflow_nl._resolve_scope_hint` for the
+    conservative matching rule (exact match, or unambiguous substring match
+    only — never a guess when a hint could plausibly mean more than one thing).
 
     NOTE on the 422 shape: this deliberately returns `JSONResponse` directly
     rather than `raise HTTPException(422, detail={...})`. FastAPI always wraps
@@ -1159,6 +1173,9 @@ async def parse_workflow_nl_endpoint(
         "edges": result.edges,
         "confidence": result.confidence,
         "warnings": result.warnings,
+        "scopeType": result.scope_type,
+        "scopeSurveyId": result.scope_survey_id,
+        "scopeTagId": result.scope_tag_id,
     }
 
 
@@ -1634,8 +1651,17 @@ async def crystal_stream_endpoint(
         user_id=body.get("user_id", ""),
         scope=body.get("scope", "survey"),
         has_open_text=body.get("has_open_text", True),
+        tag_ids=body.get("tag_ids"),
         user_role=user_role,
         brand_id=body.get("brand_id"),
+        # Wave 15 — Automation Hub workflow-builder context (all optional;
+        # absent for every existing caller -> CrystalInput defaults apply,
+        # byte-identical to pre-Wave-15 behavior). `surface` forces routing to
+        # workflow-analyst in _run_skill_stream when the frontend signals it
+        # opened Crystal from the builder page (see docs/automation-hub/TRACKER.md).
+        surface=body.get("surface", "insights"),
+        builder_draft=body.get("builder_draft"),
+        workflow_registry=body.get("workflow_registry"),
     )
 
     # Choose execution path

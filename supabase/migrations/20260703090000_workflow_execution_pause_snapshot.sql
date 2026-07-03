@@ -1,0 +1,44 @@
+-- Pause-time graph snapshot (Priya, Wave 17, 2026-07-03).
+--
+-- THE BUG (Wave 16 finding, documented with real repro tests in
+-- backend/src/__tests__/workflowCrossWaveInteractions.test.js): resumeWorkflow
+-- and resumeDelayedExecution both re-fetch `SELECT * FROM workflows WHERE id =
+-- $1` fresh at resume time, using resume_index/resume_node_id that were
+-- computed against the graph shape AT PAUSE TIME. If the workflow is edited
+-- while paused (a completely realistic "let's route this to Jira instead"
+-- edit), the resume silently executes a DIFFERENT action than what a human
+-- approver actually approved, or silently no-ops if the node array shape
+-- changed — with zero error either way.
+--
+-- USER'S EXPLICIT DECISION (not "fail loud if edited", not "keep re-reading
+-- the live row"): snapshot the exact graph at pause time and always run that
+-- snapshot on resume, regardless of later edits. Predictable: a resume always
+-- executes exactly what was live when the pause happened, full stop.
+--
+-- Three separate nullable columns (not one combined JSONB blob), matching this
+-- table's established convention of one column per orthogonal concern rather
+-- than a single opaque JSONB bag (see wait_reason/resume_at from
+-- workflow_delay_action.sql, resume_node_id from workflow_graph_resume.sql,
+-- attempt_count/next_retry_at/dead_letter from workflow_async_queue.sql) —
+-- each of nodes/edges/trigger_type is read independently by resumeWorkflow/
+-- resumeDelayedExecution (trigger_type alone feeds reCheckTierGateOnResume;
+-- edges is irrelevant for linear/non-graph workflows), so keeping them
+-- separate avoids every reader having to unpack a combined blob just to reach
+-- one field, and keeps the "is this a legacy pre-snapshot row?" check a single
+-- IS NULL test on any one of them (they are always written together, see
+-- persistPause in workflowEngine.ts).
+--
+-- All three NULLABLE and NULL by default (no backfill): existing 'waiting'
+-- rows predate snapshotting entirely and have no snapshot to backfill from —
+-- the live workflows row at migration time is NOT equivalent to "the graph
+-- that was live when that row originally paused" (it may have already been
+-- edited any number of times since). workflowEngine.ts's resume paths treat
+-- NULL snapshot_nodes as the signal to fall back to today's live-fetch
+-- behavior for these legacy rows ONLY — see the "LEGACY FALLBACK" comment on
+-- resumeWorkflow/resumeDelayedExecution. Every execution that pauses AFTER
+-- this migration lands always gets a snapshot written by persistPause() and
+-- never takes that fallback path.
+ALTER TABLE workflow_executions
+  ADD COLUMN IF NOT EXISTS snapshot_nodes        JSONB,
+  ADD COLUMN IF NOT EXISTS snapshot_edges        JSONB,
+  ADD COLUMN IF NOT EXISTS snapshot_trigger_type TEXT;

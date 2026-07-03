@@ -24,6 +24,15 @@ REGISTRY = {
     "actions": [{"action": "notify.slack", "category": "Notify", "label": "Slack message", "live": True}],
 }
 
+# Wave 12 (BUILDER_REDESIGN_V2_SCOPE.md) — registry variant carrying the scope
+# catalog Nina's Node proxy forwards. Kept separate from REGISTRY so all
+# pre-existing tests keep exercising the "no surveys/tags key" path unmodified.
+REGISTRY_WITH_SCOPE = {
+    **REGISTRY,
+    "surveys": [{"id": "survey-onboarding-1", "name": "Onboarding Survey"}],
+    "tags": [{"id": "tag-vip-1", "name": "VIP"}],
+}
+
 
 class _FakeRequest:
     def __init__(self, body: dict):
@@ -60,12 +69,21 @@ class TestParseWorkflowNLEndpoint:
 
         # Must be a plain dict (not a Response object) matching the frontend's
         # ParseWorkflowNLResult shape EXACTLY, camelCase — see
-        # WORKFLOW_SIGNAL_CONTRACT.md §6.1 item 3.
+        # WORKFLOW_SIGNAL_CONTRACT.md §6.1 item 3. Wave 12 adds scopeType/
+        # scopeSurveyId/scopeTagId (additive — see docs/automation-hub/
+        # BUILDER_REDESIGN_V2_SCOPE.md).
         assert isinstance(result, dict)
-        assert set(result.keys()) == {"name", "description", "triggerType", "nodes", "edges", "confidence", "warnings"}
+        assert set(result.keys()) == {
+            "name", "description", "triggerType", "nodes", "edges", "confidence", "warnings",
+            "scopeType", "scopeSurveyId", "scopeTagId",
+        }
         assert result["triggerType"] == "score.nps_drop"
         assert result["confidence"] == pytest.approx(0.9)
         assert isinstance(result["nodes"], list) and isinstance(result["edges"], list)
+        # No survey/tag mentioned -> org scope, IDENTICAL to pre-Wave-12 behavior.
+        assert result["scopeType"] == "org"
+        assert result["scopeSurveyId"] is None
+        assert result["scopeTagId"] is None
 
     async def test_empty_description_returns_flat_422_body(self):
         from crystalos.main import parse_workflow_nl_endpoint
@@ -136,3 +154,82 @@ class TestParseWorkflowNLEndpoint:
             result = await parse_workflow_nl_endpoint(req, None)
         assert isinstance(result, JSONResponse)
         assert result.status_code == 422
+
+
+@pytest.mark.asyncio
+class TestParseWorkflowNLEndpointScope:
+    """Wave 12 (BUILDER_REDESIGN_V2_SCOPE.md) — scopeType/scopeSurveyId/
+    scopeTagId through the actual HTTP endpoint, using the registry shape
+    Nina's Node proxy forwards (`registry.surveys`/`registry.tags`)."""
+
+    async def test_real_survey_mention_resolves_scope_through_endpoint(self):
+        from crystalos.main import parse_workflow_nl_endpoint
+
+        draft = _draft(scope_hint="Onboarding Survey")
+        req = _FakeRequest({
+            "description": "When NPS drops below 30 on the Onboarding Survey, notify support on Slack",
+            "org_id": "org-1",
+            "registry": REGISTRY_WITH_SCOPE,
+        })
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await parse_workflow_nl_endpoint(req, None)
+
+        assert isinstance(result, dict)
+        assert result["scopeType"] == "survey"
+        assert result["scopeSurveyId"] == "survey-onboarding-1"
+        assert result["scopeTagId"] is None
+
+    async def test_real_tag_mention_resolves_scope_through_endpoint(self):
+        from crystalos.main import parse_workflow_nl_endpoint
+
+        draft = _draft(scope_hint="VIP")
+        req = _FakeRequest({
+            "description": "When a VIP response scores low, notify support on Slack",
+            "org_id": "org-1",
+            "registry": REGISTRY_WITH_SCOPE,
+        })
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await parse_workflow_nl_endpoint(req, None)
+
+        assert isinstance(result, dict)
+        assert result["scopeType"] == "tag"
+        assert result["scopeTagId"] == "tag-vip-1"
+        assert result["scopeSurveyId"] is None
+
+    async def test_unmatched_scope_hint_falls_back_to_org_through_endpoint(self):
+        """A scope_hint that doesn't match anything real must never surface a
+        wrong id through the wire response — falls back to org with a warning,
+        exactly like a hallucinated trigger/action would."""
+        from crystalos.main import parse_workflow_nl_endpoint
+
+        draft = _draft(scope_hint="Nonexistent Survey", confidence=0.9)
+        req = _FakeRequest({"description": "desc", "org_id": "org-1", "registry": REGISTRY_WITH_SCOPE})
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await parse_workflow_nl_endpoint(req, None)
+
+        assert isinstance(result, dict)
+        assert result["scopeType"] == "org"
+        assert result["scopeSurveyId"] is None
+        assert result["scopeTagId"] is None
+        assert any("Nonexistent Survey" in w for w in result["warnings"])
+        assert result["confidence"] < 0.9
+
+    async def test_no_scope_hint_with_scope_catalog_present_still_defaults_org(self):
+        """Even when the registry DOES carry surveys/tags, a description that
+        doesn't name one must still default to org, unchanged."""
+        from crystalos.main import parse_workflow_nl_endpoint
+
+        draft = _draft(scope_hint=None, confidence=0.9)
+        req = _FakeRequest({
+            "description": "When NPS drops below 30, notify support on Slack",
+            "org_id": "org-1",
+            "registry": REGISTRY_WITH_SCOPE,
+        })
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await parse_workflow_nl_endpoint(req, None)
+
+        assert result["scopeType"] == "org"
+        assert result["scopeSurveyId"] is None
+        assert result["scopeTagId"] is None
+        assert result["confidence"] == pytest.approx(0.9)
+        assert result["warnings"] == []

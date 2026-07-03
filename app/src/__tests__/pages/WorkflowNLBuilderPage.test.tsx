@@ -87,6 +87,11 @@ function makeApi(overrides = {}) {
     getWorkflowRegistry: vi.fn().mockResolvedValue(REGISTRY),
     createGraphWorkflow: vi.fn().mockResolvedValue({ workflow: { id: 'wf_nl_1' } }),
     parseWorkflowNL:     vi.fn().mockResolvedValue(HIGH_CONFIDENCE_RESULT),
+    // Wave 12 Phase 2 — ScopeSummaryRow's name-resolution lookups. Default to
+    // "nothing found" so tests that don't care about scope never hang on an
+    // unresolved promise; scope-specific tests override these.
+    getSurvey: vi.fn().mockRejectedValue(new Error('not found')),
+    listTags:  vi.fn().mockResolvedValue({ tags: [] }),
     ...overrides,
   };
 }
@@ -423,6 +428,256 @@ describe('WorkflowNLBuilderPage — registry drift', () => {
     await waitFor(() => screen.getByTestId('nl-confirm-card'));
     expect(screen.getByText(/unknown\.future_action/)).toBeInTheDocument();
     expect(screen.getByText('workflows.nlBuilder.registryDriftWarning')).toBeInTheDocument();
+  });
+});
+
+// ── Wave 12 Phase 2 (TRACKER.md) — ScopeSummaryRow + scope plumbing ─────────────
+describe('WorkflowNLBuilderPage — scope summary row', () => {
+  it('renders "Org-wide" when scope fields are entirely absent from the parse result (hard backward-compat invariant)', async () => {
+    // HIGH_CONFIDENCE_RESULT carries no scopeType/scopeSurveyId/scopeTagId at all.
+    const getSurvey = vi.fn();
+    const listTags = vi.fn();
+    vi.mocked(useApi).mockReturnValue(makeApi({ getSurvey, listTags }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    const row = screen.getByTestId('scope-summary-row');
+    expect(row).toHaveTextContent('workflows.nlBuilder.scopeOrgWide');
+    // Absence must never trigger a lookup — org-wide is the terminal state, not a
+    // "loading" state that happens to resolve to org.
+    expect(getSurvey).not.toHaveBeenCalled();
+    expect(listTags).not.toHaveBeenCalled();
+  });
+
+  it('renders "Org-wide" when scopeType is explicitly "org"', async () => {
+    const parseWorkflowNL = vi.fn().mockResolvedValue({ ...HIGH_CONFIDENCE_RESULT, scopeType: 'org' });
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    expect(screen.getByTestId('scope-summary-row')).toHaveTextContent('workflows.nlBuilder.scopeOrgWide');
+  });
+
+  it('resolves and renders the survey NAME (not the raw id) for survey scope', async () => {
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...HIGH_CONFIDENCE_RESULT, scopeType: 'survey', scopeSurveyId: 'srv_123',
+    });
+    const getSurvey = vi.fn().mockResolvedValue({ survey: { id: 'srv_123', title: 'Onboarding Survey' } });
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL, getSurvey }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await waitFor(() => expect(screen.getByTestId('scope-summary-row')).toHaveTextContent('Onboarding Survey'));
+    expect(getSurvey).toHaveBeenCalledWith('srv_123');
+    expect(screen.queryByText('srv_123')).not.toBeInTheDocument();
+  });
+
+  it('resolves and renders the tag NAME (not the raw id) for tag scope', async () => {
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...HIGH_CONFIDENCE_RESULT, scopeType: 'tag', scopeTagId: 'tag_456',
+    });
+    const listTags = vi.fn().mockResolvedValue({ tags: [{ id: 'tag_456', name: 'VIP Customers', slug: 'vip', color: '#000' }] });
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL, listTags }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await waitFor(() => expect(screen.getByTestId('scope-summary-row')).toHaveTextContent('VIP Customers'));
+    expect(screen.queryByText('tag_456')).not.toBeInTheDocument();
+  });
+
+  it('falls back to a generic label (never a raw UUID or a crash) when the scoped survey no longer resolves', async () => {
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...HIGH_CONFIDENCE_RESULT, scopeType: 'survey', scopeSurveyId: 'srv_deleted',
+    });
+    const getSurvey = vi.fn().mockRejectedValue({ response: { status: 404 } });
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL, getSurvey }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await waitFor(() => expect(screen.getByTestId('scope-summary-row')).toHaveTextContent('workflows.nlBuilder.scopeSurveyFallback'));
+    expect(screen.queryByText('srv_deleted')).not.toBeInTheDocument();
+  });
+
+  it('falls back to a generic label when the scoped tag no longer resolves', async () => {
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...HIGH_CONFIDENCE_RESULT, scopeType: 'tag', scopeTagId: 'tag_deleted',
+    });
+    const listTags = vi.fn().mockResolvedValue({ tags: [] }); // tag no longer exists in the org's list
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL, listTags }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await waitFor(() => expect(screen.getByTestId('scope-summary-row')).toHaveTextContent('workflows.nlBuilder.scopeTagFallback'));
+  });
+
+  it('shows a loading placeholder while the survey name is resolving, then swaps to the name', async () => {
+    let resolveSurvey: (v: unknown) => void = () => {};
+    const getSurvey = vi.fn(() => new Promise((resolve) => { resolveSurvey = resolve; }));
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...HIGH_CONFIDENCE_RESULT, scopeType: 'survey', scopeSurveyId: 'srv_123',
+    });
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL, getSurvey }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    // Still resolving — the fallback/name text must not be present yet, only the skeleton.
+    expect(screen.queryByText('Onboarding Survey')).not.toBeInTheDocument();
+
+    resolveSurvey({ survey: { id: 'srv_123', title: 'Onboarding Survey' } });
+    await waitFor(() => expect(screen.getByTestId('scope-summary-row')).toHaveTextContent('Onboarding Survey'));
+  });
+
+  it('renders the scope row in the low-confidence state too', async () => {
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...LOW_CONFIDENCE_RESULT, scopeType: 'survey', scopeSurveyId: 'srv_123',
+    });
+    const getSurvey = vi.fn().mockResolvedValue({ survey: { id: 'srv_123', title: 'Onboarding Survey' } });
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL, getSurvey }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+
+    await waitFor(() => screen.getByTestId('nl-low-confidence-state'));
+    await waitFor(() => expect(screen.getByTestId('scope-summary-row')).toHaveTextContent('Onboarding Survey'));
+  });
+});
+
+describe('WorkflowNLBuilderPage — scope plumbing into createWorkflow / editInCanvas', () => {
+  it('createWorkflow omits scopeType/scopeSurveyId/scopeTagId entirely when the parse result has no scope fields (byte-identical to pre-Wave-12)', async () => {
+    const createGraphWorkflow = vi.fn().mockResolvedValue({ workflow: { id: 'wf_nl_1' } });
+    vi.mocked(useApi).mockReturnValue(makeApi({ createGraphWorkflow }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await user.click(screen.getByRole('button', { name: /workflows\.nlBuilder\.createWorkflow/i }));
+
+    await waitFor(() => expect(createGraphWorkflow).toHaveBeenCalledOnce());
+    const payload = createGraphWorkflow.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('scopeType');
+    expect(payload).not.toHaveProperty('scopeSurveyId');
+    expect(payload).not.toHaveProperty('scopeTagId');
+  });
+
+  it('createWorkflow omits scope keys when scopeType is explicitly "org"', async () => {
+    const createGraphWorkflow = vi.fn().mockResolvedValue({ workflow: { id: 'wf_nl_1' } });
+    const parseWorkflowNL = vi.fn().mockResolvedValue({ ...HIGH_CONFIDENCE_RESULT, scopeType: 'org' });
+    vi.mocked(useApi).mockReturnValue(makeApi({ createGraphWorkflow, parseWorkflowNL }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await user.click(screen.getByRole('button', { name: /workflows\.nlBuilder\.createWorkflow/i }));
+
+    await waitFor(() => expect(createGraphWorkflow).toHaveBeenCalledOnce());
+    const payload = createGraphWorkflow.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('scopeType');
+    expect(payload).not.toHaveProperty('scopeSurveyId');
+    expect(payload).not.toHaveProperty('scopeTagId');
+  });
+
+  it('createWorkflow includes scopeType + scopeSurveyId when the parse result resolved to a survey', async () => {
+    const createGraphWorkflow = vi.fn().mockResolvedValue({ workflow: { id: 'wf_nl_1' } });
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...HIGH_CONFIDENCE_RESULT, scopeType: 'survey', scopeSurveyId: 'srv_123',
+    });
+    const getSurvey = vi.fn().mockResolvedValue({ survey: { id: 'srv_123', title: 'Onboarding Survey' } });
+    vi.mocked(useApi).mockReturnValue(makeApi({ createGraphWorkflow, parseWorkflowNL, getSurvey }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await user.click(screen.getByRole('button', { name: /workflows\.nlBuilder\.createWorkflow/i }));
+
+    await waitFor(() => expect(createGraphWorkflow).toHaveBeenCalledOnce());
+    expect(createGraphWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      scopeType: 'survey', scopeSurveyId: 'srv_123',
+    }));
+    const payload = createGraphWorkflow.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('scopeTagId');
+  });
+
+  it('createWorkflow includes scopeType + scopeTagId when the parse result resolved to a tag', async () => {
+    const createGraphWorkflow = vi.fn().mockResolvedValue({ workflow: { id: 'wf_nl_1' } });
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...HIGH_CONFIDENCE_RESULT, scopeType: 'tag', scopeTagId: 'tag_456',
+    });
+    vi.mocked(useApi).mockReturnValue(makeApi({ createGraphWorkflow, parseWorkflowNL }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await user.click(screen.getByRole('button', { name: /workflows\.nlBuilder\.createWorkflow/i }));
+
+    await waitFor(() => expect(createGraphWorkflow).toHaveBeenCalledOnce());
+    expect(createGraphWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      scopeType: 'tag', scopeTagId: 'tag_456',
+    }));
+    const payload = createGraphWorkflow.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('scopeSurveyId');
+  });
+
+  it('editInCanvas seed omits scope keys entirely when the parse result has no scope fields', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await user.click(screen.getByRole('button', { name: /workflows\.nlBuilder\.editInCanvas/i }));
+
+    expect(mockNavigate).toHaveBeenCalledWith(ROUTES.WORKFLOW_CANVAS, {
+      state: { seed: expect.objectContaining({ name: 'NPS drop escalation', triggerType: 'score.nps_drop' }) },
+    });
+    const [, navArgs] = mockNavigate.mock.calls[0];
+    expect(navArgs.state.seed).not.toHaveProperty('scopeType');
+    expect(navArgs.state.seed).not.toHaveProperty('scopeSurveyId');
+    expect(navArgs.state.seed).not.toHaveProperty('scopeTagId');
+  });
+
+  it('editInCanvas seed carries scopeType + scopeSurveyId through for a survey-scoped result', async () => {
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...HIGH_CONFIDENCE_RESULT, scopeType: 'survey', scopeSurveyId: 'srv_123',
+    });
+    const getSurvey = vi.fn().mockResolvedValue({ survey: { id: 'srv_123', title: 'Onboarding Survey' } });
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL, getSurvey }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+    await waitFor(() => screen.getByTestId('nl-confirm-card'));
+    await user.click(screen.getByRole('button', { name: /workflows\.nlBuilder\.editInCanvas/i }));
+
+    expect(mockNavigate).toHaveBeenCalledWith(ROUTES.WORKFLOW_CANVAS, {
+      state: { seed: expect.objectContaining({ scopeType: 'survey', scopeSurveyId: 'srv_123' }) },
+    });
+  });
+
+  it('editInCanvas seed carries scopeType + scopeTagId through for a tag-scoped low-confidence result', async () => {
+    const parseWorkflowNL = vi.fn().mockResolvedValue({
+      ...LOW_CONFIDENCE_RESULT, scopeType: 'tag', scopeTagId: 'tag_456',
+    });
+    vi.mocked(useApi).mockReturnValue(makeApi({ parseWorkflowNL }) as unknown as ReturnType<typeof useApi>);
+    const user = userEvent.setup();
+    renderPage();
+    await generateWorkflow(user);
+    await waitFor(() => screen.getByTestId('nl-low-confidence-state'));
+    await user.click(screen.getByRole('button', { name: /workflows\.nlBuilder\.editInCanvas/i }));
+
+    expect(mockNavigate).toHaveBeenCalledWith(ROUTES.WORKFLOW_CANVAS, {
+      state: { seed: expect.objectContaining({ scopeType: 'tag', scopeTagId: 'tag_456' }) },
+    });
   });
 });
 

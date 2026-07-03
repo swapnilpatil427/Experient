@@ -31,6 +31,12 @@ class FakeUnparseableWorkflowError extends Error {
 
 let parseWorkflowNLMock;
 let requirePermissionGranted;
+let queryMock;
+// Default fixtures for the surveys/tags queries the /parse-nl route now runs
+// to build the extended registry payload (Wave 12). Individual tests can
+// override via `queryMock.mockImplementation(...)`.
+let surveysFixture;
+let tagsFixture;
 
 function fakeMod(id, exports) { return { id, filename: id, loaded: true, exports, children: [] }; }
 
@@ -45,7 +51,12 @@ function buildApp() {
     },
     invalidatePermissionCache: vi.fn(),
   });
-  _require.cache[DB_PATH] = fakeMod(DB_PATH, { query: vi.fn(async () => ({ rows: [] })), default: { query: vi.fn(async () => ({ rows: [] })) } });
+  queryMock = vi.fn(async (sql) => {
+    if (/FROM surveys/i.test(sql))     return { rows: surveysFixture };
+    if (/FROM survey_tags/i.test(sql)) return { rows: tagsFixture };
+    return { rows: [] };
+  });
+  _require.cache[DB_PATH] = fakeMod(DB_PATH, { query: queryMock, default: { query: queryMock } });
   _require.cache[ENGINE_PATH] = fakeMod(ENGINE_PATH, { runWorkflow: vi.fn(), resumeWorkflow: vi.fn() });
   _require.cache[REG_PATH] = fakeMod(REG_PATH, {
     registry: () => ({ triggers: [{ type: 'score.nps_drop', category: 'Score', label: 'NPS dropped' }], conditionFields: [], conditionOperators: [], actions: [] }),
@@ -71,6 +82,8 @@ async function api(app, method, url, body = null) {
 
 beforeEach(() => {
   requirePermissionGranted = true;
+  surveysFixture = [{ id: 's1', name: 'Q3 NPS Survey' }];
+  tagsFixture = [{ id: 't1', name: 'Onboarding' }];
   parseWorkflowNLMock = vi.fn(async () => ({
     name: 'NPS Recovery',
     description: 'Notify support when NPS drops below 30',
@@ -125,8 +138,100 @@ describe('POST /api/workflows/parse-nl', () => {
     expect(parseWorkflowNLMock).toHaveBeenCalledTimes(1);
     const [description, registryArg, orgId] = parseWorkflowNLMock.mock.calls[0];
     expect(description).toBe('When NPS drops below 30, notify support on Slack');
-    expect(registryArg).toEqual({ triggers: [{ type: 'score.nps_drop', category: 'Score', label: 'NPS dropped' }], conditionFields: [], conditionOperators: [], actions: [] });
+    expect(registryArg).toEqual({
+      triggers: [{ type: 'score.nps_drop', category: 'Score', label: 'NPS dropped' }],
+      conditionFields: [],
+      conditionOperators: [],
+      actions: [],
+      surveys: [{ id: 's1', name: 'Q3 NPS Survey' }],
+      tags: [{ id: 't1', name: 'Onboarding' }],
+    });
     expect(orgId).toBe('o1');
+  });
+
+  // Wave 12 (docs/automation-hub/BUILDER_REDESIGN_V2_SCOPE.md) — this pipeline
+  // previously had zero concept of scope, silently forcing every NL-created
+  // workflow org-wide. These tests cover the additive plumbing: the extended
+  // registry payload sent to CrystalOS, and passing scope fields through when
+  // CrystalOS returns them (or not).
+
+  it('builds the extended registry payload with the org\'s surveys and tags (reusing the surveys/survey_tags queries, not a new fetch mechanism)', async () => {
+    surveysFixture = [
+      { id: 's1', name: 'Q3 NPS Survey' },
+      { id: 's2', name: 'Onboarding CSAT' },
+    ];
+    tagsFixture = [
+      { id: 't1', name: 'Onboarding' },
+      { id: 't2', name: 'Churn Risk' },
+    ];
+    const app = buildApp();
+    const { status } = await api(app, 'POST', '/api/workflows/parse-nl', { description: 'For the Q3 NPS Survey, notify Slack on NPS drop' });
+    expect(status).toBe(200);
+
+    const [, registryArg] = parseWorkflowNLMock.mock.calls[0];
+    expect(registryArg.surveys).toEqual(surveysFixture);
+    expect(registryArg.tags).toEqual(tagsFixture);
+
+    // Confirms the same underlying queries GET /api/surveys and
+    // GET /api/survey-tags run — org-scoped, not a new data-fetch mechanism.
+    const surveysCall = queryMock.mock.calls.find(([sql]) => /FROM surveys/i.test(sql));
+    const tagsCall = queryMock.mock.calls.find(([sql]) => /FROM survey_tags/i.test(sql));
+    expect(surveysCall[0]).toMatch(/org_id = \$1/);
+    expect(surveysCall[0]).toMatch(/deleted_at IS NULL/);
+    expect(surveysCall[1]).toEqual(['o1']);
+    expect(tagsCall[0]).toMatch(/org_id = \$1/);
+    expect(tagsCall[1]).toEqual(['o1']);
+  });
+
+  it('passes scopeType/scopeSurveyId/scopeTagId through unchanged when CrystalOS returns a matched scope', async () => {
+    parseWorkflowNLMock = vi.fn(async () => ({
+      name: 'Q3 NPS Recovery',
+      description: 'Notify support when Q3 NPS Survey NPS drops below 30',
+      triggerType: 'score.nps_drop',
+      nodes: [{ id: 'n1', type: 'trigger' }],
+      edges: [],
+      confidence: 0.9,
+      warnings: [],
+      scopeType: 'survey',
+      scopeSurveyId: 's1',
+    }));
+    const app = buildApp();
+    const { status, body } = await api(app, 'POST', '/api/workflows/parse-nl', { description: 'When the Q3 NPS Survey NPS drops below 30, notify support on Slack' });
+    expect(status).toBe(200);
+    expect(body.scopeType).toBe('survey');
+    expect(body.scopeSurveyId).toBe('s1');
+    expect(body.scopeTagId).toBeUndefined();
+  });
+
+  it('backward compatibility: a CrystalOS response that omits scope fields entirely (old/lagging deploy) still works exactly as before', async () => {
+    // No scopeType/scopeSurveyId/scopeTagId at all — simulates a CrystalOS
+    // deploy that predates Amara's Wave 12 change / hasn't rolled out yet.
+    parseWorkflowNLMock = vi.fn(async () => ({
+      name: 'NPS Recovery',
+      description: 'Notify support when NPS drops below 30',
+      triggerType: 'score.nps_drop',
+      nodes: [{ id: 'n1', type: 'trigger' }],
+      edges: [],
+      confidence: 0.92,
+      warnings: [],
+    }));
+    const app = buildApp();
+    const { status, body } = await api(app, 'POST', '/api/workflows/parse-nl', { description: 'When NPS drops below 30, notify support on Slack' });
+    expect(status).toBe(200);
+    // Byte-identical to pre-Wave-12 behavior: no scope keys leak into the
+    // response, and none of the existing fields are disturbed.
+    expect(body).toEqual({
+      name: 'NPS Recovery',
+      description: 'Notify support when NPS drops below 30',
+      triggerType: 'score.nps_drop',
+      nodes: [{ id: 'n1', type: 'trigger' }],
+      edges: [],
+      confidence: 0.92,
+      warnings: [],
+    });
+    expect(body.scopeType).toBeUndefined();
+    expect(body.scopeSurveyId).toBeUndefined();
+    expect(body.scopeTagId).toBeUndefined();
   });
 
   it('maps an UnparseableWorkflowError to 422 with { error, message, suggestions }', async () => {

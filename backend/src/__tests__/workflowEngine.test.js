@@ -97,6 +97,59 @@ describe('evaluateConditions', () => {
   });
 });
 
+// Table-driven coverage of every operator `compare`/evaluateConditions declares
+// (workflowRegistry.ts's CONDITION_OPERATORS: eq/neq/gt/lt/gte/lte/between/
+// contains/not_contains/in/not_in). The pre-existing evaluateConditions tests
+// above only ever exercised eq/lte/contains/between/in — neq/gt/gte/
+// not_contains/not_in had zero direct assertions anywhere in this suite before
+// this table, so a regression in any of those five specific operators could
+// have silently drifted with no test catching it. Each row asserts BOTH the
+// true and false side of the operator against realistic sample data (not just
+// the truthy case), matching Kenji's Wave-15-era re-verification standard: a
+// fresh test proving current behavior, not an assumption from the operator's name.
+describe('compare — every registry-declared operator, both outcomes', () => {
+  it.each([
+    ['eq',           4,           4,            true],
+    ['eq',           4,           5,            false],
+    ['neq',          4,           5,            true],
+    ['neq',          4,           4,            false],
+    ['gt',           8,           6,            true],
+    ['gt',           4,           6,            false],
+    ['lt',           4,           6,            true],
+    ['lt',           8,           6,            false],
+    ['gte',          6,           6,            true],
+    ['gte',          5,           6,            false],
+    ['lte',          6,           6,            true],
+    ['lte',          7,           6,            false],
+    ['between',      3,           [0, 6],       true],
+    ['between',      9,           [0, 6],       false],
+    ['contains',     'I want to cancel', 'cancel', true],
+    ['contains',     'all good',  'cancel',     false],
+    ['not_contains', 'all good',  'cancel',     true],
+    ['not_contains', 'I want to cancel', 'cancel', false],
+    ['in',           'email',     ['email', 'qr'], true],
+    ['in',           'sms',       ['email', 'qr'], false],
+    ['not_in',       'sms',       ['email', 'qr'], true],
+    ['not_in',       'email',     ['email', 'qr'], false],
+  ])('%s(%j, %j) === %s', (op, actual, value, expected) => {
+    const { compare } = load();
+    expect(compare(op, actual, value)).toBe(expected);
+  });
+
+  it('every operator in workflowRegistry.CONDITION_OPERATORS is exercised above (catalog/table drift guard)', () => {
+    const { CONDITION_OPERATORS } = _require(_require.resolve(resolve(__dirname, '../lib/workflowRegistry')));
+    const exercised = new Set(['eq', 'neq', 'gt', 'lt', 'gte', 'lte', 'between', 'contains', 'not_contains', 'in', 'not_in']);
+    for (const op of CONDITION_OPERATORS) {
+      expect(exercised.has(op)).toBe(true);
+    }
+  });
+
+  it('an unrecognized operator returns false rather than throwing (documented default, distinct from the field-typo gap above)', () => {
+    const { compare } = load();
+    expect(compare('startswith', 'hello world', 'hello')).toBe(false);
+  });
+});
+
 describe('executeAction', () => {
   it('notify.in_app creates a notification', async () => {
     const { executeAction } = load();
@@ -658,6 +711,113 @@ describe('runWorkflow', () => {
     const r = await runWorkflow(wf, { userId: 'u1', nps: 9 }, { orgId: 'o1' });
     expect(r.status).toBe('skipped');
     expect(createNotificationMock).not.toHaveBeenCalled();
+  });
+});
+
+// Trigger-to-action execution ordering (Kenji, foundational-rules re-verification):
+// workflowReliability.test.js's "partial action failure" describe already proves
+// ordering + halt-on-HARD-FAILURE (action 2 throws, action 3 never runs). What was
+// NOT covered anywhere in the suite: (a) a clean, all-succeeding multi-action chain
+// actually executes strictly in `nodes`/`edges` order (not just "the right count of
+// actions ran"), and (b) flow.stop — a deliberate, non-error stop, distinct from a
+// hard failure — actually halts a MULTI-action chain when reached mid-sequence, not
+// just in the isolated single-node executeAction unit test above ("flow.stop
+// signals termination"). Both gaps closed here against the real runNodes/runGraph
+// integration path (real runWorkflow call, not calling executeAction directly).
+describe('trigger-to-action execution ordering (sequential chain + flow.stop halts remaining actions)', () => {
+  it('executes 4 actions strictly in nodes-array order on a full success path (runNodes/linear)', async () => {
+    const order = [];
+    createNotificationMock.mockImplementation(async () => { order.push('notify.in_app'); return { id: 'n1' }; });
+    sendSlackMock.mockImplementation(async () => { order.push('notify.slack'); return { channel: 'slack', delivered: true }; });
+    sendEmailMock.mockImplementation(async () => { order.push('notify.email'); return { channel: 'email', delivered: true }; });
+    global.fetch = vi.fn(async () => { order.push('notify.webhook'); return { ok: true, status: 200 }; });
+
+    const wf = {
+      id: 'w1',
+      nodes: [
+        { id: 't', type: 'trigger' },
+        { id: 'a1', type: 'action', action: 'notify.in_app', config: { userIds: ['u1'] } },
+        { id: 'a2', type: 'action', action: 'notify.slack', config: {} },
+        { id: 'a3', type: 'action', action: 'notify.email', config: { userIds: ['u1'] } },
+        { id: 'a4', type: 'action', action: 'notify.webhook', config: { url: 'https://third-party.test/hook' } },
+      ],
+    };
+    const { runWorkflow } = load();
+    const r = await runWorkflow(wf, { userId: 'u1' }, { orgId: 'o1' });
+
+    expect(r.status).toBe('completed');
+    expect(order).toEqual(['notify.in_app', 'notify.slack', 'notify.email', 'notify.webhook']);
+  });
+
+  it('the same 4-action chain executes in the identical order via runGraph (branching/edges path)', async () => {
+    const order = [];
+    createNotificationMock.mockImplementation(async () => { order.push('notify.in_app'); return { id: 'n1' }; });
+    sendSlackMock.mockImplementation(async () => { order.push('notify.slack'); return { channel: 'slack', delivered: true }; });
+    sendEmailMock.mockImplementation(async () => { order.push('notify.email'); return { channel: 'email', delivered: true }; });
+    global.fetch = vi.fn(async () => { order.push('notify.webhook'); return { ok: true, status: 200 }; });
+
+    const wf = {
+      id: 'w2',
+      nodes: [
+        { id: 't', type: 'trigger' },
+        { id: 'a1', type: 'action', action: 'notify.in_app', config: { userIds: ['u1'] } },
+        { id: 'a2', type: 'action', action: 'notify.slack', config: {} },
+        { id: 'a3', type: 'action', action: 'notify.email', config: { userIds: ['u1'] } },
+        { id: 'a4', type: 'action', action: 'notify.webhook', config: { url: 'https://third-party.test/hook' } },
+      ],
+      edges: [
+        { from: 't', to: 'a1' },
+        { from: 'a1', to: 'a2' },
+        { from: 'a2', to: 'a3' },
+        { from: 'a3', to: 'a4', branch: 'true' }, // any branch edge marks this a graph workflow (isGraphWorkflow)
+      ],
+    };
+    const { runWorkflow } = load();
+    const r = await runWorkflow(wf, { userId: 'u1' }, { orgId: 'o1' });
+
+    expect(r.status).toBe('completed');
+    expect(order).toEqual(['notify.in_app', 'notify.slack', 'notify.email', 'notify.webhook']);
+  });
+
+  it('flow.stop mid-chain halts all subsequent actions (linear/runNodes) — a clean stop, not a failure', async () => {
+    const wf = {
+      id: 'w3',
+      nodes: [
+        { id: 't', type: 'trigger' },
+        { id: 'a1', type: 'action', action: 'notify.in_app', config: { userIds: ['u1'] } },
+        { id: 'a2', type: 'action', action: 'flow.stop' },
+        { id: 'a3', type: 'action', action: 'notify.slack', config: {} },
+      ],
+    };
+    const { runWorkflow } = load();
+    const r = await runWorkflow(wf, { userId: 'u1' }, { orgId: 'o1' });
+
+    expect(r.status).toBe('completed'); // flow.stop is a clean, successful halt — not a failure
+    expect(createNotificationMock).toHaveBeenCalledTimes(1); // a1 ran
+    expect(sendSlackMock).not.toHaveBeenCalled(); // a3, after the stop, never runs
+  });
+
+  it('flow.stop mid-chain halts all subsequent actions (branching/runGraph)', async () => {
+    const wf = {
+      id: 'w4',
+      nodes: [
+        { id: 't', type: 'trigger' },
+        { id: 'a1', type: 'action', action: 'notify.in_app', config: { userIds: ['u1'] } },
+        { id: 'a2', type: 'action', action: 'flow.stop' },
+        { id: 'a3', type: 'action', action: 'notify.slack', config: {} },
+      ],
+      edges: [
+        { from: 't', to: 'a1' },
+        { from: 'a1', to: 'a2' },
+        { from: 'a2', to: 'a3', branch: 'true' }, // branch edge marks graph mode
+      ],
+    };
+    const { runWorkflow } = load();
+    const r = await runWorkflow(wf, { userId: 'u1' }, { orgId: 'o1' });
+
+    expect(r.status).toBe('completed');
+    expect(createNotificationMock).toHaveBeenCalledTimes(1);
+    expect(sendSlackMock).not.toHaveBeenCalled();
   });
 });
 

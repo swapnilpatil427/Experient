@@ -85,7 +85,56 @@ interface CrystalPanelProps {
   initialMode?: 'support' | 'analyst';
 }
 
-function classifyAsSupport(message: string): boolean {
+// Wave 18 (docs/automation-hub/TRACKER.md): reference/enumeration-style questions
+// about the PRODUCT ITSELF ("what types of trigger exist", "which plans are
+// available") were falling through classifyAsSupport entirely — no keyword
+// matched — and landing on a data-analysis skill with no platform knowledge,
+// which hallucinated an answer citing fake survey data.
+//
+// These patterns deliberately match the enumeration SHAPE ("what/which
+// type(s)/kind(s) of ___ (exist|are there|are available)") rather than adding
+// bare words like "types" or "kinds" as substrings — a bare-word match would
+// also fire on genuine survey-data questions like "what types of responses
+// mention pricing", which are real data questions about the user's own
+// survey, not product/platform questions, and must stay OUT of support mode.
+//
+// The regexes below still can't distinguish "what types of triggers exist"
+// (product question) from "what types of NPS detractors exist in my data"
+// (data question) on phrasing alone, so the DATA_OBJECT_EXCLUSION list
+// filters out the enumeration match when the noun being enumerated is
+// clearly the user's own survey data (responses, answers, feedback, scores,
+// verbatims, detractors, segments, etc.) rather than a platform/product
+// concept (triggers, surveys, plans, credits, workflows, actions, roles...).
+// This mirrors this wave's explicit routing split: workflow/trigger/action
+// REFERENCE questions are hard-forced to `workflow-analyst` server-side
+// (Amara, CrystalOS); this list intentionally does NOT special-case those —
+// it only needs to stop hallucinating on the OTHER reference phrasings
+// ("what types of surveys can I create", "what plans are available", "what
+// does the credits system do") that are genuine support/product questions.
+const ENUMERATION_PATTERNS: RegExp[] = [
+  // "what/which type(s)/kind(s) of X (exist(s)|are there|are available|can I ...)"
+  // "exists" (singular verb, matching "what types of trigger exists" — the
+  // exact reported phrasing, subject/verb-number mismatch and all) must be
+  // covered alongside the grammatically-plural "exist".
+  /\b(what|which)\s+(types?|kinds?)\s+of\s+.+\b(exists?|are there|are available|can i)\b/,
+  // "what/which X are available" (e.g. "which plans are available")
+  /\b(what|which)\s+.+\b(are|is)\s+available\b/,
+];
+
+// Nouns that mean "the enumeration is about the user's OWN survey data," not
+// the product/platform — these must NOT be routed into support mode even
+// when they match an ENUMERATION_PATTERNS shape above.
+const DATA_OBJECT_EXCLUSIONS = [
+  'response', 'responses', 'answer', 'answers', 'feedback', 'score', 'scores',
+  'verbatim', 'verbatims', 'detractor', 'detractors', 'promoter', 'promoters',
+  'segment', 'segments', 'comment', 'comments', 'sentiment', 'theme', 'themes',
+  'topic', 'topics',
+];
+
+// Exported for isolated unit testing (see CrystalPanel.test.tsx) — this is a
+// pure function with no component state, so it doesn't need full-component
+// rendering to verify its keyword/pattern precision boundary.
+export function classifyAsSupport(message: string): boolean {
   const lower = message.toLowerCase();
   const keywords = [
     'help', 'error', 'broken', 'issue', 'problem', 'not working', 'bug', 'crash',
@@ -93,7 +142,12 @@ function classifyAsSupport(message: string): boolean {
     'configure', 'stuck', 'fails', 'failing', "can't", 'cannot', 'wrong',
     'unexpected', 'missing feature', 'feature request',
   ];
-  return keywords.some((kw) => lower.includes(kw));
+  if (keywords.some((kw) => lower.includes(kw))) return true;
+
+  const isDataQuestion = DATA_OBJECT_EXCLUSIONS.some((noun) => lower.includes(noun));
+  if (isDataQuestion) return false;
+
+  return ENUMERATION_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
 const SINGLE_PROMPTS = [
@@ -122,6 +176,17 @@ export function CrystalPanel({
     // Context-injected data from the active page (falls back to prop values)
     agenticInsights: ctxAgentic,
     topics: ctxTopics,
+    // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §4) — registered by a builder
+    // page (WorkflowBuilderPage/WorkflowCanvasPage) while mounted; `null`
+    // everywhere else, which is what keeps executeAction's new branch below a
+    // no-op for every existing non-builder call site.
+    builderDraftHydrator,
+    // Wave 15 (docs/automation-hub/TRACKER.md) — same builder-page lifecycle
+    // as builderDraftHydrator above: `builderContext` is `null` and
+    // `builderDraft` is `null` everywhere except an active builder page.
+    // Consumed below in submitQuery's streaming request body.
+    builderContext,
+    builderDraft,
   } = useCrystalPanel();
 
   // Prefer prop values (page explicitly passed richer data) over context values
@@ -287,6 +352,17 @@ export function CrystalPanel({
                 scope: streamScope,
                 window: activeCtx.window,
                 focused_topic: activeCtx.focused_topic,
+                // Wave 15 (docs/automation-hub/TRACKER.md) — signal builder
+                // context to backend/src/routes/experience.ts, which hard-
+                // matches `body.surface === 'workflow_builder'` and relays
+                // `body.builder_draft` byte-unchanged into CrystalInput. Spread
+                // an empty object (not `surface: undefined`) when not in
+                // builder context so the keys are ABSENT, not present-as-
+                // undefined — every other page's request body stays exactly
+                // as it was before this wave.
+                ...(builderContext?.kind === 'workflow_builder'
+                  ? { surface: 'workflow_builder', builder_draft: builderDraft }
+                  : {}),
               }),
             },
           );
@@ -552,7 +628,7 @@ export function CrystalPanel({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isAll, isThinking, api, scope, crystalCtx, getToken, agenticInsights, topics, focusSurvey, responseCount, messages],
+    [isAll, isThinking, api, scope, crystalCtx, getToken, agenticInsights, topics, focusSurvey, responseCount, messages, builderContext, builderDraft],
   );
 
   // Auto-submit when panel opens with a pre-loaded query.
@@ -719,6 +795,28 @@ export function CrystalPanel({
           break;
         }
         case 'create_workflow': {
+          // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §4) — checked BEFORE the
+          // `!surveyId` guard below: the builder page's scope is
+          // `workflow_builder`, not a survey ID, so `focusSurvey`/`surveyId`
+          // are correctly undefined there — the guard would otherwise block
+          // this path entirely. If a builder page has registered a hydration
+          // callback, this proposal is being applied from INSIDE an open
+          // builder draft — route it through the callback (which only updates
+          // the page's own local state) instead of persisting a second
+          // workflow. The existing Save button on that page remains the one
+          // and only persist action — unchanged.
+          if (builderDraftHydrator) {
+            const handled = builderDraftHydrator(proposal);
+            if (handled) {
+              track('succeeded');  // no outcomeRef — nothing persisted yet, correctly
+              note(`Applied "${proposal.title}" to the current draft below. Review, then click Save when you're ready.`);
+              break;
+            }
+            // Registered but declined (e.g. proposal shape it doesn't
+            // recognize) — fall through to today's exact existing behavior
+            // below as a safety net, rather than silently dropping it.
+          }
+
           if (!surveyId) { track('failed', undefined, 'no survey in scope'); break; }
           // Primary path: modern graph shape emitted by CrystalOS's reconciled
           // `execute_propose_workflow` (Wave 3) — `params.nodes`/`params.edges`/
@@ -867,7 +965,7 @@ export function CrystalPanel({
     } finally {
       setExecutingAction(null);
     }
-  }, [api, executingAction, focusSurvey, navigate, submitQuery, note]);
+  }, [api, executingAction, focusSurvey, navigate, submitQuery, note, builderDraftHydrator]);
 
   // "Ticket" button on a Crystal answer → create a CX case (ticket) from the insight.
   // The click is itself the confirmation gesture, so we run the wired create_case path directly.

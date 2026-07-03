@@ -185,43 +185,22 @@ export function WorkflowsPage() {
                   <Icon name="cable" size={16} className="mr-1.5" />
                   {t('integrationsSettings.entryPointLabel')}
                 </Button>
-                <Button variant="outline" onClick={() => navigate(ROUTES.WORKFLOW_NL_BUILD)}>
-                  <Icon name="auto_awesome" size={16} className="mr-1.5" />
-                  {t('workflows.buildWithCrystal')}
-                </Button>
-                {/* DEEP_AUDIT_FIX_SPECS.md Issue 2 / Rohan DEEP_AUDIT_UX_FINDINGS.md
-                    L-1 — "Build Visually" and "New Workflow" used to navigate to the
-                    identical route with no distinguishing behavior; "New Workflow"
-                    is now deleted entirely (not repurposed into a dropdown — a
-                    dropdown-of-3-things next to the same 3 things as individual
-                    buttons has no clear reason to exist) and "Build Visually" is
-                    promoted to the sole primary/solid CTA. Using the real `Button`
-                    `variant="default"` also fixes finding V-1 (the old "New
-                    Workflow" button's hardcoded `style={{ background: '#2a4bd9' }}`
-                    bypassed the brand-theming system) for free. */}
+                {/* Wave 14 (docs/automation-hub/WAVE14_UNIFIED_BUILDER_SPEC.md §1) —
+                    collapses the previous 3 header buttons ("Build with Crystal" /
+                    "Build Visually" / "Build on Canvas") into one. The sentence
+                    builder (ROUTES.WORKFLOW_BUILD) is the single entry point now —
+                    it already has the Crystal trigger icon (§2) AND the canvas
+                    escape hatch (switchToCanvas()), so every other builder surface
+                    is still one click/one Crystal-question away. Neither
+                    WorkflowNLBuilderPage nor WorkflowCanvasPage nor their routes
+                    are deleted — only unlinked from this header. */}
                 <Button
                   variant="default"
                   onClick={() => navigate(ROUTES.WORKFLOW_BUILD)}
-                  title={t('workflows.buildVisuallyTooltip')}
-                  className="flex-col items-start h-auto py-2"
+                  title={t('workflows.buildWorkflowTooltip')}
                 >
-                  <span className="flex items-center gap-1.5">
-                    <Icon name="account_tree" size={16} />
-                    {t('workflows.buildVisually')}
-                  </span>
-                  <span className="text-[11px] font-normal opacity-80 pl-[22px]">{t('workflows.buildVisuallySubtext')}</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => navigate(ROUTES.WORKFLOW_CANVAS)}
-                  title={t('workflows.buildOnCanvasTooltip')}
-                  className="flex-col items-start h-auto py-2"
-                >
-                  <span className="flex items-center gap-1.5">
-                    <Icon name="schema" size={16} />
-                    {t('workflows.buildOnCanvas')}
-                  </span>
-                  <span className="text-[11px] font-normal text-on-surface-variant pl-[22px]">{t('workflows.buildOnCanvasSubtext')}</span>
+                  <Icon name="add" size={16} className="mr-1.5" />
+                  {t('workflows.buildWorkflow')}
                 </Button>
               </div>
             }

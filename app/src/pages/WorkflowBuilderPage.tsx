@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from '../lib/i18n';
 import { useSetPageTitle } from '../contexts/pageTitle';
@@ -11,6 +11,9 @@ import { Input } from '@/components/ui/input';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { useCrystalPanel } from '../contexts/crystalPanel';
+import type { ActionProposal } from '../types';
+import { AskCrystalFab } from '../components/workflow-builder/AskCrystalFab';
 import { SentencePill } from '../components/workflow-builder/sentence/SentencePill';
 import { StepPanel } from '../components/workflow-builder/sentence/StepPanel';
 import { TriggerStepPanelContent } from '../components/workflow-builder/sentence/TriggerStepPanelContent';
@@ -264,6 +267,22 @@ export function WorkflowBuilderPage() {
 
   const scopeDisabled = Boolean(triggerType && SCOPE_UNSUPPORTED_TRIGGER_TYPES.has(triggerType));
 
+  // Wave 14 (docs/automation-hub/WAVE14_UNIFIED_BUILDER_SPEC.md §2/§3) — the
+  // Crystal trigger icon opens the existing global CrystalPanel, scoped to
+  // "we are operating on the Automation Hub builder" via the context wiring
+  // below (mount/unmount lifecycle here; the draft-sync + hydrator-
+  // registration effects live further down, after actionLabel() is defined).
+  const { openCrystal, setBuilderContext, setBuilderDraft, setBuilderDraftHydrator } = useCrystalPanel();
+
+  useEffect(() => {
+    setBuilderContext({ kind: 'workflow_builder' });
+    return () => {
+      setBuilderContext(null);
+      setBuilderDraft(null);
+      setBuilderDraftHydrator(null);
+    };
+  }, [setBuilderContext, setBuilderDraft, setBuilderDraftHydrator]);
+
   // Registry load — also handles the cross-link seed shape from other builder
   // entry points (templates, Advanced: Branching Canvas hand-back).
   useEffect(() => {
@@ -476,6 +495,63 @@ export function WorkflowBuilderPage() {
     category: actionDefs.find((d) => d.action === a.action)?.category,
   }));
   const activeAction = actions.find((a) => a.id === activeActionId);
+
+  // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §3.3) — every relevant state
+  // change keeps Crystal's view of the draft current. Reuses the same
+  // display strings already computed for the sentence's own pills
+  // (triggerPillLabel/actionLabel()/scopePillLabel above) rather than
+  // re-deriving a second summary.
+  useEffect(() => {
+    setBuilderDraft({
+      mode: 'sentence',
+      triggerType,
+      scopeSelection: scope,
+      conditionClauses: conditionClauses.map((c) => ({ field: c.field, op: c.op, value: c.value })),
+      actions: actions.map((a) => ({ action: a.action, label: actionLabel(a.action) })),
+      workflowName: name,
+      isEditMode,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerType, scope, conditionClauses, actions, name, isEditMode, setBuilderDraft]);
+
+  // Wave 14 §4.3 — applies a Crystal `create_workflow` proposal to THIS page's
+  // own local state, reusing hydrateFromNodes() (the exact same parser already
+  // used for edit-mode fetch and template hand-off) — no new graph-parsing
+  // logic. Returns `false` for any proposal shape this page doesn't recognize
+  // (e.g. the legacy flat trigger/action_type shape) so CrystalPanel's
+  // executeAction can safely fall back to its existing persist path.
+  //
+  // Deliberately does NOT touch `scope` unless the proposal explicitly carries
+  // a scope hint — out of scope for this wave (see spec §5); today's
+  // hydrateFromNodes()/hydration payload carries no scope hint at all, so this
+  // is naturally already true by construction, not by an added guard.
+  const hydrateFromProposal = useCallback((proposal: ActionProposal): boolean => {
+    const nodes = proposal.params.nodes as EngineNode[] | undefined;
+    const edges = proposal.params.edges as EngineEdge[] | undefined;
+    if (!Array.isArray(nodes) || !Array.isArray(edges)) return false;  // unrecognized shape — let the panel fall back
+
+    const { triggerType: tType, scheduleConfig: sched, actions: newActions, conditionClauses: newConditions } =
+      hydrateFromNodes(nodes, proposal.params.trigger_type as string | undefined);
+    if (tType) {
+      setTriggerType(tType);
+      if (sched) setScheduleConfig(sched);
+    }
+    setActions(newActions);
+    setConditionClauses(newConditions);
+    if (!name.trim() && (proposal.params.name || proposal.title)) {
+      setName((proposal.params.name as string) || proposal.title);
+    }
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+
+  // Register the hydration callback once it's stable — see CrystalPanel.tsx's
+  // executeAction for why the panel checks for the callback's existence
+  // rather than a scope label.
+  useEffect(() => {
+    setBuilderDraftHydrator(hydrateFromProposal);
+    return () => setBuilderDraftHydrator(null);
+  }, [hydrateFromProposal, setBuilderDraftHydrator]);
 
   // Wave 11 (Rohan WAVE11_UX_SPECS.md §2.3) — a one-time static caption shown
   // under the sentence only once any Flow-category action (approval/stop/
@@ -975,6 +1051,10 @@ export function WorkflowBuilderPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §2) — pure trigger for the
+            existing global CrystalPanel, no new chat surface. */}
+        <AskCrystalFab onOpen={() => openCrystal()} />
       </div>
     </TooltipProvider>
   );

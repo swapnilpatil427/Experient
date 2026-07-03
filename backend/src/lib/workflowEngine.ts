@@ -618,20 +618,39 @@ export interface WorkflowRunResult {
  * comment) or explicitly 'flow.approval'. A flow.delay pause (waitReason ===
  * 'flow.delay') must NEVER create one of those rows — none of the three
  * approval-only surfaces above should ever see a delay-type wait.
+ *
+ * PAUSE-TIME SNAPSHOT (Priya, Wave 17, 2026-07-03, fixing the Wave 16
+ * stale-graph-on-resume gap): also persists `snapshot_nodes`/`snapshot_edges`/
+ * `snapshot_trigger_type` — the EXACT `nodes`/`edges`/`triggerType` that were
+ * actually in use for THIS run, already in scope at every call site (no extra
+ * fetch). Per the user's explicit decision, a resume must always execute this
+ * exact snapshot regardless of any edit made to the workflow while paused —
+ * resumeWorkflow/resumeDelayedExecution read these columns back instead of
+ * re-fetching the live `workflows` row. Written unconditionally on every
+ * pause (including re-pauses) so a chain of pauses (approval → delay →
+ * approval, etc.) keeps re-snapshotting the graph that was live for the run
+ * that is CURRENTLY executing — always the correct source of truth for that
+ * run's own next resume.
  */
 async function persistPause(
   execId: string,
   orgId: string,
   workflowId: string,
   nodes: WorkflowNode[],
-  res: RunResult
+  res: RunResult,
+  edges: WorkflowEdge[],
+  triggerType: string | null | undefined
 ): Promise<void> {
   const graph = res.resumeNodeId !== undefined;
   const isDelay = res.waitReason === 'flow.delay';
 
   await query(
-    'UPDATE workflow_executions SET status = $2, resume_index = $3, resume_node_id = $4, wait_reason = $5, resume_at = $6 WHERE id = $1',
-    [execId, 'waiting', res.pauseIndex != null ? res.pauseIndex + 1 : null, res.resumeNodeId || null, isDelay ? 'flow.delay' : 'flow.approval', res.resumeAt || null]
+    'UPDATE workflow_executions SET status = $2, resume_index = $3, resume_node_id = $4, wait_reason = $5, resume_at = $6, snapshot_nodes = $7::jsonb, snapshot_edges = $8::jsonb, snapshot_trigger_type = $9 WHERE id = $1',
+    [
+      execId, 'waiting', res.pauseIndex != null ? res.pauseIndex + 1 : null, res.resumeNodeId || null,
+      isDelay ? 'flow.delay' : 'flow.approval', res.resumeAt || null,
+      JSON.stringify(nodes || []), JSON.stringify(edges || []), triggerType || null,
+    ]
   );
 
   if (isDelay) return; // never create a workflow_approvals row for a delay-type wait
@@ -647,11 +666,59 @@ async function persistPause(
 }
 
 /**
+ * Re-check plan-tier gating at RESUME time (Priya, cross-wave audit,
+ * 2026-07-03). runWorkflow's tier gate (see below) only runs once, before the
+ * FIRST pause — but a flow.delay wait can be hours/days long, and a
+ * flow.approval wait can sit for as long as a human takes to decide. An org
+ * that was entitled when the trigger originally fired can be downgraded
+ * during that window; without a second check here, `resumeWorkflow`/
+ * `resumeDelayedExecution` would let the downstream action fire anyway,
+ * silently reopening the exact gap the execution-time check in runWorkflow
+ * exists to close (see planGating.ts's header: a downgrade must take effect
+ * immediately, not be grandfathered for in-flight usage). Returns a
+ * RunResult shaped exactly like runWorkflow's own gated branch ('skipped',
+ * conditionsPassed:false) so continueExecution's existing finalize path
+ * handles it with no special-casing, and records the same
+ * upgradeRequiredMessage-shaped reason on the execution row.
+ *
+ * `triggerType` (Priya, Wave 17, 2026-07-03): callers now pass the
+ * SNAPSHOTTED trigger_type from the execution row (or the live workflow's,
+ * only via the legacy-fallback path for a pre-snapshot execution) — never the
+ * live `workflows.trigger_type` for a snapshotted row. Per the user's
+ * "regardless of later edits" decision, the tier check must apply to
+ * whichever trigger type was ACTUALLY firing when the workflow paused, not
+ * whatever the workflow's trigger has since been edited to. If someone
+ * changes a workflow's trigger type entirely while it's paused, this resume's
+ * tier check still reflects the original trigger.
+ */
+async function reCheckTierGateOnResume(
+  executionId: string,
+  orgId: string,
+  triggerType: string | null | undefined
+): Promise<RunResult | null> {
+  const tierGate = await checkTriggerTierGate(orgId, triggerType);
+  if (tierGate.allowed || !tierGate.requiredTier) return null;
+  await query(
+    'UPDATE workflow_executions SET error_message = $2 WHERE id = $1',
+    [executionId, `Skipped on resume: '${triggerType}' requires the ${tierGate.requiredTier} plan or higher (org is on ${tierGate.orgTier}).`]
+  );
+  return { status: 'skipped', conditionsPassed: false };
+}
+
+/**
  * Shared continuation tail: given a fresh RunResult from runNodes/runGraph
  * (either the first run or a resume), either persist a new pause or finalize
  * the execution. Used by both runWorkflow (first run) and resumeWorkflow
  * (approval-decision resume) and resumeDelayedExecutions (timer resume) so
  * the re-pause-vs-finalize branch exists once, not duplicated per caller.
+ *
+ * `edges`/`triggerType` (Priya, Wave 17, 2026-07-03): threaded through purely
+ * so a re-pause (res.status === 'waiting' again, e.g. approval → delay)
+ * re-snapshots persistPause() with the graph/trigger type that is ACTUALLY
+ * governing the run currently executing — the same values the caller already
+ * has in scope (either the workflow's live values, on a first run, or the
+ * snapshot/legacy-fallback values a resume read to run this far). Unused on
+ * the finalize branch.
  */
 async function continueExecution(
   execId: string,
@@ -659,10 +726,12 @@ async function continueExecution(
   workflowId: string,
   nodes: WorkflowNode[],
   res: RunResult,
-  started: number
+  started: number,
+  edges: WorkflowEdge[],
+  triggerType: string | null | undefined
 ): Promise<void> {
   if (res.status === 'waiting') {
-    await persistPause(execId, orgId, workflowId, nodes, res);
+    await persistPause(execId, orgId, workflowId, nodes, res, edges, triggerType);
   } else {
     await finalizeExecution(execId, workflowId, res.status, started, res.conditionsPassed);
   }
@@ -818,8 +887,72 @@ export async function runWorkflow(
     res = { status: 'failed', conditionsPassed: true };
   }
 
-  await continueExecution(execId, orgId, workflow.id, nodes, res, started);
+  await continueExecution(execId, orgId, workflow.id, nodes, res, started, workflow.edges || [], workflow.trigger_type);
   return { executionId: execId, status: res.status, conditionsPassed: res.conditionsPassed, durationMs: Date.now() - started };
+}
+
+interface ResumeGraphSource {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  triggerType: string | null | undefined;
+  /** True when this came from the snapshot; false when the legacy fallback fired. */
+  fromSnapshot: boolean;
+}
+
+/**
+ * Resolve which nodes/edges/trigger_type a resume should execute against
+ * (Priya, Wave 17, 2026-07-03 — the snapshot-on-pause fix for the Wave 16
+ * stale-graph-on-resume gap).
+ *
+ * SNAPSHOT PATH (the normal, post-migration case): every execution that
+ * pauses after this migration always has `snapshot_nodes` written by
+ * persistPause(), so resume reads nodes/edges/trigger_type straight off the
+ * execution row — never the live `workflows` row. This is what makes the
+ * user's "regardless of later edits" decision hold: an edit made while paused
+ * cannot affect what the resume executes, because the resume never looks at
+ * the live row's graph at all.
+ *
+ * LEGACY FALLBACK PATH (transition-only, self-resolving): an execution that
+ * was already sitting in `status='waiting'` BEFORE this migration landed has
+ * no snapshot (`snapshot_nodes IS NULL` — the detection signal). There is no
+ * snapshot to fall back to for these rows, so — and ONLY for these rows — we
+ * fall back to exactly today's (pre-Wave-17) behavior: fetch the live
+ * `workflows` row fresh. This is the closest approximation to correct
+ * behavior available for a pause that predates snapshotting; it is a narrow,
+ * one-time transition window that shrinks to zero as legacy paused rows drain
+ * (every new pause is always snapshotted), never a permanent code path.
+ *
+ * `wfRow` is still fetched by the caller for both paths — even on the
+ * snapshot path we need SOME live data (confirming the workflow still exists
+ * for referential sanity, and — not used here but kept available to
+ * callers — org_id for authorization already came from the execution row's
+ * own org_id column, which is trusted independently of this lookup).
+ */
+function resolveResumeGraphSource(
+  execRow: Record<string, unknown>,
+  wfRow: WorkflowRecord | undefined
+): ResumeGraphSource {
+  const snapshotNodes = execRow.snapshot_nodes as WorkflowNode[] | null | undefined;
+  if (snapshotNodes != null) {
+    return {
+      nodes: Array.isArray(snapshotNodes) ? snapshotNodes : [],
+      edges: Array.isArray(execRow.snapshot_edges) ? (execRow.snapshot_edges as WorkflowEdge[]) : [],
+      triggerType: (execRow.snapshot_trigger_type as string | null | undefined) ?? undefined,
+      fromSnapshot: true,
+    };
+  }
+  // LEGACY FALLBACK: this execution paused before pause-time snapshotting
+  // existed (snapshot_nodes is NULL). No snapshot is available, so we fall
+  // back to a fresh live-fetch from `workflows` — today's (soon-to-be-legacy)
+  // behavior — exactly as this codebase behaved before Wave 17. This branch
+  // is transition-only and will stop being hit once every pre-migration
+  // paused execution has resumed or terminated.
+  return {
+    nodes: Array.isArray(wfRow?.nodes) ? wfRow.nodes : [],
+    edges: Array.isArray(wfRow?.edges) ? (wfRow.edges as WorkflowEdge[]) : [],
+    triggerType: wfRow?.trigger_type,
+    fromSnapshot: false,
+  };
 }
 
 /** Approve or reject a waiting execution; resume from resume_index on approval. */
@@ -861,19 +994,24 @@ export async function resumeWorkflow(
     return { status: 'rejected' };
   }
 
+  // Still fetched for referential sanity (the workflow may have been deleted
+  // outright while paused) and as the legacy-fallback source when this
+  // execution predates pause-time snapshotting — see resolveResumeGraphSource.
   const { rows: [wf] } = await query('SELECT * FROM workflows WHERE id = $1', [execRow.workflow_id]);
   const wfRow = wf as WorkflowRecord | undefined;
-  const nodes = Array.isArray(wfRow?.nodes) ? wfRow.nodes : [];
+  const { nodes, edges, triggerType } = resolveResumeGraphSource(execRow, wfRow);
   const ctx: ExecutionContext = { orgId, workflowId: execRow.workflow_id as string, event: (execRow.trigger_payload as TriggerEvent) || {}, vars: {} };
   const graph = execRow.resume_node_id != null;
-  let res: RunResult;
+  let res: RunResult | null = await reCheckTierGateOnResume(executionId, orgId, triggerType);
   try {
-    res = graph
-      ? await runGraph(nodes, Array.isArray(wfRow?.edges) ? wfRow.edges : [], ctx, executionId, execRow.resume_node_id as string)
-      : await runNodes(nodes, (execRow.resume_index as number) || 0, ctx, executionId);
+    if (!res) {
+      res = graph
+        ? await runGraph(nodes, edges, ctx, executionId, execRow.resume_node_id as string)
+        : await runNodes(nodes, (execRow.resume_index as number) || 0, ctx, executionId);
+    }
   } catch { res = { status: 'failed', conditionsPassed: true }; }
 
-  await continueExecution(executionId, orgId, execRow.workflow_id as string, nodes, res, started);
+  await continueExecution(executionId, orgId, execRow.workflow_id as string, nodes, res, started, edges, triggerType);
   return { status: res.status };
 }
 
@@ -910,19 +1048,24 @@ export async function resumeDelayedExecution(executionId: string): Promise<{ sta
 
   const execRow = claimed as Record<string, unknown>;
   const orgId = execRow.org_id as string;
+  // Still fetched for referential sanity (the workflow may have been deleted
+  // outright while paused) and as the legacy-fallback source when this
+  // execution predates pause-time snapshotting — see resolveResumeGraphSource.
   const { rows: [wf] } = await query('SELECT * FROM workflows WHERE id = $1', [execRow.workflow_id]);
   const wfRow = wf as WorkflowRecord | undefined;
-  const nodes = Array.isArray(wfRow?.nodes) ? wfRow.nodes : [];
+  const { nodes, edges, triggerType } = resolveResumeGraphSource(execRow, wfRow);
   const ctx: ExecutionContext = { orgId, workflowId: execRow.workflow_id as string, event: (execRow.trigger_payload as TriggerEvent) || {}, vars: {} };
   const graph = execRow.resume_node_id != null;
-  let res: RunResult;
+  let res: RunResult | null = await reCheckTierGateOnResume(executionId, orgId, triggerType);
   try {
-    res = graph
-      ? await runGraph(nodes, Array.isArray(wfRow?.edges) ? wfRow.edges : [], ctx, executionId, execRow.resume_node_id as string)
-      : await runNodes(nodes, (execRow.resume_index as number) || 0, ctx, executionId);
+    if (!res) {
+      res = graph
+        ? await runGraph(nodes, edges, ctx, executionId, execRow.resume_node_id as string)
+        : await runNodes(nodes, (execRow.resume_index as number) || 0, ctx, executionId);
+    }
   } catch { res = { status: 'failed', conditionsPassed: true }; }
 
-  await continueExecution(executionId, orgId, execRow.workflow_id as string, nodes, res, started);
+  await continueExecution(executionId, orgId, execRow.workflow_id as string, nodes, res, started, edges, triggerType);
   return { status: res.status };
 }
 

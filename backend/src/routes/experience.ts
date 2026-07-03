@@ -18,6 +18,7 @@ import logger from '../lib/logger';
 import { serverError, clientError } from '../lib/httpError';
 import { checkCredits, debitCredits } from '../lib/creditLedger';
 import { CREDIT_COSTS } from '../lib/creditPlans';
+import { registry } from '../lib/workflowRegistry';
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8001';
 const AGENTS_INTERNAL_KEY = process.env.AGENTS_INTERNAL_KEY
@@ -26,6 +27,41 @@ const AGENTS_INTERNAL_KEY = process.env.AGENTS_INTERNAL_KEY
     : (() => { throw new Error('AGENTS_INTERNAL_KEY must be set in production'); })());
 
 const router = express.Router();
+
+// ── Wave 18c (docs/automation-hub/TRACKER.md) — message-content registry attach ──
+// Amara's CrystalOS-side detector (`_is_workflow_taxonomy_question`,
+// crystalos/agents/crystal.py) force-routes trigger/action/condition REFERENCE
+// questions to `workflow-analyst` from ANY page, not just the workflow builder.
+// When that force fires from a non-`workflow_builder` surface, this Node proxy
+// previously never attached `workflow_registry` (only `isBuilderContext` did),
+// so the skill fell back to CrystalOS's smaller, code-defined `FALLBACK_REGISTRY`
+// instead of the org's real, live surveys/tags/registry data.
+//
+// This is a deliberately narrow, conservative MIRROR of Amara's Python regex —
+// not a call into it (Node can't reach into the CrystalOS process). Duplicating
+// detection logic across two languages is the exact pattern Nina flagged as an
+// architectural smell in Wave 18b, so this is a conscious, justified exception:
+// the two detectors have very different precision bars. Amara's decides ROUTING
+// (a false positive there mis-routes a real survey question to the wrong skill —
+// a wrong-answer risk). This one only decides whether to run 2 extra cheap,
+// indexed, read-only queries (surveys/tags) — a false positive here just means
+// a wasted query, never a wrong answer, so recall is intentionally favored over
+// precision (broader/looser than Amara's allowlist is fine; the reverse is not).
+// Keeping the two independent rather than trying to unify them across a
+// language boundary is the right tradeoff at this cost profile — see Wave 18c
+// tracker entry for the full option analysis (A vs. B) and the decision.
+const WORKFLOW_TAXONOMY_HINT_RE = /\b(?:trigger|action|condition|automation|workflow|scope|operator)s?\b/i;
+
+/**
+ * Conservative, cheap-to-evaluate mirror of Amara's workflow-taxonomy question
+ * detector. Deliberately looser than the CrystalOS-side regex allowlist: it
+ * only needs to catch "this message plausibly references the workflow
+ * taxonomy," not enumerate exact phrasing, because the cost of a false
+ * positive here is one extra pair of indexed queries, not a mis-route.
+ */
+function mentionsWorkflowTaxonomy(message: unknown): boolean {
+  return typeof message === 'string' && WORKFLOW_TAXONOMY_HINT_RE.test(message);
+}
 
 // ── Crystal context loader ───────────────────────────────────────────────────
 // Shared by the REST fallback and any future endpoints.
@@ -467,7 +503,43 @@ router.post('/:scope/crystal/stream', requireAuth, async (req: Request, res: Res
 
   const surveyIdForCtx = scope === 'survey' ? String(body.survey_id || '') : '';
   let citationMap: Record<string, Record<string, unknown>> = {};
+
+  // Wave 15 (docs/automation-hub/TRACKER.md) — workflow-builder Crystal context.
+  // The frontend (Elias, Phase 2) signals builder context via `surface: 'workflow_builder'`
+  // when Crystal is opened from the workflow builder page; `builder_draft` carries the
+  // client's already-built BuilderDraftSummary. Neither key exists on any current caller
+  // (Insights pages, org portfolio, group insights), so this branch is a strict no-op for
+  // every existing conversation — no new query runs, no new key is added to agentBody.
+  //
+  // Wave 18c widens this: `shouldAttachWorkflowRegistry` is also true when the message
+  // itself plausibly references the workflow taxonomy (see `mentionsWorkflowTaxonomy`
+  // above), so Amara's CrystalOS-side message-content force-route (Wave 18) gets the
+  // org's real, live registry instead of falling back to CrystalOS's smaller
+  // `FALLBACK_REGISTRY` when it fires from a non-builder page.
+  const isBuilderContext = body.surface === 'workflow_builder';
+  const shouldAttachWorkflowRegistry = isBuilderContext || mentionsWorkflowTaxonomy(body.message);
+  let workflowRegistry: Record<string, unknown> | undefined;
+  if (shouldAttachWorkflowRegistry) {
+    // Reuses the exact routes/workflows.ts POST /parse-nl pattern (Wave 12) — same two
+    // queries, same shape (`{ ...registry(), surveys, tags }`) — rather than reinventing it.
+    const [surveysResult, tagsResult] = await Promise.all([
+      query('SELECT id, title AS name FROM surveys WHERE org_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC', [orgId]),
+      query('SELECT id, name FROM survey_tags WHERE org_id = $1 ORDER BY name ASC', [orgId]),
+    ]);
+    workflowRegistry = {
+      ...registry(),
+      surveys: surveysResult.rows as { id: string; name: string }[],
+      tags: tagsResult.rows as { id: string; name: string }[],
+    };
+  }
+
   let agentBody: Record<string, unknown> = { ...body, org_id: orgId, user_id: userId, scope };
+  if (shouldAttachWorkflowRegistry) {
+    agentBody.workflow_registry = workflowRegistry;
+  }
+  if (isBuilderContext) {
+    agentBody.builder_draft = body.builder_draft;
+  }
 
   try {
     const ctx = await loadCrystalContext(surveyIdForCtx, orgId!);
@@ -488,6 +560,12 @@ router.post('/:scope/crystal/stream', requireAuth, async (req: Request, res: Res
       survey_title: (body.survey_title as string) || ctx.survey_title || '',
       survey_response_count: body.survey_response_count ?? ctx.response_count,
     };
+    if (shouldAttachWorkflowRegistry) {
+      agentBody.workflow_registry = workflowRegistry;
+    }
+    if (isBuilderContext) {
+      agentBody.builder_draft = body.builder_draft;
+    }
   } catch (ctxErr: unknown) {
     logger.warn({ err: (ctxErr as Error).message, orgId }, 'crystal_stream_context_load_failed');
     const bodyInsights = Array.isArray(body.insights) ? (body.insights as Record<string, unknown>[]) : [];

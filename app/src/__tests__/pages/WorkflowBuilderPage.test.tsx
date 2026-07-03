@@ -20,6 +20,22 @@ vi.mock('react-router-dom', async () => {
 });
 vi.mock('../../lib/dataBus', () => ({ invalidate: vi.fn() }));
 
+// Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §2/§3) — stable mock refs so tests
+// can assert on openCrystal()/setBuilderContext()/setBuilderDraft()/
+// setBuilderDraftHydrator() call shape and mount/unmount lifecycle.
+const mockOpenCrystal            = vi.fn();
+const mockSetBuilderContext      = vi.fn();
+const mockSetBuilderDraft        = vi.fn();
+const mockSetBuilderDraftHydrator = vi.fn();
+vi.mock('../../contexts/crystalPanel', () => ({
+  useCrystalPanel: () => ({
+    openCrystal:             mockOpenCrystal,
+    setBuilderContext:       mockSetBuilderContext,
+    setBuilderDraft:         mockSetBuilderDraft,
+    setBuilderDraftHydrator: mockSetBuilderDraftHydrator,
+  }),
+}));
+
 // ── imports after mocks ────────────────────────────────────────────────────────
 import { useApi } from '../../hooks/useApi';
 import { useNavigate } from 'react-router-dom';
@@ -103,7 +119,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 function renderPage(routerState?: Record<string, unknown>) {
-  render(
+  return render(
     <MemoryRouter initialEntries={[{ pathname: ROUTES.WORKFLOW_BUILD, state: routerState }]}>
       <WorkflowBuilderPage />
     </MemoryRouter>,
@@ -580,6 +596,91 @@ describe('WorkflowBuilderPage — full "Weekly NPS Digest" journey (concept doc 
 
     expect(invalidate).toHaveBeenCalledWith('workflows');
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith(ROUTES.WORKFLOWS));
+  });
+
+  // Nina, Wave 16 automation-hub-wide consistency audit — Investigation 1
+  // (scope resolution across the 3 paths that can set a workflow's scope).
+  // Confirms by direct behavioral test, not just code inspection, that Wave
+  // 14's builderDraftHydrator path (applying a Crystal `create_workflow`
+  // proposal into an open sentence-builder draft) never touches `scope`
+  // local state — the manual pill selection (this test's own scope pick)
+  // must survive an applied proposal untouched, and the eventual Save must
+  // still send exactly that manually-selected scope, matching path (a)'s
+  // (manual pill) payload construction byte-for-byte. This closes the loop
+  // on `hydrateFromProposal`'s own inline comment ("Deliberately does NOT
+  // touch `scope`...") with an executable proof rather than trusting the
+  // comment.
+  it('applying a Crystal create_workflow proposal into the open draft does not clobber a manually-selected scope', async () => {
+    const user = userEvent.setup();
+    const createGraphWorkflow = vi.fn().mockResolvedValue({ id: 'wf_new' });
+    vi.mocked(useApi).mockReturnValue(makeApi({ createGraphWorkflow }) as unknown as ReturnType<typeof useApi>);
+    renderPage();
+
+    // Name + trigger (survey-scopable).
+    await user.type(screen.getByPlaceholderText('Untitled automation'), 'Scope survives proposal');
+    await user.click(screen.getByTestId('pill-trigger'));
+    await user.click(await screen.findByTestId('trigger-tile-score.nps_drop'));
+    await user.click(screen.getByRole('button', { name: /done/i }));
+    await waitFor(() => expect(screen.queryByTestId('step-panel-trigger')).not.toBeInTheDocument());
+
+    // Manual scope pick: survey, CSAT Q3 (path (a) — manual pill selection).
+    await user.click(screen.getByTestId('pill-scope'));
+    await waitFor(() => screen.getByTestId('step-panel-scope'));
+    await user.click(within(await screen.findByTestId('scope-option-survey')).getByRole('button'));
+    await user.click(await screen.findByTestId('scope-survey-row-srv-csat'));
+    await user.click(screen.getByRole('button', { name: /done/i }));
+    await waitFor(() => expect(screen.queryByTestId('step-panel-scope')).not.toBeInTheDocument());
+    await waitFor(() => expect(within(screen.getByTestId('pill-scope')).getByText(/CSAT Q3/)).toBeInTheDocument());
+
+    // One action, so the workflow is Save-able.
+    await user.click(screen.getByTestId('pill-add-action'));
+    await waitFor(() => screen.getByTestId('step-panel-action'));
+    await user.click(await screen.findByTestId('action-tile-notify.in_app'));
+    await user.click(screen.getByRole('button', { name: /done/i }));
+    await waitFor(() => expect(screen.queryByTestId('step-panel-action')).not.toBeInTheDocument());
+
+    // Simulate path (c): CrystalPanel's executeAction calling the registered
+    // builderDraftHydrator with a create_workflow proposal (Wave 14) — the
+    // exact mechanism WorkflowBuilderPage registers via setBuilderDraftHydrator.
+    // The proposal below carries its own trigger/action nodes but, like every
+    // real create_workflow proposal today, no scope hint at all.
+    expect(mockSetBuilderDraftHydrator).toHaveBeenCalled();
+    const hydrator = mockSetBuilderDraftHydrator.mock.calls.at(-1)![0] as (p: ActionProposal) => boolean;
+    const proposal: ActionProposal = {
+      id: 'apply-jira-escalation',
+      type: 'create_workflow',
+      priority: 'medium',
+      title: 'Add a Jira escalation workflow',
+      description: 'Escalate negative verbatims to Jira',
+      params: {
+        name: 'Escalate to Jira',
+        trigger_type: 'score.nps_drop',
+        nodes: [
+          { id: 'trigger', type: 'trigger', trigger_type: 'score.nps_drop' },
+          { id: 'action_0', type: 'action', action: 'notify.slack', config: { channel: '#escalations' } },
+        ],
+        edges: [{ from: 'trigger', to: 'action_0' }],
+      },
+      requires_confirmation: true,
+    };
+    let handled = false;
+    await waitFor(() => { handled = hydrator(proposal); });
+    expect(handled).toBe(true);
+
+    // Scope pill must still read the manually-selected survey — a proposal
+    // apply must never silently revert or blank the scope selection.
+    await waitFor(() => expect(within(screen.getByTestId('pill-scope')).getByText(/CSAT Q3/)).toBeInTheDocument());
+
+    // Save — the final payload's scope fields must come from the SAME
+    // construction path (a) uses (scope.scopeType/scopeSurveyId in local
+    // state), proving paths (a) and (c) converge on one save() call with an
+    // identical, uncorrupted scope shape.
+    await user.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(createGraphWorkflow).toHaveBeenCalledOnce());
+    const payload = createGraphWorkflow.mock.calls[0][0];
+    expect(payload.scopeType).toBe('survey');
+    expect(payload.scopeSurveyId).toBe('srv-csat');
+    expect(payload).not.toHaveProperty('scopeTagId');
   });
 });
 
@@ -1359,5 +1460,120 @@ describe('WorkflowBuilderPage — concurrent-edit protection: 409 conflict dialo
     const overwriteCallArgs = updateWorkflow.mock.calls[1][1];
     expect(overwriteCallArgs).not.toHaveProperty('version');
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith(ROUTES.WORKFLOWS));
+  });
+});
+
+// Wave 14 (docs/automation-hub/WAVE14_UNIFIED_BUILDER_SPEC.md §2/§3) — the
+// Crystal trigger icon + scope-context wiring.
+describe('WorkflowBuilderPage — AskCrystalFab + CrystalPanel context wiring (Wave 14)', () => {
+  it('renders the AskCrystalFab', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('sentence-builder')).toBeInTheDocument());
+    expect(screen.getByTestId('ask-crystal-fab')).toBeInTheDocument();
+  });
+
+  it('clicking the FAB calls openCrystal() with no arguments', async () => {
+    renderPage();
+    await waitFor(() => screen.getByTestId('ask-crystal-fab'));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('ask-crystal-fab'));
+
+    expect(mockOpenCrystal).toHaveBeenCalledWith();
+  });
+
+  it('registers builder context on mount and resets it on unmount', async () => {
+    const { unmount } = renderPage();
+    await waitFor(() => screen.getByTestId('sentence-builder'));
+
+    expect(mockSetBuilderContext).toHaveBeenCalledWith({ kind: 'workflow_builder' });
+
+    unmount();
+
+    expect(mockSetBuilderContext).toHaveBeenLastCalledWith(null);
+    expect(mockSetBuilderDraft).toHaveBeenLastCalledWith(null);
+    expect(mockSetBuilderDraftHydrator).toHaveBeenLastCalledWith(null);
+  });
+
+  it('keeps the builder draft summary current as the sentence changes (mode: sentence)', async () => {
+    renderPage();
+    await waitFor(() => screen.getByTestId('sentence-builder'));
+
+    await waitFor(() => {
+      expect(mockSetBuilderDraft).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'sentence', isEditMode: false, workflowName: '' }),
+      );
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('pill-trigger'));
+    await user.click(await screen.findByText('NPS dropped'));
+    await user.click(screen.getByRole('button', { name: /done/i }));
+
+    await waitFor(() => {
+      expect(mockSetBuilderDraft).toHaveBeenLastCalledWith(
+        expect.objectContaining({ triggerType: 'score.nps_drop' }),
+      );
+    });
+  });
+
+  it('registers a builder draft hydrator function on mount, and null on unmount', async () => {
+    const { unmount } = renderPage();
+    await waitFor(() => screen.getByTestId('sentence-builder'));
+
+    await waitFor(() => {
+      expect(mockSetBuilderDraftHydrator).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    unmount();
+    expect(mockSetBuilderDraftHydrator).toHaveBeenLastCalledWith(null);
+  });
+
+  it('hydrator applies a create_workflow proposal (nodes/edges) to the sentence and returns true', async () => {
+    let capturedHydrator: ((proposal: { params: Record<string, unknown>; title: string }) => boolean) | undefined;
+    mockSetBuilderDraftHydrator.mockImplementation((fn) => {
+      if (fn) capturedHydrator = fn;
+    });
+
+    renderPage();
+    await waitFor(() => screen.getByTestId('sentence-builder'));
+    await waitFor(() => expect(capturedHydrator).toBeInstanceOf(Function));
+
+    const proposal = {
+      title: 'Alert on NPS drop',
+      params: {
+        trigger_type: 'score.nps_drop',
+        nodes: [
+          { id: 'trigger', type: 'trigger', trigger: 'score.nps_drop' },
+          { id: 'action_0', type: 'action', action: 'notify.slack', config: {} },
+        ],
+        edges: [{ from: 'trigger', to: 'action_0' }],
+      },
+    };
+
+    let handled: boolean | undefined;
+    await waitFor(() => {
+      handled = capturedHydrator!(proposal);
+      expect(handled).toBe(true);
+    });
+
+    // Trigger pill reflects the hydrated trigger type.
+    await waitFor(() => {
+      expect(screen.getByTestId('pill-trigger')).toHaveAttribute('data-pill-state', 'filled');
+    });
+  });
+
+  it('hydrator returns false for an unrecognized proposal shape (no nodes/edges), leaving the panel to fall back', async () => {
+    let capturedHydrator: ((proposal: { params: Record<string, unknown>; title: string }) => boolean) | undefined;
+    mockSetBuilderDraftHydrator.mockImplementation((fn) => {
+      if (fn) capturedHydrator = fn;
+    });
+
+    renderPage();
+    await waitFor(() => screen.getByTestId('sentence-builder'));
+    await waitFor(() => expect(capturedHydrator).toBeInstanceOf(Function));
+
+    const legacyProposal = { title: 'Legacy', params: { trigger: 'nps_below_6', action_type: 'notify' } };
+    expect(capturedHydrator!(legacyProposal)).toBe(false);
   });
 });

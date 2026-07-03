@@ -84,6 +84,21 @@ vi.mock('reactflow', () => {
 // Also stub the CSS import so jsdom doesn't choke on it
 vi.mock('reactflow/dist/style.css', () => ({}));
 
+// Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §2/§3) — stable mock refs, same
+// pattern as WorkflowBuilderPage.test.tsx.
+const mockOpenCrystal             = vi.fn();
+const mockSetBuilderContext       = vi.fn();
+const mockSetBuilderDraft         = vi.fn();
+const mockSetBuilderDraftHydrator = vi.fn();
+vi.mock('../../contexts/crystalPanel', () => ({
+  useCrystalPanel: () => ({
+    openCrystal:             mockOpenCrystal,
+    setBuilderContext:       mockSetBuilderContext,
+    setBuilderDraft:         mockSetBuilderDraft,
+    setBuilderDraftHydrator: mockSetBuilderDraftHydrator,
+  }),
+}));
+
 // ── imports after mocks ────────────────────────────────────────────────────────
 import { useApi } from '../../hooks/useApi';
 import { useNavigate } from 'react-router-dom';
@@ -157,7 +172,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 function renderPage(routerState?: Record<string, unknown>) {
-  render(
+  return render(
     <MemoryRouter initialEntries={[{ pathname: ROUTES.WORKFLOW_CANVAS, state: routerState }]}>
       <WorkflowCanvasPage />
     </MemoryRouter>,
@@ -574,6 +589,64 @@ describe('WorkflowCanvasPage — seed consumption from linear builder cross-link
     });
     expect(screen.getByPlaceholderText('workflows.builder.namePlaceholder')).toHaveValue('NL-proposed flow');
   });
+
+  // Wave 12 Phase 3 (Kenji, TRACKER.md) — severity assessment of the gap
+  // Elias flagged: `WorkflowCanvasPage.tsx` never reads scopeType/
+  // scopeSurveyId/scopeTagId off its seed at all (CanvasSeed has no scope
+  // fields, save()'s payload never includes them). The open question is
+  // whether that's a silent DATA bug (saves to some unintended/wrong scope,
+  // e.g. leftover state from a prior render) or a purely cosmetic gap (the
+  // picker doesn't show Crystal's inferred scope, but the save still falls
+  // through to the same safe 'org' default the backend already applies to
+  // any scope-less payload — see schemas/workflows.ts's checkScopeFields
+  // defaulting absent scopeType to 'org', and routes/workflows.ts's
+  // `scopeType || 'org'` on INSERT).
+  //
+  // This test proves it's the latter: even when "Edit in canvas" is reached
+  // from a Crystal result that confidently inferred a SURVEY scope (the
+  // seed carries scopeType/scopeSurveyId, mirroring WorkflowNLBuilderPage.tsx's
+  // editInCanvas() seed shape exactly), the canvas's save payload contains no
+  // scope keys at all — never a wrong/stale scope, just an omission the
+  // backend already treats as org-wide. No data-loss/incorrect-destination
+  // bug; safe to leave as an explicitly deferred UI follow-up (a canvas-side
+  // ScopeSelection equivalent), not a Kenji-track fix in this pass.
+  it('a scoped Crystal seed (survey scope) still saves with NO scope keys in the payload — confirms the gap is a safe/conservative default, not a wrong-scope bug', async () => {
+    const createGraphWorkflow = vi.fn().mockResolvedValue({ id: 'canvas_wf_scoped' });
+    vi.mocked(useApi).mockReturnValue(
+      makeApi({
+        createGraphWorkflow,
+        getWorkflowRegistry: vi.fn().mockResolvedValue({
+          ...REGISTRY,
+          actions: [{ action: 'flow.stop', label: 'Stop workflow', category: 'Flow', live: true }, ...REGISTRY.actions],
+        }),
+      }) as unknown as ReturnType<typeof useApi>,
+    );
+
+    const user = userEvent.setup();
+    // Exactly the seed shape WorkflowNLBuilderPage.tsx's editInCanvas() sends
+    // for a Crystal result that confidently matched a survey scope.
+    renderPage({
+      seed: {
+        name: 'Scoped NL flow', description: 'From Crystal', triggerType: 'survey.nps_drop',
+        nodes: EXISTING_WORKFLOW.nodes, edges: EXISTING_WORKFLOW.edges,
+        scopeType: 'survey', scopeSurveyId: 's1',
+      },
+    });
+
+    await waitFor(() => expect(mockSetNodes).toHaveBeenCalled());
+    await user.click(screen.getByRole('button', { name: /workflows\.builder\.save/i }));
+
+    await waitFor(() => expect(createGraphWorkflow).toHaveBeenCalledOnce());
+    const payload = createGraphWorkflow.mock.calls[0][0] as Record<string, unknown>;
+    // The known gap, made concrete: scope is silently dropped, not silently
+    // wrong. No scopeType/scopeSurveyId/scopeTagId key of ANY value reaches
+    // the API call — so the backend's own absent-defaults-to-'org' behavior
+    // is what actually decides the outcome, exactly as it does for every
+    // other scope-less caller.
+    expect(payload).not.toHaveProperty('scopeType');
+    expect(payload).not.toHaveProperty('scopeSurveyId');
+    expect(payload).not.toHaveProperty('scopeTagId');
+  });
 });
 
 // C-3 (DEEP_AUDIT_UX_FINDINGS.md §7/§8, Wave 11) — the canvas builder's
@@ -613,5 +686,101 @@ describe('WorkflowCanvasPage — C-3 mobile/tablet advisory', () => {
     expect(descInput.className).not.toMatch(/(?:^|\s)w-64(?:\s|$)/);
     expect(nameInput.className).toMatch(/w-full/);
     expect(descInput.className).toMatch(/w-full/);
+  });
+});
+
+// Wave 14 (docs/automation-hub/WAVE14_UNIFIED_BUILDER_SPEC.md §2/§3) — the
+// Crystal trigger icon + scope-context wiring, mirroring
+// WorkflowBuilderPage.test.tsx's equivalent suite.
+describe('WorkflowCanvasPage — AskCrystalFab + CrystalPanel context wiring (Wave 14)', () => {
+  it('renders the AskCrystalFab', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('ask-crystal-fab')).toBeInTheDocument());
+  });
+
+  it('clicking the FAB calls openCrystal() with no arguments', async () => {
+    renderPage();
+    await waitFor(() => screen.getByTestId('ask-crystal-fab'));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('ask-crystal-fab'));
+
+    expect(mockOpenCrystal).toHaveBeenCalledWith();
+  });
+
+  it('registers builder context on mount and resets it on unmount', async () => {
+    const { unmount } = renderPage();
+    await waitFor(() => screen.getByTestId('ask-crystal-fab'));
+
+    expect(mockSetBuilderContext).toHaveBeenCalledWith({ kind: 'workflow_builder' });
+
+    unmount();
+
+    expect(mockSetBuilderContext).toHaveBeenLastCalledWith(null);
+    expect(mockSetBuilderDraft).toHaveBeenLastCalledWith(null);
+    expect(mockSetBuilderDraftHydrator).toHaveBeenLastCalledWith(null);
+  });
+
+  it('keeps the builder draft summary current with mode "canvas" and org-wide scope (canvas has no scope UI)', async () => {
+    renderPage();
+    await waitFor(() => screen.getByTestId('ask-crystal-fab'));
+
+    await waitFor(() => {
+      expect(mockSetBuilderDraft).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'canvas', scopeSelection: { scopeType: 'org' } }),
+      );
+    });
+  });
+
+  it('registers a builder draft hydrator function on mount, and null on unmount', async () => {
+    const { unmount } = renderPage();
+    await waitFor(() => screen.getByTestId('ask-crystal-fab'));
+
+    await waitFor(() => {
+      expect(mockSetBuilderDraftHydrator).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    unmount();
+    expect(mockSetBuilderDraftHydrator).toHaveBeenLastCalledWith(null);
+  });
+
+  it('hydrator applies a create_workflow proposal (nodes/edges) via deserializeCanvas and returns true', async () => {
+    let capturedHydrator: ((proposal: { params: Record<string, unknown>; title: string }) => boolean) | undefined;
+    mockSetBuilderDraftHydrator.mockImplementation((fn) => {
+      if (fn) capturedHydrator = fn;
+    });
+
+    renderPage();
+    await waitFor(() => screen.getByTestId('ask-crystal-fab'));
+    await waitFor(() => expect(capturedHydrator).toBeInstanceOf(Function));
+
+    const proposal = {
+      title: 'Alert on NPS drop',
+      params: {
+        nodes: [
+          { id: 'trigger', type: 'trigger', trigger: 'survey.nps_drop' },
+          { id: 'action_0', type: 'action', action: 'notify.slack', config: { channel: '#cx' } },
+        ],
+        edges: [{ from: 'trigger', to: 'action_0' }],
+      },
+    };
+
+    let handled: boolean | undefined;
+    handled = capturedHydrator!(proposal);
+    expect(handled).toBe(true);
+  });
+
+  it('hydrator returns false for an unrecognized proposal shape (no nodes/edges), leaving the panel to fall back', async () => {
+    let capturedHydrator: ((proposal: { params: Record<string, unknown>; title: string }) => boolean) | undefined;
+    mockSetBuilderDraftHydrator.mockImplementation((fn) => {
+      if (fn) capturedHydrator = fn;
+    });
+
+    renderPage();
+    await waitFor(() => screen.getByTestId('ask-crystal-fab'));
+    await waitFor(() => expect(capturedHydrator).toBeInstanceOf(Function));
+
+    const legacyProposal = { title: 'Legacy', params: { trigger: 'nps_below_6', action_type: 'notify' } };
+    expect(capturedHydrator!(legacyProposal)).toBe(false);
   });
 });

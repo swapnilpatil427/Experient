@@ -304,3 +304,165 @@ penalty behavior, applied here at the skill-synthesis layer instead of the NL-pa
   ]
 }
 ```
+
+---
+
+## Example 5: Builder-context — "what have I built so far?"
+
+**Input** (Wave 15 — `CrystalInput.surface="workflow_builder"` force-selected this skill;
+`builder_draft` arrives via `survey_facts`, mirroring the frontend's in-progress draft):
+```json
+{
+  "message": "What have I built so far?",
+  "org_memory_facts": [],
+  "context_state": {
+    "decisions": [],
+    "data_retrieved": {"topics_loaded": false, "metrics_loaded": false}
+  },
+  "survey_facts": {
+    "survey_id": "org-wide",
+    "response_count": 0,
+    "survey_type": "custom",
+    "workflow_registry": {
+      "triggers": [{"type": "score.nps_drop", "category": "Score", "label": "NPS dropped"}],
+      "conditionFields": [{"field": "nps", "label": "NPS score", "kind": "number"}],
+      "conditionOperators": ["lt"],
+      "actions": [{"action": "notify.slack", "category": "Notify", "label": "Slack message", "live": true}]
+    },
+    "builder_draft": {
+      "mode": "sentence",
+      "triggerType": "score.nps_drop",
+      "scopeSelection": {"scopeType": "org"},
+      "conditionClauses": [{"field": "nps", "op": "lt", "value": "30"}],
+      "actions": [{"action": "notify.slack", "label": "Slack message"}],
+      "workflowName": "NPS drop alert",
+      "isEditMode": false
+    }
+  },
+  "tool_results": {},
+  "last_2_turns": []
+}
+```
+
+**Output**:
+```json
+{
+  "answer": "So far you have: a trigger on NPS dropped, a condition that fires when NPS is below 30, and one action — a Slack message. It's scoped org-wide (not limited to one survey or tag) and not yet saved. Want to add another action, tighten the condition, or scope it to a specific survey?",
+  "citations": ["score.nps_drop", "nps", "notify.slack"],
+  "suggestions": [
+    "Want to also file a Jira ticket when this fires?",
+    "Should this be scoped to a specific survey instead of org-wide?"
+  ],
+  "action_proposals": []
+}
+```
+
+Note: no `action_proposals` here — this is a pure read of the existing draft, not a request to
+change anything, so there's nothing to confirm. Every trigger/condition/action name in the
+answer is echoed verbatim from `builder_draft`/`workflow_registry`, never reworded or guessed.
+
+---
+
+## Example 6: Builder-context — additive proposal aware of the existing draft
+
+**Input**: the user already has a Slack action configured (same draft as Example 5) and asks to
+add a second action without restating the first.
+```json
+{
+  "message": "Also file a Jira ticket when this fires",
+  "org_memory_facts": [],
+  "context_state": {
+    "decisions": [],
+    "data_retrieved": {"topics_loaded": false, "metrics_loaded": false}
+  },
+  "survey_facts": {
+    "survey_id": "org-wide",
+    "response_count": 0,
+    "survey_type": "custom",
+    "workflow_registry": {
+      "triggers": [{"type": "score.nps_drop", "category": "Score", "label": "NPS dropped"}],
+      "conditionFields": [{"field": "nps", "label": "NPS score", "kind": "number"}],
+      "conditionOperators": ["lt"],
+      "actions": [
+        {"action": "notify.slack", "category": "Notify", "label": "Slack message", "live": true},
+        {"action": "jira.create_issue", "category": "Integration", "label": "Create Jira issue", "live": "env"}
+      ]
+    },
+    "builder_draft": {
+      "mode": "sentence",
+      "triggerType": "score.nps_drop",
+      "scopeSelection": {"scopeType": "org"},
+      "conditionClauses": [{"field": "nps", "op": "lt", "value": "30"}],
+      "actions": [{"action": "notify.slack", "label": "Slack message"}],
+      "workflowName": "NPS drop alert",
+      "isEditMode": false
+    }
+  },
+  "tool_results": {},
+  "last_2_turns": []
+}
+```
+
+**Output**:
+```json
+{
+  "answer": "Added a Jira ticket action alongside your existing Slack notification — both will fire together when NPS drops below 30.",
+  "citations": ["score.nps_drop", "nps", "notify.slack", "jira.create_issue"],
+  "suggestions": [
+    "Want me to also set a default Jira project, or leave that for you to pick when you save?",
+    "Should the Jira ticket only fire for the more severe drops, or every time this trigger fires?"
+  ],
+  "action_proposals": [
+    {
+      "type": "create_workflow",
+      "title": "NPS drop alert",
+      "description": "Your NPS drop alert already had a Slack notification configured — this adds a Jira ticket action alongside it, both firing when NPS drops below 30.",
+      "params": {
+        "survey_id": "org-wide",
+        "name": "NPS drop alert",
+        "description": "Notify Slack and file a Jira ticket when NPS drops below 30",
+        "trigger_type": "score.nps_drop",
+        "nodes": [
+          {"id": "trigger-1", "type": "trigger", "trigger": "score.nps_drop"},
+          {
+            "id": "condition-1",
+            "type": "condition",
+            "conditions": {"operator": "AND", "rules": [{"field": "nps", "op": "lt", "value": 30}]}
+          },
+          {
+            "id": "action-1",
+            "type": "action",
+            "action": "notify.slack",
+            "config": {},
+            "assumed": false,
+            "assumption_note": null
+          },
+          {
+            "id": "action-2",
+            "type": "action",
+            "action": "jira.create_issue",
+            "config": {},
+            "assumed": true,
+            "assumption_note": "No specific Jira project was named — a default project will need to be selected before this can be saved."
+          }
+        ],
+        "edges": [
+          {"from": "trigger-1", "to": "condition-1"},
+          {"from": "condition-1", "to": "action-1"},
+          {"from": "action-1", "to": "action-2"}
+        ],
+        "confidence": 0.8,
+        "warnings": ["No specific Jira project was named — a default project will need to be selected before this can be saved."]
+      },
+      "priority": "medium",
+      "requires_confirmation": true
+    }
+  ]
+}
+```
+
+Note: the proposal's `nodes` include BOTH `notify.slack` (already in `builder_draft.actions`)
+AND the newly requested `jira.create_issue` — never just the new action in isolation. Dropping
+the pre-existing Slack action here would look like Crystal forgot what the user already built, or
+worse, silently replaced it. This is the core "aware of the existing draft" behavior the
+builder-context injection exists to enable.
