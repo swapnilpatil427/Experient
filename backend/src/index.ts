@@ -192,7 +192,11 @@ app.post('/webhooks/novu', express.raw({ type: '*/*' }), async (req, res) => {
   }
 });
 
-app.use(express.json());
+// Default express.json() limit is 100kb — too small for Crystal turns, which
+// resend the full insights/topics arrays plus the growing conversation_history
+// on every message (see app/src/components/CrystalPanel.tsx). 5mb covers that
+// with headroom while still bounding worst-case body size for every other route.
+app.use(express.json({ limit: '5mb' }));
 app.use(requestId);  // attach req.id before logging
 app.use(httpLogger); // structured request logging + Prometheus HTTP metrics
 
