@@ -371,6 +371,47 @@ export async function generateGroupInsights(
 
 
 /**
+ * Fire Tag Report generation (TRACKER.md §1 reconciliation item 7 / §2). Mirrors
+ * generateGroupInsights's shape exactly: fire-and-forget, best-effort — caller
+ * should not await the full pipeline, only the HTTP kick-off. Unlike
+ * generateGroupInsights, no survey_ids are ever passed — Tag Report's backend
+ * layer never resolves survey membership (that is entirely CrystalOS's
+ * fetch_next_batch, working from tag_id + effectiveMaxSurveys as target_n).
+ *
+ * @param runId               - group_insight_runs.id created before calling this
+ * @param orgId
+ * @param tagId               - the single tag that defines this report (Tag Report is always single-tag, see TRACKER.md reconciliation item 5)
+ * @param runMode             - 'manual' | 'automated' | 'custom_range'
+ * @param effectiveMaxSurveys - already-resolved cap (3-tier COALESCE), passed to CrystalOS as target_n
+ * @param windowStart         - only set for custom_range; requested window start
+ * @param windowEnd           - only set for custom_range; requested window end
+ */
+export async function generateTagReport(
+  runId: string,
+  orgId: string,
+  tagId: string,
+  runMode: 'manual' | 'automated' | 'custom_range',
+  effectiveMaxSurveys: number,
+  windowStart: string | null = null,
+  windowEnd: string | null = null,
+): Promise<unknown> {
+  logger.info({ runId, orgId, tagId, runMode, effectiveMaxSurveys }, 'agents:generateTagReport');
+  return _fetch('/tag-reports/generate', {
+    method: 'POST',
+    body: JSON.stringify({
+      run_id:                runId,
+      org_id:                orgId,
+      tag_id:                tagId,
+      run_mode:              runMode,
+      window_start:          windowStart,
+      window_end:            windowEnd,
+      effective_max_surveys: effectiveMaxSurveys,
+    }),
+  }, 15_000);
+}
+
+
+/**
  * Fire insight generation for a survey. Best-effort; caller should not await
  * the full pipeline — only the HTTP kick-off.
  *

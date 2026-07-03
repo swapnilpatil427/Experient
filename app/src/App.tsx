@@ -42,6 +42,11 @@ import { TopicAnalysisHubPage } from './pages/experience/TopicAnalysisHubPage';
 import { TopicDeepDivePage } from './pages/experience/TopicDeepDivePage';
 import { SurveyTrendsPage } from './pages/experience/SurveyTrendsPage';
 import { OrgTrendsPage } from './pages/experience/OrgTrendsPage';
+import { TagReportsIndexPage } from './pages/experience/TagReportsIndexPage';
+import { TagReportNewPage } from './pages/experience/TagReportNewPage';
+import { TagReportPage } from './pages/experience/TagReportPage';
+import { TagReportTrailPage } from './pages/experience/TagReportTrailPage';
+import { ResponseDetailPage } from './pages/ResponseDetailPage';
 import { SignInPage } from './pages/SignInPage';
 import { SurveyFillPage } from './pages/SurveyFillPage';
 import { ErrorPage } from './pages/ErrorPage';
@@ -152,6 +157,14 @@ export default function App() {
             <Route path={ROUTES.EXPERIENCE_SURVEY_TOPICS} element={<ErrorBoundary inline><TopicAnalysisHubPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY_TOPIC}  element={<ErrorBoundary inline><TopicDeepDivePage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY_TRENDS} element={<ErrorBoundary inline><SurveyTrendsPage /></ErrorBoundary>} />
+
+            {/* Tag Report — cross-survey AI insight rollups (nested under Experience) */}
+            <Route path={ROUTES.TAG_REPORTS_INDEX} element={<ErrorBoundary inline><TagReportsIndexPage /></ErrorBoundary>} />
+            <Route path={ROUTES.TAG_REPORT_TRAIL}  element={<ErrorBoundary inline><TagReportTrailPage /></ErrorBoundary>} />
+            <Route path={ROUTES.TAG_REPORT_NEW}    element={<ErrorBoundary inline><TagReportNewPage /></ErrorBoundary>} />
+            <Route path={ROUTES.TAG_REPORT_LATEST} element={<ErrorBoundary inline><TagReportPage /></ErrorBoundary>} />
+            <Route path={ROUTES.TAG_REPORT}        element={<ErrorBoundary inline><TagReportPage /></ErrorBoundary>} />
+            <Route path={ROUTES.RESPONSE_DETAIL}   element={<ErrorBoundary inline><ResponseDetailPage /></ErrorBoundary>} />
 
             {/* Tier 3 — Closed-Loop Action Platform */}
             <Route path={ROUTES.CONTACTS}            element={<ErrorBoundary inline><ContactsPage /></ErrorBoundary>} />

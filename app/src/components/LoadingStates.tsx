@@ -76,6 +76,49 @@ export function SurveyListSkeleton({ count = 4 }: SurveyListSkeletonProps) {
   );
 }
 
+export function TagReportCardSkeleton() {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="rounded-2xl p-5 bg-white"
+      style={{ boxShadow: '0 4px 20px rgba(0,0,0,0.04)', border: '1px solid rgba(171,173,175,0.12)' }}
+    >
+      <div className="flex items-center gap-2 mb-4">
+        <div className="skeleton h-2.5 w-2.5 rounded-full" />
+        <div className="skeleton h-4 w-32 rounded-lg" />
+      </div>
+      <div className="skeleton h-3 w-20 rounded mb-3" />
+      <div className="flex items-center gap-2">
+        <div className="skeleton h-4 w-24 rounded" />
+        <div className="skeleton h-4 w-16 rounded-full" />
+      </div>
+    </motion.div>
+  );
+}
+
+interface TagReportsIndexSkeletonProps {
+  count?: number;
+}
+
+/** Modeled on `SurveyListSkeleton`'s shape/rhythm — TRACKER.md Part C. */
+export function TagReportsIndexSkeleton({ count = 6 }: TagReportsIndexSkeletonProps) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {Array.from({ length: count }, (_, i) => (
+        <motion.div
+          key={i}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: i * 0.06 }}
+        >
+          <TagReportCardSkeleton />
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
 interface OverlayLoaderProps {
   message?: string;
   visible?: boolean;

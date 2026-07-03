@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TagBadge } from '../../components/TagBadge';
 import type { SurveyTag } from '../../lib/api';
@@ -135,5 +135,60 @@ describe('TagBadge', () => {
     const customTag: SurveyTag = { ...baseTag, id: 'tag-99', slug: 'enterprise-feedback', name: 'Enterprise Feedback' };
     render(<TagBadge tag={customTag} removable={true} onRemove={onRemove} />);
     expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'Remove Enterprise Feedback');
+  });
+
+  // ── onNavigate (Tag Report entry point, TRACKER.md §3 Part D) ────────────────
+
+  it('does not render as navigable when onNavigate is absent', () => {
+    render(<TagBadge tag={baseTag} />);
+    expect(screen.queryByRole('button', { name: /View Tag Report/i })).not.toBeInTheDocument();
+  });
+
+  it('renders as a navigable button when onNavigate is provided', () => {
+    const onNavigate = vi.fn();
+    render(<TagBadge tag={baseTag} onNavigate={onNavigate} />);
+    expect(screen.getByRole('button', { name: 'View Tag Report for Customer' })).toBeInTheDocument();
+  });
+
+  it('calls onNavigate with tag.id when clicked', async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    render(<TagBadge tag={baseTag} onNavigate={onNavigate} />);
+    await user.click(screen.getByRole('button', { name: 'View Tag Report for Customer' }));
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(onNavigate).toHaveBeenCalledWith('tag-1');
+  });
+
+  it('clicking onNavigate stops event propagation (does not trigger a parent row click)', async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    const parentClick = vi.fn();
+    render(
+      <div onClick={parentClick}>
+        <TagBadge tag={baseTag} onNavigate={onNavigate} />
+      </div>,
+    );
+    await user.click(screen.getByRole('button', { name: 'View Tag Report for Customer' }));
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(parentClick).not.toHaveBeenCalled();
+  });
+
+  it('supports keyboard activation (Enter) for onNavigate', () => {
+    const onNavigate = vi.fn();
+    render(<TagBadge tag={baseTag} onNavigate={onNavigate} />);
+    const badge = screen.getByRole('button', { name: 'View Tag Report for Customer' });
+    badge.focus();
+    fireEvent.keyDown(badge, { key: 'Enter' });
+    expect(onNavigate).toHaveBeenCalledWith('tag-1');
+  });
+
+  it('is both removable and navigable at once without one handler firing the other', async () => {
+    const user = userEvent.setup();
+    const onRemove = vi.fn();
+    const onNavigate = vi.fn();
+    render(<TagBadge tag={baseTag} removable onRemove={onRemove} onNavigate={onNavigate} />);
+    await user.click(screen.getByRole('button', { name: 'Remove Customer' }));
+    expect(onRemove).toHaveBeenCalledOnce();
+    expect(onNavigate).not.toHaveBeenCalled();
   });
 });

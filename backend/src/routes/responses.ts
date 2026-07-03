@@ -350,4 +350,46 @@ router.get('/:surveyId/responses', requireAuth, async (req: Request, res: Respon
   }
 });
 
+// ── GET /:surveyId/responses/:responseId ────────────────────────────────────────
+// Response Detail — R-T5's audit-trail terminus (docs/tag-report/DESIGN.md), the
+// page a Tag Report / single-survey insight citation ultimately drills into.
+// Added 2026-07-02: this endpoint did not exist yet — the frontend page (Task 16)
+// and its `api.getSurveyResponse()` caller were built against this exact contract
+// in parallel, so this closes that gap rather than introducing new scope.
+//
+// Re-checks org/survey access on every request the same way the list route above
+// does (`survey_id = $1 AND org_id = $2`, via requireAuth's req.orgId) — do NOT
+// treat "user can see a Tag Report that cites this response" as sufficient
+// authorization; this route enforces the survey's own normal access rule
+// independently. Also guards `deleted_at IS NULL` (soft-deleted responses must
+// 404, not surface). A missing/soft-deleted/wrong-org response all return an
+// identical 404 — the response body must not distinguish "doesn't exist" from
+// "exists but you can't see it" or "was deleted", to avoid leaking existence.
+//
+// Fixed 2026-07-02 (security review, Riley — HIGH, confirmed): the initial
+// version only checked the RESPONSE's own deleted_at, not its parent SURVEY's.
+// Soft-deleting a survey does not cascade to its responses, so without this
+// join a Tag Report's frozen citation manifest (group_insights.citations_json,
+// which durably stores (survey_id, response_id) pairs) was a standing path to
+// read a deleted survey's verbatim response content indefinitely. Joins to
+// surveys and requires deleted_at IS NULL on BOTH tables.
+router.get('/:surveyId/responses/:responseId', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { rows } = await query(
+      `SELECT r.* FROM responses r
+       JOIN surveys s ON s.id = r.survey_id
+       WHERE r.id = $1 AND r.survey_id = $2 AND r.org_id = $3
+         AND r.deleted_at IS NULL AND s.deleted_at IS NULL`,
+      [req.params.responseId, req.params.surveyId, req.orgId]
+    );
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Response not found' });
+      return;
+    }
+    res.json({ response: rows[0] });
+  } catch (err: unknown) {
+    serverError(res, err instanceof Error ? err : new Error(String(err)));
+  }
+});
+
 export default router;

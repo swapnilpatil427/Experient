@@ -11,6 +11,11 @@
  *   GET    /api/survey-tags/:id/surveys              — surveys with this tag (with response counts)
  *   GET    /api/survey-tags/:id/latest-report        — latest completed group insight run for tag
  *
+ *   Tag Report (docs/tag-report/DESIGN.md + TRACKER.md §1 Task 9/10):
+ *   GET    /api/survey-tags/:id/report-config        — effective + raw max-surveys config
+ *   PATCH  /api/survey-tags/:id/report-config        — set/clear the tag's max_surveys_override
+ *   GET    /api/survey-tags/:id/tag-report-history   — paginated run history across all 3 modes
+ *
  *   Survey-tag mappings (mounted at /api/surveys in surveys.ts):
  *   POST   /api/surveys/:surveyId/tags                — add tags to survey { tag_ids: string[] }
  *   DELETE /api/surveys/:surveyId/tags/:tagId         — remove tag from survey
@@ -22,6 +27,7 @@ import { requireAuth } from '../middleware/auth';
 import { requireRole } from '../middleware/requireRole';
 import { serverError } from '../lib/httpError';
 import logger from '../lib/logger';
+import { getOrgScopedTag, resolveEffectiveMaxSurveys } from '../lib/tagReportSelection';
 
 const router = express.Router();
 
@@ -264,6 +270,106 @@ router.get('/:id/latest-report', requireAuth, async (req: Request, res: Response
     res.json({ tag, run, insights });
   } catch (err: unknown) {
     logger.error({ err: (err as Error).message, orgId: req.orgId, tagId: req.params.id }, 'tags:latest_report:error');
+    serverError(res, err instanceof Error ? err : new Error(String(err)));
+  }
+});
+
+// ── Tag Report — report-config + history (TRACKER.md §1 Tasks 9/10) ──────────
+
+// GET /api/survey-tags/:id/report-config — effective + raw max-surveys config
+router.get('/:id/report-config', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const tag = await getOrgScopedTag(req.params.id, req.orgId);
+    if (!tag) { res.status(404).json({ error: 'Tag not found' }); return; }
+
+    const { rows } = await query(
+      'SELECT max_surveys_override FROM survey_tags WHERE id = $1 AND org_id = $2',
+      [req.params.id, req.orgId],
+    );
+    const rawOverride = (rows[0] as { max_surveys_override: number | null } | undefined)?.max_surveys_override ?? null;
+    const effectiveMaxSurveys = await resolveEffectiveMaxSurveys(req.params.id, req.orgId);
+
+    res.json({
+      tag_id: req.params.id,
+      max_surveys_override: rawOverride,
+      effective_max_surveys: effectiveMaxSurveys,
+    });
+  } catch (err: unknown) {
+    logger.error({ err: (err as Error).message, orgId: req.orgId, tagId: req.params.id }, 'tags:report_config:get:error');
+    serverError(res, err instanceof Error ? err : new Error(String(err)));
+  }
+});
+
+// PATCH /api/survey-tags/:id/report-config — set/clear max_surveys_override
+router.patch('/:id/report-config', requireAuth, requireRole('analyst'), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { max_surveys_override } = req.body as Record<string, unknown>;
+    if (
+      max_surveys_override !== null
+      && (typeof max_surveys_override !== 'number'
+        || !Number.isInteger(max_surveys_override)
+        || max_surveys_override < 1
+        || max_surveys_override > 20)
+    ) {
+      res.status(400).json({ error: 'max_surveys_override must be an integer between 1 and 20, or null' });
+      return;
+    }
+
+    const { rows } = await query(
+      `UPDATE survey_tags SET max_surveys_override = $1, updated_at = NOW()
+       WHERE id = $2 AND org_id = $3
+       RETURNING id, max_surveys_override`,
+      [max_surveys_override, req.params.id, req.orgId],
+    );
+    if (!rows.length) { res.status(404).json({ error: 'Tag not found' }); return; }
+
+    const effectiveMaxSurveys = await resolveEffectiveMaxSurveys(req.params.id, req.orgId);
+    logger.info({ orgId: req.orgId, tagId: req.params.id, max_surveys_override }, 'tags:report_config:patched');
+    res.json({
+      tag_id: req.params.id,
+      max_surveys_override: (rows[0] as { max_surveys_override: number | null }).max_surveys_override,
+      effective_max_surveys: effectiveMaxSurveys,
+    });
+  } catch (err: unknown) {
+    logger.error({ err: (err as Error).message, orgId: req.orgId, tagId: req.params.id }, 'tags:report_config:patch:error');
+    serverError(res, err instanceof Error ? err : new Error(String(err)));
+  }
+});
+
+// GET /api/survey-tags/:id/tag-report-history — paginated run history, all 3 modes
+router.get('/:id/tag-report-history', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { rows: tagRows } = await query(
+      'SELECT id FROM survey_tags WHERE id = $1 AND org_id = $2',
+      [req.params.id, req.orgId],
+    );
+    if (!tagRows.length) { res.status(404).json({ error: 'Tag not found' }); return; }
+
+    const limitParam = parseInt(String(req.query.limit ?? '20'), 10);
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 20;
+    const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+
+    const params: unknown[] = [req.orgId, req.params.id];
+    let cursorClause = '';
+    if (cursor) {
+      params.push(cursor);
+      cursorClause = `AND created_at < (SELECT created_at FROM group_insight_runs WHERE id = $${params.length} AND org_id = $1)`;
+    }
+    params.push(limit);
+
+    const { rows } = await query(
+      `SELECT id, run_mode, trigger, status, window_start, window_end, parent_run_id, created_at, completed_at
+       FROM group_insight_runs
+       WHERE org_id = $1 AND tag_ids @> ARRAY[$2]::uuid[] ${cursorClause}
+       ORDER BY created_at DESC
+       LIMIT $${params.length}`,
+      params,
+    );
+
+    const nextCursor = rows.length === limit ? (rows[rows.length - 1] as { id: string }).id : null;
+    res.json({ runs: rows, next_cursor: nextCursor });
+  } catch (err: unknown) {
+    logger.error({ err: (err as Error).message, orgId: req.orgId, tagId: req.params.id }, 'tags:tag_report_history:error');
     serverError(res, err instanceof Error ? err : new Error(String(err)));
   }
 });

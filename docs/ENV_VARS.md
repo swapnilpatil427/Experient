@@ -57,6 +57,7 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `CREDIT_COST_{AUTOMATED_CHECKPOINT,AUTOMATED_REPORT}` | 5/15 | Insight Pipeline v2 automated run costs — checkpoint-only vs +tiered report (CrystalOS `credit_preflight`; survey/org settings may override) |
 | `REFRESH_DAILY_LIMIT` | 5 | Max "Refresh" button presses per survey per day (backend; evaluated at startup) |
 | `MANUAL_DAILY_RUN_LIMIT` | 10 | Max Expert + Quick manual insight runs per survey per day (backend; evaluated at startup) |
+| `TAG_REPORT_MANUAL_DAILY_LIMIT` | 10 | Max Tag Report Manual + Custom Range trigger requests per (org, tag) per day (`routes/survey-groups.ts`'s `tag-report/manual`/`tag-report/custom-range`) |
 | `CREDIT_PRICE_{STARTER,GROWTH,ENTERPRISE,PLATFORM}` | 49/299/1499/0 | Plan list price (USD) |
 | `CREDIT_FREE_LIFETIME_GRANT` | 225 | One-time free-tier grant |
 | `CREDIT_PERIOD_DAYS` | 30 | Allowance period length |
@@ -74,6 +75,7 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `WORKFLOW_MAX_ATTEMPTS` | `5` | Attempts (incl. first) before a failed workflow execution is dead-lettered (`workflow_executions.dead_letter`) |
 | `WORKFLOW_CONNECTOR_TIMEOUT_MS` | `10000` | `AbortSignal.timeout()` applied to every outbound connector fetch (Jira/Salesforce/ServiceNow/Zendesk in `lib/connectors.ts` + `notify.webhook` in `lib/workflowEngine.ts`) so a hung TCP connection fails bounded instead of stalling the retry/backoff path |
 | `WORKFLOW_EXECUTING_TIMEOUT_MIN` | `5` | Minutes a `workflow_executions` row may sit in `status = 'executing'` before the stuck-row reaper (`lib/workflowQueue.ts::sweepDueRetries`) force-fails it into the normal retry/DLQ path |
+| `TAG_REPORT_JITTER_WINDOW_MS` | `300000` (5 min) | Deterministic per-(org,tag) jitter window applied at trigger time by the Tag Report Automated-mode due-tags sweep (`lib/tagReportScheduler.ts`) before enqueueing onto the shared workflow-trigger queue — avoids a thundering herd when many tags become due in the same sweep tick |
 | `ENABLE_SCHEDULER` | `false` | CrystalOS in-process scheduler |
 | `ENABLE_STREAM_CONSUMER` | on when `REDIS_URL` set | CrystalOS progressive-tier consumer |
 | `SCHEDULER_PORT` | 8090 | Scheduler service HTTP (`/health`,`/metrics`) |
@@ -192,6 +194,14 @@ Insight Pipeline v2 (Phase 6/7): `CREDIT_COST_CUSTOM_BASE` (default `25` — bas
 `ENABLE_RETENTION_JOB` (default `false` — gate the nightly automated-checkpoint retention/compaction job in `scheduler.py`;
 dev no-op unless set to `true`), `RETENTION_BLOB_DROP_DAYS` (default `30` — grace days before a collapsed low-delta
 automated checkpoint's `report_blob_ref` is dropped).
+Tag Report (`crystalos/graphs/tag_report.py`, added 2026-07-02): `TAG_REPORT_DEFAULT_TARGET_N` (default `5` —
+survey-selection target before an org/tag override applies), `TAG_REPORT_CEILING_N` (default `20` — hard cap on
+surveys scanned regardless of overrides), `TAG_REPORT_BATCH_SIZE` (default `3` — surveys fetched per
+`fetch_next_batch` loop iteration), `TAG_REPORT_MIN_RESPONSE_COUNT` (default `30` — per-survey response-count floor
+for trend eligibility), `TAG_REPORT_MIN_TRUST_SCORE` (default `40` — per-survey trust-score floor for trend
+eligibility), `TAG_REPORT_AGREEMENT_FLOOR` (default `2` — minimum agreeing trend-eligible surveys before a metric's
+`confidence_tier` can be `"confirmed"` rather than `"insufficient"`, DESIGN.md R-T2), `TAG_REPORT_STALENESS_THRESHOLD_DAYS`
+(default `21` — checkpoint-age divergence across contributing surveys that triggers a staleness warning, DESIGN.md R-A2).
 All have safe defaults — only set to tune; they don't belong in `.env.example`.
 
 ---

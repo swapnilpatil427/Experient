@@ -64,6 +64,19 @@ export const ROUTES = {
   GROUP_REPORT:        '/app/groups/:tagId/report/:runId',
   GROUP_REPORT_LATEST: '/app/groups/:tagId/report',
 
+  // Tag Report — cross-survey AI insight rollups, nested under Experience
+  // (DESIGN.md Appendix C: dedicated sub-route, not a top-level nav item nor
+  // a tab inside ExperienceHubPage).
+  TAG_REPORTS_INDEX:  '/app/experience/reports',
+  TAG_REPORT_NEW:     '/app/experience/tags/:tagId/report/new',
+  TAG_REPORT_LATEST:  '/app/experience/tags/:tagId/report',
+  TAG_REPORT:         '/app/experience/tags/:tagId/report/:runId',
+  TAG_REPORT_TRAIL:   '/app/experience/tags/:tagId/report/trail',
+
+  // Response Detail — R-T5 audit-trail terminus (survey-scoped, matches how
+  // response data is scoped elsewhere).
+  RESPONSE_DETAIL: '/app/surveys/:surveyId/responses/:responseId',
+
   // Admin — Crystal
   ADMIN_CRYSTAL:              '/app/admin/crystal',
   ADMIN_CRYSTAL_SKILLS:       '/app/admin/crystal/skills',

@@ -8,12 +8,13 @@ import express from 'express';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 
-const AUTH_PATH     = _require.resolve(resolve(__dirname, '../middleware/auth'));
-const ROLE_PATH     = _require.resolve(resolve(__dirname, '../middleware/requireRole'));
-const DB_PATH       = _require.resolve(resolve(__dirname, '../lib/db'));
-const HTTP_ERR_PATH = _require.resolve(resolve(__dirname, '../lib/httpError'));
-const LOGGER_PATH   = _require.resolve(resolve(__dirname, '../lib/logger'));
-const ROUTER_PATH   = _require.resolve(resolve(__dirname, '../routes/tags'));
+const AUTH_PATH      = _require.resolve(resolve(__dirname, '../middleware/auth'));
+const ROLE_PATH      = _require.resolve(resolve(__dirname, '../middleware/requireRole'));
+const DB_PATH        = _require.resolve(resolve(__dirname, '../lib/db'));
+const HTTP_ERR_PATH  = _require.resolve(resolve(__dirname, '../lib/httpError'));
+const LOGGER_PATH    = _require.resolve(resolve(__dirname, '../lib/logger'));
+const SELECTION_PATH = _require.resolve(resolve(__dirname, '../lib/tagReportSelection'));
+const ROUTER_PATH    = _require.resolve(resolve(__dirname, '../routes/tags'));
 
 let dbQuery;
 
@@ -38,6 +39,11 @@ function buildApp() {
     warn:  () => {},
     default: { info: () => {}, error: () => {}, warn: () => {} },
   });
+  // lib/tagReportSelection.ts is a REAL module (not faked above) that reads
+  // `query` from lib/db at its own require-time. Since it isn't the router
+  // itself, it would otherwise stay cached across tests with a stale db
+  // reference from whichever test first loaded it — invalidate it here too.
+  delete _require.cache[SELECTION_PATH];
   delete _require.cache[ROUTER_PATH];
   const router = _require(ROUTER_PATH);
   const app = express();
@@ -558,5 +564,145 @@ describe('slug generation via POST /api/tags', () => {
 
     await api(buildApp(), 'POST', '/api/tags', { name: 'Triple Duplicate' });
     expect(capturedSlug).toBe('triple-duplicate-3');
+  });
+});
+
+// ── Tag Report — report-config + history (TRACKER.md §1 Tasks 9/10) ─────────
+//
+// getOrgScopedTag/resolveEffectiveMaxSurveys (lib/tagReportSelection.ts) are
+// thin wrappers over `query` from lib/db — the DB_PATH mock injected by
+// buildApp() above already intercepts their require of './db' (same resolved
+// absolute path), so no separate module mock is needed here.
+
+describe('GET /api/tags/:id/report-config', () => {
+  it('returns the raw override and the resolved effective cap', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('SELECT id, name, slug, color FROM survey_tags')) return { rows: [{ id: 'tag-1', name: 'NPS', slug: 'nps', color: null }] };
+      if (text.includes('SELECT max_surveys_override FROM survey_tags')) return { rows: [{ max_surveys_override: 8 }] };
+      if (text.includes('effective_max_surveys')) return { rows: [{ effective_max_surveys: 8 }] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/tags/tag-1/report-config');
+    expect(status).toBe(200);
+    expect(body).toEqual({ tag_id: 'tag-1', max_surveys_override: 8, effective_max_surveys: 8 });
+  });
+
+  it('resolves to the platform default when no override is set anywhere', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('SELECT id, name, slug, color FROM survey_tags')) return { rows: [{ id: 'tag-1', name: 'NPS', slug: 'nps', color: null }] };
+      if (text.includes('SELECT max_surveys_override FROM survey_tags')) return { rows: [{ max_surveys_override: null }] };
+      if (text.includes('effective_max_surveys')) return { rows: [{ effective_max_surveys: 5 }] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/tags/tag-1/report-config');
+    expect(status).toBe(200);
+    expect(body).toEqual({ tag_id: 'tag-1', max_surveys_override: null, effective_max_surveys: 5 });
+  });
+
+  it('returns 404 when the tag does not exist', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('SELECT id, name, slug, color FROM survey_tags')) return { rows: [] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/tags/missing/report-config');
+    expect(status).toBe(404);
+    expect(body.error).toBe('Tag not found');
+  });
+});
+
+describe('PATCH /api/tags/:id/report-config', () => {
+  it('sets max_surveys_override and returns the resolved effective cap', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.startsWith('UPDATE survey_tags SET max_surveys_override')) return { rows: [{ id: 'tag-1', max_surveys_override: 12 }] };
+      if (text.includes('effective_max_surveys')) return { rows: [{ effective_max_surveys: 12 }] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/tags/tag-1/report-config', { max_surveys_override: 12 });
+    expect(status).toBe(200);
+    expect(body).toEqual({ tag_id: 'tag-1', max_surveys_override: 12, effective_max_surveys: 12 });
+  });
+
+  it('clears the override with null', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.startsWith('UPDATE survey_tags SET max_surveys_override')) return { rows: [{ id: 'tag-1', max_surveys_override: null }] };
+      if (text.includes('effective_max_surveys')) return { rows: [{ effective_max_surveys: 5 }] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/tags/tag-1/report-config', { max_surveys_override: null });
+    expect(status).toBe(200);
+    expect(body.max_surveys_override).toBeNull();
+  });
+
+  it('returns 400 for an out-of-range override (> 20)', async () => {
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/tags/tag-1/report-config', { max_surveys_override: 21 });
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/between 1 and 20/);
+  });
+
+  it('returns 400 for a non-integer override', async () => {
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/tags/tag-1/report-config', { max_surveys_override: 2.5 });
+    expect(status).toBe(400);
+  });
+
+  it('returns 404 when the tag does not exist (UPDATE affects 0 rows)', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.startsWith('UPDATE survey_tags SET max_surveys_override')) return { rows: [] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/tags/missing/report-config', { max_surveys_override: 10 });
+    expect(status).toBe(404);
+    expect(body.error).toBe('Tag not found');
+  });
+});
+
+describe('GET /api/tags/:id/tag-report-history', () => {
+  it('returns the run history across all three modes, newest first', async () => {
+    const fakeRuns = [
+      { id: 'run-3', run_mode: 'custom_range', trigger: 'manual', status: 'completed', created_at: 't3' },
+      { id: 'run-2', run_mode: 'automated', trigger: 'scheduled', status: 'completed', created_at: 't2' },
+      { id: 'run-1', run_mode: 'manual', trigger: 'manual', status: 'completed', created_at: 't1' },
+    ];
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('SELECT id FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
+      if (text.includes('FROM group_insight_runs')) return { rows: fakeRuns };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/tags/tag-1/tag-report-history');
+    expect(status).toBe(200);
+    expect(body.runs).toHaveLength(3);
+    expect(body.runs[0]).toMatchObject({ id: 'run-3' });
+  });
+
+  it('returns 404 when the tag does not exist', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('SELECT id FROM survey_tags')) return { rows: [] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/tags/missing/tag-report-history');
+    expect(status).toBe(404);
+    expect(body.error).toBe('Tag not found');
+  });
+
+  it('paginates via next_cursor when a full page is returned', async () => {
+    const fullPage = Array.from({ length: 20 }, (_, i) => ({ id: `run-${i}`, created_at: `t${i}` }));
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('SELECT id FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
+      if (text.includes('FROM group_insight_runs')) return { rows: fullPage };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/tags/tag-1/tag-report-history');
+    expect(status).toBe(200);
+    expect(body.next_cursor).toBe('run-19');
+  });
+
+  it('returns next_cursor: null when fewer than a full page is returned', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('SELECT id FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
+      if (text.includes('FROM group_insight_runs')) return { rows: [{ id: 'run-1', created_at: 't1' }] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/tags/tag-1/tag-report-history');
+    expect(status).toBe(200);
+    expect(body.next_cursor).toBeNull();
   });
 });

@@ -43,6 +43,7 @@
 import { getRedisClient, getRedisBlockingClient } from './redis';
 import { query } from './db';
 import { runWorkflowsForEvent, type TriggerEvent } from './workflowEngine';
+import { TAG_REPORT_DUE_TRIGGER_TYPE, handleTagReportDueTrigger } from './tagReportScheduler';
 
 // ── Stream identity ──────────────────────────────────────────────────────────
 
@@ -159,6 +160,16 @@ async function ensureGroup(redis: NonNullable<ReturnType<typeof getRedisBlocking
 
 async function handleTrigger(evt: ParsedWorkflowTriggerEvent, streamId: string): Promise<void> {
   try {
+    // Tag Report's Automated-mode due-tags sweep (lib/tagReportScheduler.ts)
+    // reuses this queue for thundering-herd jitter + crash-recovery, but is a
+    // system-internal signal, NOT an org-authored automation trigger — dispatch
+    // it to its own dedicated handler instead of runWorkflowsForEvent (which is
+    // specifically for evaluating org-authored workflows against a trigger type).
+    if (evt.triggerType === TAG_REPORT_DUE_TRIGGER_TYPE) {
+      const tagId = (evt.event as Record<string, unknown> | undefined)?.entityId as string | undefined;
+      if (tagId) await handleTagReportDueTrigger(evt.orgId, tagId);
+      return;
+    }
     await runWorkflowsForEvent(evt.orgId, evt.triggerType, evt.event, streamId);
   } catch (err: unknown) {
     const error = err instanceof Error ? err : new Error(String(err));

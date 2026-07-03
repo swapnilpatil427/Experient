@@ -241,4 +241,60 @@ describe('org insight defaults', () => {
     const { status } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', { stream_response_threshold: 1 });
     expect(status).toBe(400);
   });
+
+  // ── Tag Report — max_surveys_per_tag_report (TRACKER.md §1 Task 11) ────────
+  // This key lives on org_insight_defaults but has no survey_insight_settings
+  // equivalent — kept out of the shared settingFields/ORG_DEFAULT_KEYS mirror
+  // and added as a standalone schema field (see schemas/insightSettings.ts).
+
+  it('GET includes max_surveys_per_tag_report in defaults (null when unset)', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM org_insight_defaults')) return { rows: [{ stream_response_threshold: 20 }] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/orgs/o1/insight-defaults');
+    expect(status).toBe(200);
+    expect(body.defaults.max_surveys_per_tag_report).toBeNull();
+  });
+
+  it('PATCH as admin can set max_surveys_per_tag_report', async () => {
+    const seen = [];
+    dbQuery = vi.fn(async (text) => {
+      seen.push(text);
+      if (text.startsWith('INSERT INTO org_insight_defaults')) {
+        return { rows: [{ max_surveys_per_tag_report: 12, updated_by: 'u1' }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', { max_surveys_per_tag_report: 12 });
+    expect(status).toBe(200);
+    expect(body.defaults.max_surveys_per_tag_report).toBe(12);
+    expect(seen.some((t) => t.includes('max_surveys_per_tag_report'))).toBe(true);
+  });
+
+  it('PATCH accepts null to clear max_surveys_per_tag_report', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.startsWith('INSERT INTO org_insight_defaults')) return { rows: [{ max_surveys_per_tag_report: null }] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', { max_surveys_per_tag_report: null });
+    expect(status).toBe(200);
+    expect(body.defaults.max_surveys_per_tag_report).toBeNull();
+  });
+
+  it('PATCH rejects max_surveys_per_tag_report out of range (> 20) with 400', async () => {
+    const { status } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', { max_surveys_per_tag_report: 21 });
+    expect(status).toBe(400);
+  });
+
+  it('PATCH rejects max_surveys_per_tag_report below range (< 1) with 400', async () => {
+    const { status } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', { max_surveys_per_tag_report: 0 });
+    expect(status).toBe(400);
+  });
+
+  it('PATCH as viewer setting max_surveys_per_tag_report is 403 (admin-only, same gate)', async () => {
+    mockRole = 'org:viewer';
+    const { status } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', { max_surveys_per_tag_report: 10 });
+    expect(status).toBe(403);
+  });
 });

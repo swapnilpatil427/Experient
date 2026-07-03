@@ -20,6 +20,7 @@ import { useSetPageTitle } from '../../contexts/pageTitle';
 import { useApi } from '../../hooks/useApi';
 import { useCrystalPanel } from '../../contexts/crystalPanel';
 import { Icon } from '../../components/Icon';
+import { ExperienceSubNav } from '../../components/ExperienceSubNav';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ROUTES, toPath } from '../../constants/routes';
@@ -175,6 +176,8 @@ export function ExperienceHubPage() {
   return (
     <TooltipProvider delayDuration={200}>
     <div className="max-w-7xl mx-auto w-full space-y-6 pt-6 md:pt-8">
+
+      <ExperienceSubNav active="overview" />
 
       {/* ══════════════════════════════════════════════════════════════════
           § 1  DARK CINEMATIC HERO

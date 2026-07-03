@@ -656,17 +656,29 @@ export function UnifiedInsightsView({
                       ) : <div className="flex-1" />;
                     })()}
 
-                    {/* Respondent quotes — 2 actual quotes, not opaque bookmark icons */}
+                    {/* Respondent quotes — 2 actual quotes, not opaque bookmark icons.
+                        Click-through to the Response Detail page (R-T5 audit trail) —
+                        survey_id comes from this page's own scope (focusSurveyId),
+                        since UnifiedInsightsView is always survey-scoped already. */}
                     {insight.citations_json.length > 0 && (
                       <div className="space-y-1.5 mb-3">
-                        {insight.citations_json.slice(0, 2).map((c) => (
-                          <div key={c.response_id} className="px-3 py-2 rounded-lg bg-muted/60"
-                            style={{ borderLeft: `3px solid ${SENTIMENT_BORDER[c.sentiment] ?? 'var(--color-outline-variant, #ccc)'}` }}>
-                            <p className="text-xs leading-relaxed text-on-surface line-clamp-2">
-                              "{c.quote}"
-                            </p>
-                          </div>
-                        ))}
+                        {insight.citations_json.slice(0, 2).map((c) => {
+                          const clickable = Boolean(focusSurveyId && c.response_id);
+                          return (
+                            <div
+                              key={c.response_id}
+                              role={clickable ? 'button' : undefined}
+                              tabIndex={clickable ? 0 : undefined}
+                              onClick={clickable ? () => navigate(toPath(ROUTES.RESPONSE_DETAIL, { surveyId: focusSurveyId!, responseId: c.response_id })) : undefined}
+                              className={`px-3 py-2 rounded-lg bg-muted/60 ${clickable ? 'cursor-pointer hover:bg-muted transition-colors' : ''}`}
+                              style={{ borderLeft: `3px solid ${SENTIMENT_BORDER[c.sentiment] ?? 'var(--color-outline-variant, #ccc)'}` }}
+                            >
+                              <p className="text-xs leading-relaxed text-on-surface line-clamp-2">
+                                "{c.quote}"
+                              </p>
+                            </div>
+                          );
+                        })}
                         {insight.citations_json.length > 2 && (
                           <span className="text-[10px] font-bold text-primary px-1">
                             +{insight.citations_json.length - 2} more quotes

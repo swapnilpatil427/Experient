@@ -130,13 +130,31 @@ const orgDefaultFields = Object.fromEntries(
   }),
 ) as { [K in (typeof ORG_DEFAULT_KEYS)[number]]: z.ZodNullable<(typeof settingFields)[K]> };
 
+// Tag Report (TRACKER.md §1 Task 11) — max_surveys_per_tag_report lives on
+// org_insight_defaults (DESIGN.md Appendix A.1.4) but is kept OUT of
+// ORG_DEFAULT_KEYS/settingFields above deliberately: that shared array mirrors
+// keys that ALSO exist on survey_insight_settings (settingFields is reused for
+// both schemas, and INSIGHT_SETTING_KEYS drives SETTINGS_COLUMNS against the
+// survey_insight_settings table in routes/insights.ts). max_surveys_per_tag_report
+// has no survey-level equivalent — it is a tag-report-only, org-level cap — so
+// forcing it into that shared list would leak a nonexistent column into the
+// survey-settings SELECT/UPSERT. It is added as a standalone, independently
+// validated field instead.
+const maxSurveysPerTagReport = intRange(1, 20).nullable();
+
 export const updateOrgInsightDefaultsSchema = z
   .object(orgDefaultFields)
+  .extend({ max_surveys_per_tag_report: maxSurveysPerTagReport })
   .partial()
   .strict();
 
 export type UpdateInsightSettingsInput = z.infer<typeof updateInsightSettingsSchema>;
 export type UpdateOrgInsightDefaultsInput = z.infer<typeof updateOrgInsightDefaultsSchema>;
 
-/** Setting keys persisted on org_insight_defaults (used by the org-defaults route). */
-export const ORG_INSIGHT_DEFAULT_KEYS = ORG_DEFAULT_KEYS;
+/**
+ * Setting keys persisted on org_insight_defaults (used by the org-defaults
+ * route for both GET response shaping and PATCH's dynamic UPSERT). Includes
+ * `max_surveys_per_tag_report` (Tag Report, org_insight_defaults-only — see note
+ * above) alongside the keys mirrored from survey-level settings.
+ */
+export const ORG_INSIGHT_DEFAULT_KEYS = [...ORG_DEFAULT_KEYS, 'max_surveys_per_tag_report'] as const;

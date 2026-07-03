@@ -12,7 +12,19 @@ vi.mock('react-router-dom', async (importOriginal) => {
   return { ...actual, useNavigate: vi.fn() };
 });
 vi.mock('../../lib/i18n', () => ({
-  useTranslation: () => ({ t: (k: string) => k }),
+  useTranslation: () => ({
+    t: (k: string, vars?: Record<string, unknown>) => {
+      // Mirrors the real i18n's {var} interpolation (see lib/i18n.ts) so tests
+      // can assert on rendered text for keys with variables (e.g. TagBadge's
+      // "View Tag Report for {name}").
+      const templates: Record<string, string> = {
+        'tagReport.tagBadge.viewReport': 'View Tag Report for {name}',
+      };
+      const template = templates[k] ?? k;
+      if (!vars) return template;
+      return template.replace(/\{(\w+)\}/g, (_, key) => (vars[key] !== undefined ? String(vars[key]) : `{${key}}`));
+    },
+  }),
 }));
 vi.mock('../../contexts/pageTitle', () => ({
   useSetPageTitle: vi.fn(),
@@ -285,6 +297,39 @@ describe('Navigation state includes tags (edit button)', () => {
         }),
       }),
     );
+  });
+});
+
+// ── Tag Report entry point (per-row TagBadge onNavigate, TRACKER.md Part D) ───
+
+describe('Survey List entry point to Tag Report', () => {
+  it('clicking a per-row tag chip navigates to TAG_REPORT_LATEST for that tag, and only that', async () => {
+    const user = setup();
+    vi.mocked(useApi).mockReturnValue(
+      buildMockApi({
+        listSurveys: vi.fn().mockResolvedValue({
+          surveys: [mockSurvey],
+          total: 1,
+          limit: 20,
+          offset: 0,
+          hasMore: false,
+        }),
+      }) as unknown as ReturnType<typeof useApi>,
+    );
+
+    render(
+      <MemoryRouter initialEntries={['/app/surveys']}>
+        <SurveysListPage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('Q1 NPS Survey')).toBeInTheDocument());
+
+    const tagChip = screen.getByRole('button', { name: /View Tag Report for Employee Experience/i });
+    await user.click(tagChip);
+
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/t1/report');
   });
 });
 

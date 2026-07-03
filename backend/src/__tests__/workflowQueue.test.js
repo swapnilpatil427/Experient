@@ -6,12 +6,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 
-const REDIS_PATH  = _require.resolve(resolve(__dirname, '../lib/redis'));
-const DB_PATH     = _require.resolve(resolve(__dirname, '../lib/db'));
-const ENGINE_PATH = _require.resolve(resolve(__dirname, '../lib/workflowEngine'));
-const QUEUE_PATH  = _require.resolve(resolve(__dirname, '../lib/workflowQueue'));
+const REDIS_PATH     = _require.resolve(resolve(__dirname, '../lib/redis'));
+const DB_PATH        = _require.resolve(resolve(__dirname, '../lib/db'));
+const ENGINE_PATH    = _require.resolve(resolve(__dirname, '../lib/workflowEngine'));
+const SCHEDULER_PATH = _require.resolve(resolve(__dirname, '../lib/tagReportScheduler'));
+const QUEUE_PATH     = _require.resolve(resolve(__dirname, '../lib/workflowQueue'));
 
-let redisClient, dbQuery, runWorkflowsForEventMock;
+let redisClient, dbQuery, runWorkflowsForEventMock, handleTagReportDueTriggerMock;
 function fakeMod(id, exports) { return { id, filename: id, loaded: true, exports, children: [] }; }
 
 function redisExports() {
@@ -21,6 +22,12 @@ function loadQueue() {
   _require.cache[REDIS_PATH] = fakeMod(REDIS_PATH, redisExports());
   _require.cache[DB_PATH] = fakeMod(DB_PATH, { query: dbQuery, default: { query: dbQuery } });
   _require.cache[ENGINE_PATH] = fakeMod(ENGINE_PATH, { runWorkflowsForEvent: runWorkflowsForEventMock });
+  // Tag Report's Automated-mode due-tags sweep dispatch (TRACKER.md §1 Task 15) —
+  // isolated from tagReportScheduler.ts's real implementation/dependency tree here.
+  _require.cache[SCHEDULER_PATH] = fakeMod(SCHEDULER_PATH, {
+    TAG_REPORT_DUE_TRIGGER_TYPE: 'tag_report.automated_due',
+    handleTagReportDueTrigger: handleTagReportDueTriggerMock,
+  });
   delete _require.cache[QUEUE_PATH];
   return _require(QUEUE_PATH);
 }
@@ -29,6 +36,7 @@ beforeEach(() => {
   redisClient = null;
   dbQuery = vi.fn(async () => ({ rows: [] }));
   runWorkflowsForEventMock = vi.fn(async () => ([{ executionId: 'e1', status: 'completed' }]));
+  handleTagReportDueTriggerMock = vi.fn(async () => {});
   vi.unstubAllEnvs();
 });
 
@@ -159,6 +167,24 @@ describe('processBatch', () => {
     const handled = await proc.processBatch(redisClient, 'c1', { block: 0 });
     expect(handled).toBe(1);
     expect(xack).toHaveBeenCalledWith('workflow:triggers', 'workflow-processor', '11-0');
+  });
+
+  it('dispatches tag_report.automated_due to handleTagReportDueTrigger, not runWorkflowsForEvent (TRACKER.md §1 Task 15)', async () => {
+    const xack = vi.fn(async () => 1);
+    redisClient = {
+      status: 'ready', xack,
+      xreadgroup: vi.fn(async () => ([
+        ['workflow:triggers', [
+          ['12-0', ['org_id', 'o1', 'trigger_type', 'tag_report.automated_due', 'event', '{"entityId":"tag-1"}']],
+        ]],
+      ])),
+    };
+    const proc = loadQueue();
+    const handled = await proc.processBatch(redisClient, 'c1', { block: 0, count: 10 });
+    expect(handled).toBe(1);
+    expect(handleTagReportDueTriggerMock).toHaveBeenCalledWith('o1', 'tag-1');
+    expect(runWorkflowsForEventMock).not.toHaveBeenCalled();
+    expect(xack).toHaveBeenCalledWith('workflow:triggers', 'workflow-processor', '12-0');
   });
 
   it('returns 0 when the stream is empty', async () => {

@@ -185,6 +185,20 @@ export async function start({ consumer = `c-${process.pid}` } = {}): Promise<voi
       });
   }, 60 * 1000);
 
+  // Tag Report Automated-mode due-tags sweep (TRACKER.md §1 Task 15) — same
+  // cadence class as alertSweep (a deterministic rule sweep, not per-minute
+  // precision-critical); jitter is applied per-tag at trigger time inside
+  // sweepDueTagReports itself, not by this interval's cadence.
+  const tagReportSweep = setInterval(() => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    (require('../lib/tagReportScheduler') as { sweepDueTagReports: () => Promise<{ found: number; enqueued: number }> }).sweepDueTagReports()
+      .then(({ found, enqueued }) => { if (found) log('info', { found, enqueued }, 'tag report automated sweep'); })
+      .catch((err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        log('warn', { err: error.message }, 'tag report automated sweep failed');
+      });
+  }, 15 * 60 * 1000);
+
   let ticks = 0;
   while (!_stop) {
     try {
@@ -199,6 +213,7 @@ export async function start({ consumer = `c-${process.pid}` } = {}): Promise<voi
   }
   clearInterval(alertSweep);
   clearInterval(cronTick);
+  clearInterval(tagReportSweep);
   workflowQueue.stop();
   await workflowQueueStarted;
   _running = false;

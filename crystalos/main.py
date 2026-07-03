@@ -1286,6 +1286,87 @@ async def generate_group_insights(
     return {"run_id": run_id, "status": "running"}
 
 
+@app.post("/tag-reports/generate", summary="Kick off a Tag Report cross-survey checkpoint rollup")
+async def generate_tag_report(
+    request: Request,
+    _: None = Depends(require_internal_key),
+) -> dict:
+    """Start Tag Report generation for a tag (Manual / Automated / Custom Range).
+
+    Tag Report NEVER generates fresh per-survey AI insight — it only rolls up
+    EXISTING insight_checkpoints_v2 checkpoints across every survey sharing a
+    tag (see docs/tag-report/DESIGN.md §2). The backend resolves
+    ``effective_max_surveys`` (the 3-tier max-surveys-per-tag-report COALESCE)
+    and hands off; this graph owns all checkpoint-level work — candidate
+    fetching, checkpoint resolution, backfill looping, gating, merge, narrate,
+    publish (docs/tag-report/TRACKER.md §2, reconciliation item 7).
+
+    Body:
+      run_id                 — UUID of the group_insight_runs row (created by backend before calling this)
+      org_id                 — organisation UUID
+      tag_id                 — UUID of the tag being rolled up
+      run_mode                — 'manual' | 'automated' | 'custom_range'
+      window_start/window_end — ISO8601, only meaningful for run_mode='custom_range'
+      effective_max_surveys   — backend-resolved survey ceiling; used as target_n
+
+    Returns:
+      { run_id, status: "running" }
+    """
+    body = await request.json()
+    run_id = body.get("run_id")
+    org_id = body.get("org_id")
+    tag_id = body.get("tag_id")
+    run_mode = body.get("run_mode") or "manual"
+    window_start = body.get("window_start")
+    window_end = body.get("window_end")
+    effective_max_surveys = body.get("effective_max_surveys")
+
+    if not all([run_id, org_id, tag_id]):
+        raise HTTPException(status_code=422, detail="run_id, org_id, and tag_id required")
+
+    # Mark the run as running in DB
+    try:
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """UPDATE group_insight_runs
+                       SET status = 'running', heartbeat_at = NOW()
+                       WHERE id = %s AND org_id = %s""",
+                    (run_id, org_id),
+                )
+            await conn.commit()
+    except Exception as exc:
+        logger.warning("tag_report_run_status_update_failed", run_id=run_id, error=str(exc))
+
+    from crystalos.graphs.tag_report import run_tag_report_generation
+
+    # Fixed 2026-07-02 (integration reconciliation): this previously imported
+    # TAG_REPORT_DEFAULT_TARGET_N from crystalos.lib.constants, which does not
+    # exist there — Tag Report's tunables live as module-level constants inside
+    # graphs/tag_report.py itself (kept out of the shared constants module by
+    # design, see that file's own header). That import would have raised
+    # AttributeError on the very first request with a falsy effective_max_surveys.
+    # run_tag_report_generation already has its own correct fallback to
+    # TAG_REPORT_DEFAULT_TARGET_N when target_n is None — just defer to it instead
+    # of duplicating (and having gotten wrong) that fallback here.
+    target_n = int(effective_max_surveys) if effective_max_surveys else None
+    task = asyncio.create_task(
+        run_tag_report_generation(
+            run_id=run_id, org_id=org_id, tag_id=tag_id, report_mode=run_mode,
+            window_start=window_start, window_end=window_end, target_n=target_n,
+        )
+    )
+    task.add_done_callback(
+        lambda t: logger.warning("tag_report_task_unhandled_error", run_id=run_id,
+                                 error=str(t.exception()))
+        if not t.cancelled() and t.exception() else None
+    )
+
+    logger.info("tag_report_generation_started", run_id=run_id, org_id=org_id,
+                tag_id=tag_id, run_mode=run_mode)
+    return {"run_id": run_id, "status": "running"}
+
+
 # ── Sample response generation ────────────────────────────────────────────────────
 
 @app.post("/responses/generate", summary="Generate synthetic sample responses for a survey")

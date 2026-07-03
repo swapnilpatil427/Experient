@@ -26,6 +26,10 @@ import type {
   ApproveRequest as PrismApproveRequest, PrismMode,
 } from '../types/prism';
 import type { EngineNode, EngineEdge } from './workflowCanvas';
+import type {
+  TagReportRunResponse, TagReportTrailResponse, TagReportsIndexResponse,
+  TagReportGenerateRequest, TagReportGenerateResponse, TagReportTrailEntry,
+} from '../types/tagReport';
 
 // ── Prism response-shape guards ──────────────────────────────────────────────
 // Small defensive helpers so a FE↔BE response-shape mismatch throws ONE clear,
@@ -934,6 +938,17 @@ export function createApiClient(getToken: GetToken) {
     getSurvey: async (id: string) => {
       const res = await http.get<{ survey: Survey }>(`/api/surveys/${id}`);
       return res.data;
+    },
+    // Response Detail (R-T5 audit-trail terminus, TRACKER.md Task 16). Survey-scoped
+    // so the backend can re-check per-survey access on every request; returns null
+    // on 404 (soft-deleted or not found) so the page can render a graceful state.
+    getSurveyResponse: async (surveyId: string, responseId: string): Promise<{ response: SurveyResponse } | null> => {
+      try {
+        const res = await http.get<{ response: SurveyResponse }>(`/api/surveys/${surveyId}/responses/${responseId}`);
+        return res.data;
+      } catch {
+        return null;
+      }
     },
     createSurvey: async (data: Partial<Survey>) => {
       const res = await http.post<{ survey: Survey }>('/api/surveys', data);
@@ -2567,6 +2582,58 @@ export function createApiClient(getToken: GetToken) {
       } catch {
         return null;
       }
+    },
+
+    // ── Tag Report ─────────────────────────────────────────────────────────────
+    // Contract per docs/tag-report/DESIGN.md Appendix A.2 / TRACKER.md §1.
+    // CORRECTED 2026-07-02 during integration: TRACKER.md's literal path prose
+    // (`/api/survey-groups/...`, `/api/tags/...`) is stale — survey-groups.ts is
+    // actually mounted at `/api/group-insights` and tags.ts at `/api/survey-tags`
+    // (backend/src/index.ts:217-218; also flagged by the backend implementation
+    // itself, which corrected both route files' own docblocks). Paths below match
+    // the real mounts, verified directly against backend/src/routes/*.ts.
+
+    generateTagReport: async (data: TagReportGenerateRequest): Promise<TagReportGenerateResponse> => {
+      const path = data.run_mode === 'custom_range'
+        ? '/api/group-insights/tag-report/custom-range'
+        : '/api/group-insights/tag-report/manual';
+      const res = await http.post<TagReportGenerateResponse>(path, data);
+      return res.data;
+    },
+
+    getTagReportRun: async (runId: string): Promise<TagReportRunResponse> => {
+      const res = await http.get<TagReportRunResponse>(`/api/group-insights/tag-report/${runId}`);
+      return res.data;
+    },
+
+    // Paginated run history across all three modes (`/api/survey-tags/:id/tag-report-history`).
+    // Used to resolve "latest" (limit=1) and to power the Trail page's run list.
+    getTagReportHistory: async (
+      tagId: string,
+      params: { limit?: number; offset?: number } = {}
+    ): Promise<{ runs: TagReportTrailEntry[]; total: number }> => {
+      const qs = new URLSearchParams();
+      if (params.limit != null) qs.set('limit', String(params.limit));
+      if (params.offset != null) qs.set('offset', String(params.offset));
+      const query = qs.toString() ? `?${qs}` : '';
+      const res = await http.get<{ runs: TagReportTrailEntry[]; total: number }>(
+        `/api/survey-tags/${tagId}/tag-report-history${query}`
+      );
+      return res.data;
+    },
+
+    getTagReportTrail: async (runId: string): Promise<TagReportTrailResponse> => {
+      const res = await http.get<TagReportTrailResponse>(`/api/group-insights/tag-report/${runId}/trail`);
+      return res.data;
+    },
+
+    listTagReports: async (params: { q?: string; sort?: 'recent' | 'alpha' | 'survey_count' } = {}): Promise<TagReportsIndexResponse> => {
+      const qs = new URLSearchParams();
+      if (params.q) qs.set('q', params.q);
+      if (params.sort) qs.set('sort', params.sort);
+      const query = qs.toString() ? `?${qs}` : '';
+      const res = await http.get<TagReportsIndexResponse>(`/api/group-insights/tag-reports${query}`);
+      return res.data;
     },
 
     // Download a survey insight report. 'pdf'/'pptx' return native files (when the

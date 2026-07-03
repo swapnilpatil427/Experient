@@ -578,7 +578,12 @@ export function SurveysListPage() {
                           {(survey as Survey & { tags?: SurveyTag[] }).tags && (survey as Survey & { tags?: SurveyTag[] }).tags!.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-1">
                               {(survey as Survey & { tags?: SurveyTag[] }).tags!.map(tag => (
-                                <TagBadge key={tag.id} tag={tag} size="sm" />
+                                <TagBadge
+                                  key={tag.id}
+                                  tag={tag}
+                                  size="sm"
+                                  onNavigate={(tagId) => navigate(toPath(ROUTES.TAG_REPORT_LATEST, { tagId }))}
+                                />
                               ))}
                             </div>
                           )}
