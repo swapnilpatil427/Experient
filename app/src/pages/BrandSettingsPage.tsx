@@ -414,15 +414,15 @@ export function BrandSettingsPage() {
                   </div>
 
                   <div className="absolute -top-24 -right-24 w-64 h-64 rounded-full pointer-events-none"
-                    style={{ background: 'rgba(42,75,217,0.05)', filter: 'blur(48px)' }} />
+                    style={{ background: 'color-mix(in srgb, var(--color-primary) 5%, transparent)', filter: 'blur(48px)' }} />
                 </Card>
 
                 {/* Side Stats */}
                 <div className="lg:col-span-4 space-y-8">
                   <Card
                     className="p-8 text-white rounded-2xl border-0"
-                    style={{ background: 'linear-gradient(135deg, #00647c, #00576c)',
-                      boxShadow: '0 20px 40px -10px rgba(0,100,124,0.3)' }}
+                    style={{ background: 'linear-gradient(135deg, var(--color-secondary), #00576c)',
+                      boxShadow: '0 20px 40px -10px color-mix(in srgb, var(--color-secondary) 30%, transparent)' }}
                   >
                     <h4 className="font-bold text-lg mb-4 font-headline">
                       {t('settings.brandHealth.heading')}
@@ -468,7 +468,7 @@ export function BrandSettingsPage() {
                 <Card className="p-8 bg-white rounded-2xl border-0" style={{ boxShadow: '0 40px 60px -10px rgba(44,47,49,0.06)' }}>
                   <div className="flex items-start gap-4 mb-6">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                      style={{ background: 'rgba(42,75,217,0.08)' }}>
+                      style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)' }}>
                       <Icon name="business" size={20} className="text-primary" />
                     </div>
                     <div>
@@ -479,7 +479,7 @@ export function BrandSettingsPage() {
 
                   {/* Crystal AI Context callout */}
                   <div className="mb-6 flex items-start gap-3 px-4 py-3 rounded-xl"
-                    style={{ background: 'linear-gradient(135deg, rgba(42,75,217,0.05), rgba(0,100,124,0.05))', border: '1px solid rgba(42,75,217,0.12)' }}>
+                    style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 5%, transparent), color-mix(in srgb, var(--color-secondary) 5%, transparent))', border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)' }}>
                     <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
                       style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                       <Icon name="psychology" size={16} style={{ color: 'white' }} />
@@ -659,7 +659,7 @@ export function BrandSettingsPage() {
                 {/* Crystal AI Context banner — shown when industry is not set */}
                 {!orgProfile.industry && (
                   <div className="flex items-start gap-4 px-5 py-4 rounded-xl border-2 border-dashed"
-                    style={{ background: 'linear-gradient(135deg, rgba(42,75,217,0.04), rgba(0,100,124,0.04))', borderColor: 'rgba(42,75,217,0.2)' }}>
+                    style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 4%, transparent), color-mix(in srgb, var(--color-secondary) 4%, transparent))', borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)' }}>
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
                       style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                       <Icon name="psychology" size={20} style={{ color: 'white' }} />
@@ -687,7 +687,7 @@ export function BrandSettingsPage() {
                     <p className="text-sm mb-6 text-on-surface-variant">Select a workspace from the onboarding screen to manage your organization.</p>
                     <Button onClick={() => navigate(ROUTES.ONBOARDING)} variant="gradient"
                       className="px-6 py-3 text-white font-bold text-sm font-headline rounded-xl"
-                      style={{ boxShadow: '0 10px 25px -5px rgba(42,75,217,0.35)' }}>
+                      style={{ boxShadow: '0 10px 25px -5px color-mix(in srgb, var(--color-primary) 35%, transparent)' }}>
                       Select Workspace
                     </Button>
                   </div>
@@ -699,7 +699,7 @@ export function BrandSettingsPage() {
                         <p className="text-sm text-on-surface-variant">{t('settings.team.description')}</p>
                       </div>
                       <Button variant="default" className="px-8 py-4 font-bold flex items-center justify-center gap-2 text-white font-headline rounded-xl bg-primary"
-                        style={{ boxShadow: '0 20px 40px -10px rgba(42,75,217,0.2)' }}>
+                        style={{ boxShadow: '0 20px 40px -10px color-mix(in srgb, var(--color-primary) 20%, transparent)' }}>
                         <Icon name="person_add" size={20} />{t('settings.team.inviteButton')}
                       </Button>
                     </div>
@@ -728,8 +728,8 @@ export function BrandSettingsPage() {
                               <td className="py-5">
                                 <Badge variant={member.statusActive ? 'success' : 'secondary'}
                                   className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider px-3 py-1 rounded-full w-fit"
-                                  style={{ color: member.statusActive ? '#00647c' : '#595c5e', background: member.statusActive ? 'rgba(0,100,124,0.1)' : '#e5e9eb' }}>
-                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: member.statusActive ? '#00647c' : 'rgba(89,92,94,0.4)' }} />
+                                  style={{ color: member.statusActive ? 'var(--color-secondary)' : '#595c5e', background: member.statusActive ? 'color-mix(in srgb, var(--color-secondary) 10%, transparent)' : '#e5e9eb' }}>
+                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: member.statusActive ? 'var(--color-secondary)' : 'rgba(89,92,94,0.4)' }} />
                                   {member.statusActive ? t('settings.team.statusActive') : t('settings.team.statusPending')}
                                 </Badge>
                               </td>

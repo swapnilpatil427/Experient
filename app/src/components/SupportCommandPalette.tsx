@@ -177,7 +177,7 @@ export function SupportCommandPalette({ open, onClose }: SupportCommandPalettePr
               backdropFilter: 'blur(24px)',
               WebkitBackdropFilter: 'blur(24px)',
               border: '1px solid rgba(255,255,255,0.5)',
-              boxShadow: '0 24px 64px rgba(0,0,0,0.18), 0 4px 12px rgba(42,75,217,0.08)',
+              boxShadow: '0 24px 64px rgba(0,0,0,0.18), 0 4px 12px color-mix(in srgb, var(--color-primary) 8%, transparent)',
               maxHeight: '75vh',
             }}
             onKeyDown={handleKeyDown}
@@ -251,12 +251,12 @@ export function SupportCommandPalette({ open, onClose }: SupportCommandPalettePr
                         transition={{ delay: i * 0.04, duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
                         onClick={() => handleSelect(action)}
                         className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors group"
-                        style={selectedIndex === i ? { background: 'rgba(42,75,217,0.08)' } : undefined}
+                        style={selectedIndex === i ? { background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)' } : undefined}
                         onMouseEnter={() => setSelectedIndex(i)}
                       >
                         <div
                           className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                          style={{ background: 'rgba(42,75,217,0.08)' }}
+                          style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)' }}
                         >
                           <Icon name={action.icon} size={16} style={{ color: 'var(--color-primary)' }} />
                         </div>
@@ -278,12 +278,12 @@ export function SupportCommandPalette({ open, onClose }: SupportCommandPalettePr
                         key={doc.key}
                         onClick={() => handleSelect(doc)}
                         className="w-full text-left flex items-start gap-3 px-3 py-2.5 rounded-xl transition-colors group"
-                        style={selectedIndex === i ? { background: 'rgba(42,75,217,0.08)' } : undefined}
+                        style={selectedIndex === i ? { background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)' } : undefined}
                         onMouseEnter={() => setSelectedIndex(i)}
                       >
                         <div
                           className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
-                          style={{ background: 'rgba(42,75,217,0.06)' }}
+                          style={{ background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)' }}
                         >
                           <Icon name="article" size={16} style={{ color: 'var(--color-primary)' }} />
                         </div>
@@ -295,7 +295,7 @@ export function SupportCommandPalette({ open, onClose }: SupportCommandPalettePr
                           <div className="flex items-center gap-2 mt-1">
                             <span
                               className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-                              style={{ background: 'rgba(42,75,217,0.08)', color: '#2a4bd9' }}
+                              style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}
                             >
                               {doc.category}
                             </span>

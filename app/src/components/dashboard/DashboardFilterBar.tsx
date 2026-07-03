@@ -66,7 +66,7 @@ export function DashboardFilterBar({ filters, surveys, tags, onChange }: Dashboa
                 ? {
                     background: 'var(--color-primary)',
                     color: '#fff',
-                    boxShadow: '0 2px 8px rgba(42,75,217,0.28)',
+                    boxShadow: '0 2px 8px color-mix(in srgb, var(--color-primary) 28%, transparent)',
                   }
                 : {
                     background: 'rgba(0,0,0,0.05)',
@@ -154,7 +154,7 @@ export function DashboardFilterBar({ filters, surveys, tags, onChange }: Dashboa
                   ? {
                       background: 'var(--color-primary)',
                       color: '#fff',
-                      boxShadow: '0 2px 8px rgba(42,75,217,0.28)',
+                      boxShadow: '0 2px 8px color-mix(in srgb, var(--color-primary) 28%, transparent)',
                     }
                   : { color: 'var(--color-on-surface-variant)', background: 'transparent' }
               }

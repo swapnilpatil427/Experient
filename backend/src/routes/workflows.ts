@@ -204,7 +204,36 @@ router.get('/', requireAuth, requirePermission('workflows:manage'), async (req: 
 router.post('/parse-nl', requireAuth, requirePermission('workflows:manage'), validate(parseWorkflowNLSchema), async (req: Request, res: Response): Promise<void> => {
   try {
     const { description } = req.body as { description: string };
-    const result = await agentsClient.parseWorkflowNL(description, registry(), req.orgId);
+
+    // Wave 12 (docs/automation-hub/BUILDER_REDESIGN_V2_SCOPE.md) — this pipeline
+    // predates the org/survey/tag scope redesign and previously forced every
+    // NL-created workflow to org-wide scope. Forward a lightweight org
+    // survey/tag catalog alongside the existing trigger/action registry so
+    // Amara's CrystalOS parser can match an NL mention (e.g. "for the Q3 NPS
+    // survey") against a REAL survey/tag and return a scope hint. This extended
+    // payload is built ONLY for this call site — `registry()` itself is
+    // untouched (it's also used by GET /api/workflows/registry for the
+    // no-code builders, which have no use for a full survey/tag list).
+    // Reuses the exact same queries GET /api/surveys and GET /api/survey-tags
+    // already run (see routes/surveys.ts's `router.get('/')` and
+    // routes/tags.ts's `router.get('/')`) — trimmed to just {id, name} since
+    // that's all the NL scope-matching skill needs, not the full survey/tag
+    // objects those routes return.
+    const [surveysResult, tagsResult] = await Promise.all([
+      query('SELECT id, title AS name FROM surveys WHERE org_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC', [req.orgId]),
+      query('SELECT id, name FROM survey_tags WHERE org_id = $1 ORDER BY name ASC', [req.orgId]),
+    ]);
+    const extendedRegistry = {
+      ...registry(),
+      surveys: surveysResult.rows as { id: string; name: string }[],
+      tags: tagsResult.rows as { id: string; name: string }[],
+    };
+
+    const result = await agentsClient.parseWorkflowNL(description, extendedRegistry, req.orgId);
+    // Pass CrystalOS's response through unchanged, including the optional
+    // scopeType/scopeSurveyId/scopeTagId fields when present — omitted when
+    // CrystalOS doesn't (yet) return them, which the frontend/route contract
+    // treats identically to `scopeType: 'org'` (today's behavior).
     res.json(result);
   } catch (err: unknown) {
     if (err instanceof UnparseableWorkflowError) {
@@ -325,10 +354,24 @@ router.put('/:id', requireAuth, requirePermission('workflows:manage'), validate(
     // template-seed flows, any pre-Wave-11 client), this check is skipped
     // completely and the PUT proceeds exactly as it did before this feature
     // existed. Only a caller that opts in by sending its last-known `version`
-    // gets 409-on-conflict protection. A version check against a
-    // nonexistent/cross-org workflow (existingRow undefined) falls through to
-    // the pre-existing zero-rows-affected behavior below rather than a new 409,
-    // since there's nothing to conflict with.
+    // gets 409-on-conflict protection.
+    //
+    // KENJI, Wave 11 Phase 3 (fault-tolerance gate) — TOCTOU fix: this pre-flight
+    // check against `existingRow` (a plain SELECT) is a fast-path/early-exit
+    // convenience ONLY — it is deliberately NOT the mechanism that makes the
+    // conflict check race-safe. Two concurrent requests carrying the same stale
+    // `version` can both pass this SELECT-based check before either one's UPDATE
+    // commits (classic time-of-check-to-time-of-use gap), which would let both
+    // writers "win" (a lost update) with neither getting a 409. The actual
+    // safety guarantee lives in the UPDATE below: `version = $version` is folded
+    // directly into that statement's WHERE clause when the caller opted in, so
+    // Postgres's row-level locking serializes concurrent UPDATEs against the
+    // same row — only the first to commit can match `version = $version`; by
+    // the time the second one's UPDATE acquires the lock, the row's version has
+    // already moved, so its WHERE clause matches zero rows and it falls into the
+    // post-UPDATE re-check below, which re-fetches and returns 409. This
+    // SELECT-based check now exists purely to fail fast in the common
+    // (non-racing) stale-edit case without paying for a write attempt.
     if (version !== undefined && existingRow && version !== (existingRow as { version?: number }).version) {
       res.status(409).json({
         error: 'This workflow was changed by someone else. Refresh to see the latest version before saving again.',
@@ -389,10 +432,46 @@ router.put('/:id', requireAuth, requirePermission('workflows:manage'), validate(
     sets.push('version = version + 1');
 
     vals.push(req.params.id, req.orgId);
+    let whereClause = `id = $${i++} AND org_id = $${i}`;
+    // Atomic optimistic-lock guard (Kenji, Wave 11 Phase 3): when the caller
+    // opted into version checking, fold `AND version = $version` into THIS
+    // UPDATE's own WHERE clause — not a separate SELECT — so the check-and-write
+    // is a single atomic statement with no gap a second concurrent request could
+    // land in. Postgres serializes concurrent UPDATEs targeting the same row via
+    // its row-level lock: whichever request's UPDATE acquires the lock first
+    // commits (and bumps `version`), and any other concurrently-executing
+    // request's WHERE clause is (re-)evaluated against the now-updated row and
+    // matches zero rows — it can never also succeed against the stale version.
+    if (version !== undefined) {
+      i += 1;
+      whereClause += ` AND version = $${i}`;
+      vals.push(version);
+    }
     const { rows: [updatedRow] } = await query(
-      `UPDATE workflows SET ${sets.join(', ')} WHERE id = $${i++} AND org_id = $${i} RETURNING *`,
+      `UPDATE workflows SET ${sets.join(', ')} WHERE ${whereClause} RETURNING *`,
       vals
     );
+
+    // Lost-the-race case: the caller sent a `version` that matched at SELECT
+    // time (or no pre-fetch existed yet) but by the time this UPDATE's WHERE
+    // clause was evaluated, a concurrent request had already committed first and
+    // moved the row's version — this UPDATE matches zero rows. Re-fetch and
+    // return the same 409 shape as the fast-path check above, rather than
+    // silently reporting `{ success: true }` for a write that didn't happen.
+    // Only applies when a version was actually supplied AND the row genuinely
+    // exists (existingRow was found) — this must never turn the route's
+    // long-standing "PUT against a nonexistent/cross-org id is a silent
+    // zero-rows-affected {success:true}" behavior into a new 409.
+    if (version !== undefined && existingRow && !updatedRow) {
+      const { rows: [latestRaw] } = await query(
+        'SELECT * FROM workflows WHERE id = $1 AND org_id = $2', [req.params.id, req.orgId]
+      );
+      res.status(409).json({
+        error: 'This workflow was changed by someone else. Refresh to see the latest version before saving again.',
+        workflow: withCooldownStatus((latestRaw || existingRow) as WorkflowRecord),
+      });
+      return;
+    }
 
     // Audit trail (§10b) — fire-and-forget relative to the response; see
     // lib/workflowAuditLog.ts's header for the transactional-coupling rationale.

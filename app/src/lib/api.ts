@@ -383,6 +383,16 @@ export interface ParseWorkflowNLResult {
   edges: EngineEdge[];
   confidence: number;
   warnings: string[];
+  // Scope hint (Wave 12, docs/automation-hub/BUILDER_REDESIGN_V2_SCOPE.md) —
+  // populated when Crystal's NL parser confidently matched a survey/tag
+  // mentioned in the description against a real org survey/tag. All three are
+  // optional/absent when Crystal didn't detect a scope mention (or an older
+  // backend/CrystalOS deploy doesn't send them yet) — absence means org-wide
+  // scope, identical to pre-Wave-12 behavior. Type-only for now; the
+  // consuming confirm-card UI (ScopeSummaryRow) is Phase 2.
+  scopeType?: 'org' | 'survey' | 'tag';
+  scopeSurveyId?: string;
+  scopeTagId?: string;
 }
 
 export interface ParseWorkflowNLUnparseableError {

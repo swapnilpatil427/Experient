@@ -23,6 +23,7 @@ Called via: POST /insights/crystal (agents/main.py)
 from __future__ import annotations
 
 import json
+import re
 
 from pydantic import BaseModel, field_validator
 
@@ -125,6 +126,32 @@ class CrystalInput(BaseModel):
     tag_id: str | None = None              # tag scope: single tag UUID (backend sends this, singular)
     user_role: str = "viewer"              # viewer | editor | admin | brand_admin
     brand_id: str | None = None            # enterprise brand override (None = first-party)
+
+    # ── Wave 15 — Automation Hub workflow-builder context (additive/optional) ──
+    # Every field below defaults to today's exact behavior when absent, so every
+    # existing caller (Insights pages, org portfolio, group insights, etc.) is
+    # byte-identical. See docs/automation-hub/TRACKER.md Wave 15.
+    #
+    # `surface` (rather than inferring "we're in the builder" from
+    # `builder_draft is not None`) is the explicit signal: a user can open the
+    # workflow builder's Crystal icon and ask a first question before any
+    # trigger/action has been configured yet, i.e. `builder_draft=None` while
+    # still very much "in the builder." Inferring from `builder_draft` would
+    # misroute that first-turn case back to `crystal-analyst`. An explicit
+    # field also makes the routing decision (see `_run_skill_stream`) a simple,
+    # auditable `if inp.surface == "workflow_builder"` rather than an implicit
+    # heuristic on an unrelated payload field.
+    surface: str = "insights"              # "insights" (default, unchanged) | "workflow_builder"
+    # Current workflow draft summary, mirroring the frontend's
+    # `BuilderDraftSummary` (app/src/contexts/crystalPanel.tsx): mode,
+    # triggerType, scopeSelection, conditionClauses, actions, workflowName,
+    # isEditMode. Forwarded into skill context verbatim — never parsed here.
+    builder_draft: dict | None = None
+    # Trigger/conditionFields/conditionOperators/actions catalog — same shape
+    # `parse_workflow_nl` already receives as its `registry` parameter
+    # (backend/src/lib/workflowRegistry.ts is the source of truth; the Node
+    # proxy attaches it to the request body when builder context is active).
+    workflow_registry: dict | None = None
 
 
 class ActionProposal(BaseModel):
@@ -1259,22 +1286,37 @@ async def _skill_synthesis(
             nps_block = inp.metrics.get("nps") or {}
             nps_score = nps_block.get("score")
 
+        survey_facts: dict = {
+            "survey_id": str(inp.survey_id),
+            "response_count": inp.survey_response_count,
+            "survey_type": "custom",
+            "nps_score": nps_score,
+            "top_topics": [
+                {
+                    "label": t.get("name", ""),
+                    "volume": int(t.get("volume", 0) or 0),
+                    "sentiment": round(float(t.get("sentiment_score", 0.0) or 0.0), 3),
+                }
+                for t in (inp.topics or [])[:8]
+            ],
+        }
+        # Wave 15 — Automation Hub builder context, injected directly into the
+        # context bundle rather than via a new tool. This data arrives
+        # already-fetched by the Node proxy (backend/src/routes/experience.ts)
+        # up front, same as `parse_workflow_nl`'s `registry` parameter — there
+        # is no live lookup for a tool to perform mid-reasoning, so a tool
+        # would just be a pass-through wrapper around a value we already hold.
+        # Both keys are omitted entirely (not set to null) when absent, so a
+        # skill/eval reading `"workflow_registry" in survey_facts` sees
+        # today's exact shape for every non-builder caller.
+        if inp.workflow_registry is not None:
+            survey_facts["workflow_registry"] = inp.workflow_registry
+        if inp.builder_draft is not None:
+            survey_facts["builder_draft"] = inp.builder_draft
+
         skill_input = {
             "message": inp.message,
-            "survey_facts": {
-                "survey_id": str(inp.survey_id),
-                "response_count": inp.survey_response_count,
-                "survey_type": "custom",
-                "nps_score": nps_score,
-                "top_topics": [
-                    {
-                        "label": t.get("name", ""),
-                        "volume": int(t.get("volume", 0) or 0),
-                        "sentiment": round(float(t.get("sentiment_score", 0.0) or 0.0), 3),
-                    }
-                    for t in (inp.topics or [])[:8]
-                ],
-            },
+            "survey_facts": survey_facts,
             "insights": [
                 {
                     "id": str(ins.get("id", "")),
@@ -1630,6 +1672,112 @@ def _fire_telemetry(
         pass
 
 
+# ── Wave 18 — message-content force-route to workflow-analyst ────────────────
+# The reported bug: "What types of trigger exists?" asked from a NON-builder
+# page (surface="insights", the default) falls through to normal semantic
+# routing, lands on crystal-analyst (survey-data skill), and hallucinates —
+# it has zero knowledge of the workflow trigger/action/condition taxonomy and
+# will cite whatever survey data happens to be in context regardless of
+# relevance. See docs/automation-hub/TRACKER.md Wave 18 for the full 3-layer
+# root-cause writeup.
+#
+# This is a SECOND, independent hard-force condition alongside Wave 15's
+# `surface == "workflow_builder"` — that one is a PAGE-CONTEXT signal (works
+# from the builder regardless of message wording); this one is a
+# MESSAGE-CONTENT signal (works from ANY page, but only for messages that are
+# unambiguously reference/taxonomy questions about triggers/actions/
+# conditions, not automation-intent or survey-data questions).
+#
+# Precision/recall tradeoff — deliberately precision-first:
+# A false positive here (a normal survey-data question wrongly force-routed
+# to workflow-analyst) is its own regression: the user asks e.g. "why did NPS
+# drop" and gets bounced to a skill that knows nothing about their data. A
+# false negative (a taxonomy question that slips past the detector) is a much
+# softer failure — it falls through to normal semantic routing, which now ALSO
+# has a fighting chance thanks to the new routing examples added to
+# workflow-analyst/SKILL.md this same wave (defense-in-depth). So the detector
+# is written as a narrow allowlist of structural patterns, not a broad
+# keyword/topic net:
+#   1. "what/which type(s)/kind(s) of <trigger|action|condition|automation|
+#      workflow>(s)" — the exact reported phrasing family ("what types of
+#      trigger exists", "which kinds of actions are there").
+#   2. "list/show (me) the/all available <trigger|action|condition>s" —
+#      enumeration requests.
+#   3. "what scopes/conditions/operators can I use" — reference questions
+#      about the condition-builder vocabulary.
+#   4. "what does `<dotted.registry.name>` do/mean" — a literal registry-shaped
+#      token (category.action, e.g. `flow.delay`, `crystal.sentiment_spike`)
+#      is present, which is a very strong, low-false-positive signal — no
+#      other Crystal skill's domain would ever plausibly need to explain it.
+# Each pattern requires BOTH a taxonomy noun (trigger/action/condition/
+# workflow/automation/scope/operator) AND a question-shaped/enumeration verb
+# structure — a message containing only "trigger" or only "action" in passing
+# (e.g. "the action I took was...") will not match. This mirrors Wave 15's own
+# reasoning for why a hard force is safe here: the signal, when it matches, is
+# structurally unambiguous, not a fuzzy topic guess.
+_WORKFLOW_TAXONOMY_NOUN = r"(?:triggers?|actions?|conditions?|automations?|workflows?|scopes?|operators?)"
+
+_WORKFLOW_TAXONOMY_PATTERNS: tuple[re.Pattern, ...] = (
+    # "what/which type(s)/kind(s) of trigger(s)/action(s)/... exist(s)/are there/can I use"
+    re.compile(
+        rf"\b(?:what|which)\s+(?:types?|kinds?)\s+of\s+{_WORKFLOW_TAXONOMY_NOUN}\b",
+        re.IGNORECASE,
+    ),
+    # "list/show (me) (the/all) available trigger(s)/action(s)/..."
+    re.compile(
+        rf"\b(?:list|show\s+me)\b.{{0,20}}\b{_WORKFLOW_TAXONOMY_NOUN}\b",
+        re.IGNORECASE,
+    ),
+    # "what scopes/conditions/operators/triggers/actions can I use"
+    re.compile(
+        rf"\bwhat\s+{_WORKFLOW_TAXONOMY_NOUN}\s+(?:can|could)\s+i\s+use\b",
+        re.IGNORECASE,
+    ),
+    # "what does <registry.dotted.name> do/mean" — a literal dotted registry
+    # token (e.g. flow.delay, crystal.sentiment_spike, notify.slack) is a
+    # near-zero-false-positive signal on its own: no other skill's domain uses
+    # this "category.snake_case" vocabulary.
+    re.compile(
+        r"\bwhat\s+does\s+`?[a-z_]+\.[a-z_]+`?\s+(?:do|mean)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _is_workflow_taxonomy_question(message: str) -> bool:
+    """True for factual/reference questions about the workflow trigger/action/
+    condition taxonomy (e.g. "What types of trigger exists?", "What does
+    flow.delay do?") — the message-content force-route condition added in
+    Wave 18, independent of `inp.surface`. See the block comment above for the
+    precision-first pattern design and false-positive/false-negative tradeoff.
+    """
+    if not message or not isinstance(message, str):
+        return False
+    return any(p.search(message) for p in _WORKFLOW_TAXONOMY_PATTERNS)
+
+
+def _resolve_forced_skill(inp: CrystalInput, registry) -> dict | None:
+    """Return the workflow-analyst skill meta if ANY hard-force condition for
+    this turn is met, else None (caller falls through to normal semantic
+    routing). Two independent conditions currently force workflow-analyst:
+
+    1. Page context (Wave 15): `inp.surface == "workflow_builder"` — the user
+       opened Crystal from the Automation Hub builder.
+    2. Message content (Wave 18): `_is_workflow_taxonomy_question(inp.message)`
+       — the user asked a factual/reference question about the trigger/
+       action/condition taxonomy, regardless of what page they're on.
+
+    Centralizing the "does any force condition match" check here (rather than
+    inlining a second `if` next to Wave 15's) keeps `_run_skill_stream` a
+    simple `if forced: matches = [(forced, 1.0)]` and makes a future third
+    force condition a one-line addition to this function instead of another
+    copy of the surrounding plumbing.
+    """
+    if inp.surface == "workflow_builder" or _is_workflow_taxonomy_question(inp.message):
+        return registry._skills.get("workflow-analyst")
+    return None
+
+
 async def _run_skill_stream(
     inp: CrystalInput,
     request=None,
@@ -1675,8 +1823,64 @@ async def _run_skill_stream(
         if not registry._initialized:
             await registry.initialize()
 
+        # routing_query (message + tag-scope hint) feeds BOTH semantic-routing
+        # fallback paths below (registry.find and, further down,
+        # registry.find_sync) — it is not itself a routing decision, just the
+        # text ordinary semantic routing considers when no hard force applies.
         routing_query = inp.message + _routing_hint_for_scope(ctx)
-        matches = await registry.find(routing_query, top_k=1)
+        matches: list[tuple[dict, float]] = []
+
+        # Hard-force to workflow-analyst when ANY force condition matches —
+        # bypasses semantic routing entirely rather than just biasing it,
+        # because in both cases the correct skill is already known, not
+        # guessed from ambiguous message text the way ordinary Crystal routing
+        # has to. See `_resolve_forced_skill` for the two independent
+        # conditions (Wave 15 page-context, Wave 18 message-content) and why a
+        # hard force is safe for each. Falls through to normal (tag-scope-
+        # aware) semantic routing below if the skill is somehow unregistered,
+        # or if neither force condition matches (inp.surface == "insights"/
+        # "tag" AND no taxonomy-question match — the overwhelming majority,
+        # unchanged since before Wave 15).
+        forced_meta = _resolve_forced_skill(inp, registry)
+        if forced_meta:
+            matches = [(forced_meta, 1.0)]
+
+        # Wave 18 — registry-population gap. `workflow_registry` today is only
+        # ever populated by the Node proxy (`backend/src/routes/experience.ts`)
+        # when `surface == "workflow_builder"` (Wave 15's condition, unchanged
+        # by this wave). A taxonomy question asked from a NON-builder page
+        # (the exact bug being fixed) force-routes to workflow-analyst above
+        # but arrives with `workflow_registry=None` — without this, the skill
+        # would follow its own SKILL.md instruction to "not guess the catalog"
+        # and give a hedged, low-value answer instead of the concrete one the
+        # user needs, which would not actually fix the reported hallucination
+        # complaint (a hedge is better than a hallucination, but still not a
+        # real fix). CrystalOS has no independent DB/Node-callback path to
+        # fetch the LIVE, org-accurate registry itself (confirmed: `lib/db.py`
+        # has no survey/tag registry query, and `workflow_registry` is
+        # documented as Node-fetched-and-forwarded, not independently
+        # queryable — see workflow-analyst/SKILL.md's compatibility note). So
+        # this substitutes the same conservative, code-defined
+        # `FALLBACK_REGISTRY` that `execute_propose_workflow` already uses for
+        # its own no-live-registry case (`crystal/workflow_nl.py`) — a real,
+        # registry-grounded (if smaller/staler) catalog rather than nothing.
+        # This does NOT close the gap for `surveys`/`tags` scope data (org-
+        # specific, not code-defined) — only the trigger/condition/action
+        # taxonomy itself, which is exactly what "what types of trigger
+        # exists" needs. Getting the FULL org-accurate registry (including
+        # scope) onto this path requires widening the Node proxy's
+        # `isBuilderContext` condition to also cover this detector firing —
+        # tracked as a follow-up for Nina, not done here (CrystalOS-only wave).
+        if (
+            forced_meta is not None
+            and inp.surface != "workflow_builder"
+            and inp.workflow_registry is None
+        ):
+            from crystalos.crystal.workflow_nl import FALLBACK_REGISTRY
+            inp = inp.model_copy(update={"workflow_registry": FALLBACK_REGISTRY})
+
+        if not matches:
+            matches = await registry.find(routing_query, top_k=1)
         if not matches:
             name = registry.find_sync(routing_query)
             if name:

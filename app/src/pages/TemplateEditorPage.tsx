@@ -79,7 +79,7 @@ function TagInput({ tags, onChange, placeholder }: TagInputProps) {
     >
       {tags.map((tag) => (
         <span key={tag} className="flex items-center gap-1 px-2.5 py-0.5 text-xs font-bold rounded-full"
-          style={{ background: '#e0e7ff', color: '#2a4bd9' }}>
+          style={{ background: '#e0e7ff', color: 'var(--color-primary)' }}>
           {tag}
           <button type="button" onClick={() => onChange(tags.filter((tg) => tg !== tag))}
             className="hover:opacity-60 leading-none text-sm">×</button>
@@ -153,7 +153,7 @@ function QuestionRow({ question, index, onUpdate, onRemove, onMoveUp, onMoveDown
             onBlur={() => setEditing(false)}
             onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && setEditing(false)}
             className="w-full text-sm font-semibold text-on-surface bg-surface-container-low rounded-lg px-2.5 py-1.5 outline-none"
-            style={{ border: '1.5px solid #2a4bd9' }}
+            style={{ border: '1.5px solid var(--color-primary)' }}
           />
         ) : (
           <p
@@ -198,7 +198,7 @@ function TypePicker({ onSelect, onClose }: TypePickerProps) {
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
-        style={{ boxShadow: '0 40px 80px -20px rgba(42,75,217,0.18)' }}>
+        style={{ boxShadow: '0 40px 80px -20px color-mix(in srgb, var(--color-primary) 18%, transparent)' }}>
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: '#f0f2f4' }}>
           <h3 className="text-sm font-extrabold font-headline text-on-surface">{t('templates.editor.typePickerHeading')}</h3>
           <button onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container">
@@ -259,7 +259,7 @@ export function TemplateEditorPage() {
     description: source?.description || '',
     category:    source?.category || 'cx',
     icon:        source?.icon  || 'quiz',
-    color:       source?.color || '#2a4bd9',
+    color:       source?.color || 'var(--color-primary)',
     bg:          source?.bg    || '#e0e7ff',
     tags:        source?.tags || [],
     intelligence: {
@@ -370,9 +370,9 @@ export function TemplateEditorPage() {
           {/* Source hint banner */}
           {(fromTemplate || fromSurvey) && (
             <div className="mb-6 flex items-start gap-3 px-4 py-3 rounded-xl"
-              style={{ background: fromTemplate ? fromTemplate.bg || '#e0e7ff' : '#f5f6f7', border: `1.5px solid ${fromTemplate?.color || '#2a4bd9'}22` }}>
+              style={{ background: fromTemplate ? fromTemplate.bg || '#e0e7ff' : '#f5f6f7', border: `1.5px solid color-mix(in srgb, ${fromTemplate?.color || 'var(--color-primary)'} 13%, transparent)` }}>
               <Icon name={fromTemplate ? 'content_copy' : 'auto_awesome'} fill={1} size={18}
-                style={{ color: fromTemplate?.color || '#2a4bd9', flexShrink: 0, marginTop: 1 }} />
+                style={{ color: fromTemplate?.color || 'var(--color-primary)', flexShrink: 0, marginTop: 1 }} />
               <p className="text-xs font-semibold text-on-surface leading-relaxed">
                 {fromTemplate
                   ? t('templates.editor.fromTemplateHint', { label: fromTemplate.label })
@@ -497,7 +497,7 @@ export function TemplateEditorPage() {
                     {t('templates.editor.questionsHeading')}
                     {questions.length > 0 && (
                       <span className="ml-2 text-xs font-bold px-2 py-0.5 rounded-full"
-                        style={{ background: '#e0e7ff', color: '#2a4bd9' }}>
+                        style={{ background: '#e0e7ff', color: 'var(--color-primary)' }}>
                         {questions.length}
                       </span>
                     )}
@@ -506,7 +506,7 @@ export function TemplateEditorPage() {
                 <Button size="sm"
                   onClick={() => setTypePicker(true)}
                   className="flex items-center gap-1.5 text-xs font-bold rounded-xl text-white"
-                  style={{ background: '#2a4bd9' }}>
+                  style={{ background: 'var(--color-primary)' }}>
                   <Icon name="add" size={14} />
                   {t('templates.editor.addQuestion')}
                 </Button>
@@ -517,14 +517,14 @@ export function TemplateEditorPage() {
                   style={{ background: '#f9fafb', border: '1.5px dashed #dfe3e6' }}>
                   <div className="w-12 h-12 rounded-2xl flex items-center justify-center"
                     style={{ background: '#e0e7ff' }}>
-                    <Icon name="quiz" fill={1} size={22} style={{ color: '#2a4bd9' }} />
+                    <Icon name="quiz" fill={1} size={22} style={{ color: 'var(--color-primary)' }} />
                   </div>
                   <p className="text-sm text-on-surface-variant text-center max-w-xs leading-relaxed">
                     {t('templates.editor.noQuestions')}
                   </p>
                   <Button size="sm" onClick={() => setTypePicker(true)}
                     className="text-xs font-bold rounded-xl text-white"
-                    style={{ background: '#2a4bd9' }}>
+                    style={{ background: 'var(--color-primary)' }}>
                     <Icon name="add" size={14} className="mr-1" />
                     {t('templates.editor.addQuestion')}
                   </Button>
@@ -557,7 +557,7 @@ export function TemplateEditorPage() {
                 className="w-full flex items-center justify-between px-5 py-4 text-left transition-colors hover:bg-[#f8f9ff]"
                 style={{ background: aiOpen ? '#f8f9ff' : '#fafbff' }}
               >
-                <span className="flex items-center gap-2 text-sm font-extrabold font-headline" style={{ color: '#2a4bd9' }}>
+                <span className="flex items-center gap-2 text-sm font-extrabold font-headline" style={{ color: 'var(--color-primary)' }}>
                   <Icon name="psychology" size={16} />
                   {t('templates.modal.aiSettings.sectionLabel')}
                 </span>
@@ -610,7 +610,7 @@ export function TemplateEditorPage() {
                 onClick={handleSave}
                 disabled={saving}
                 className="flex-1 rounded-xl font-bold text-sm text-white h-12"
-                style={{ background: saving ? '#94a3b8' : 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                style={{ background: saving ? '#94a3b8' : 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               >
                 {saving ? (
                   <span className="flex items-center justify-center gap-2">

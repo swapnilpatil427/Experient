@@ -48,7 +48,7 @@ export function ErrorPage({ type = 'not-found', onRetry }: ErrorPageProps) {
             <Button
               onClick={onRetry}
               className="rounded-xl font-bold px-6"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)', color: '#fff', border: 'none' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: '#fff', border: 'none' }}
             >
               {t('errors.serverError.action')}
             </Button>
@@ -57,7 +57,7 @@ export function ErrorPage({ type = 'not-found', onRetry }: ErrorPageProps) {
             variant={isServerError && onRetry ? 'outline' : 'default'}
             onClick={() => navigate(type === 'unauthorized' ? ROUTES.SIGNIN : ROUTES.LANDING)}
             className="rounded-xl font-bold px-6"
-            style={!(isServerError && onRetry) ? { background: 'linear-gradient(135deg, #2a4bd9, #8329c8)', color: '#fff', border: 'none' } : {}}
+            style={!(isServerError && onRetry) ? { background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: '#fff', border: 'none' } : {}}
           >
             {isServerError ? t('errors.serverError.actionAlt') : t(`errors.${key}.action`)}
           </Button>

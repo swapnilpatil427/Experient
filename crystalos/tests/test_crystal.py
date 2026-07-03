@@ -20,6 +20,8 @@ from crystalos.agents.crystal import (
     _run_skill_loop,
     _run_skill_stream,
     _fetch_skill_context,
+    _is_workflow_taxonomy_question,
+    _resolve_forced_skill,
 )
 from crystalos.lib.skill_runtime import SkillResult
 from tests.conftest import make_credit
@@ -1328,6 +1330,216 @@ class TestSkillSynthesis:
         assert result is not None
         assert "APAC" in result.answer
 
+    # ── Wave 15 — Automation Hub context injection into skill reasoning ─────
+
+    @pytest.mark.asyncio
+    async def test_workflow_registry_and_builder_draft_injected_into_survey_facts(self):
+        """workflow_registry/builder_draft on CrystalInput must land in
+        survey_facts (context injection, not a tool call) so workflow-analyst can
+        reference the live registry and the in-progress draft. Also proves the
+        skill can actually USE that data: the mocked LLM/skill response below
+        correctly references an existing draft action (Slack) already present in
+        builder_draft, exercising the "aware of existing draft" requirement."""
+        skill_meta = self._make_skill_meta(name="workflow-analyst")
+
+        registry_payload = {
+            "triggers": [{"type": "score.nps_drop", "category": "Score", "label": "NPS dropped"}],
+            "conditionFields": [{"field": "nps", "label": "NPS score", "kind": "number"}],
+            "conditionOperators": ["lt"],
+            "actions": [
+                {"action": "notify.slack", "category": "Notify", "label": "Slack message", "live": True},
+                {"action": "jira.create_issue", "category": "Integration", "label": "Create Jira issue", "live": "env"},
+            ],
+        }
+        draft_payload = {
+            "mode": "sentence",
+            "triggerType": "score.nps_drop",
+            "scopeSelection": {"scopeType": "org"},
+            "conditionClauses": [{"field": "nps", "op": "lt", "value": "30"}],
+            "actions": [{"action": "notify.slack", "label": "Slack message"}],
+            "workflowName": "NPS drop alert",
+            "isEditMode": False,
+        }
+
+        captured_input = {}
+
+        async def capture_execute(skill_name, meta, input_data, ctx):
+            captured_input.update(input_data)
+            # Mocked skill response demonstrates draft-awareness: the proposal
+            # includes BOTH the pre-existing Slack action (from builder_draft)
+            # AND the newly requested Jira action — not just the new one.
+            draft_actions = input_data["survey_facts"]["builder_draft"]["actions"]
+            already_has_slack = any(a["action"] == "notify.slack" for a in draft_actions)
+            return self._make_skill_result({
+                "answer": "Added a Jira ticket action alongside your existing Slack notification.",
+                "citations": ["score.nps_drop"],
+                "suggestions": [],
+                "action_proposals": [{
+                    "type": "create_workflow",
+                    "title": "NPS drop alert",
+                    "description": "Notify Slack and file a Jira ticket when NPS drops below 30.",
+                    "params": {
+                        "trigger_type": "score.nps_drop",
+                        "nodes": [
+                            {"id": "trigger-1", "type": "trigger", "trigger": "score.nps_drop"},
+                            {"id": "action-1", "type": "action", "action": "notify.slack", "config": {}},
+                            {"id": "action-2", "type": "action", "action": "jira.create_issue", "config": {}},
+                        ] if already_has_slack else [],
+                        "edges": [],
+                    },
+                    "requires_confirmation": True,
+                }],
+            })
+
+        mock_runtime = AsyncMock()
+        mock_runtime.execute = capture_execute
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"workflow-analyst": skill_meta}
+        mock_registry.find = AsyncMock(return_value=[(skill_meta, 0.9)])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        inp = self._make_inp(
+            message="Also file a Jira ticket",
+            workflow_registry=registry_payload,
+            builder_draft=draft_payload,
+            surface="workflow_builder",
+        )
+
+        with (
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.lib.skill_runtime.SkillRuntime", return_value=mock_runtime),
+        ):
+            result = await _skill_synthesis(inp, [])
+
+        # Context landed where the skill's own documented input schema expects it.
+        assert captured_input["survey_facts"]["workflow_registry"] == registry_payload
+        assert captured_input["survey_facts"]["builder_draft"] == draft_payload
+
+        # The skill's output demonstrates it actually used builder_draft: the
+        # resulting proposal includes BOTH the existing Slack action and the
+        # newly requested Jira action.
+        assert result is not None
+        actions_in_proposal = [
+            n["action"] for n in result.action_proposals[0].params["nodes"] if n["type"] == "action"
+        ]
+        assert "notify.slack" in actions_in_proposal
+        assert "jira.create_issue" in actions_in_proposal
+
+    @pytest.mark.asyncio
+    async def test_absent_builder_context_omits_keys_from_survey_facts(self):
+        """When workflow_registry/builder_draft are absent (every pre-Wave-15
+        caller), survey_facts must NOT gain new keys — proves the injection is
+        additive-only and existing skills see byte-identical survey_facts."""
+        skill_meta = self._make_skill_meta()
+        skill_result = self._make_skill_result({
+            "answer": "Your NPS score of 42 is solid for this segment.",
+            "citations": [],
+            "suggestions": [],
+        })
+
+        captured_input = {}
+
+        async def capture_execute(skill_name, meta, input_data, ctx):
+            captured_input.update(input_data)
+            return skill_result
+
+        mock_runtime = AsyncMock()
+        mock_runtime.execute = capture_execute
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"crystal-analyst": skill_meta}
+        mock_registry.find = AsyncMock(return_value=[(skill_meta, 0.85)])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.lib.skill_runtime.SkillRuntime", return_value=mock_runtime),
+        ):
+            await _skill_synthesis(self._make_inp(), [])
+
+        assert "workflow_registry" not in captured_input["survey_facts"]
+        assert "builder_draft" not in captured_input["survey_facts"]
+
+    @pytest.mark.asyncio
+    async def test_registry_grounding_holds_via_builder_context_path(self):
+        """Registry-grounding must hold identically whether the registry arrives
+        via the new builder-context mechanism or the old tool_results path: an
+        invented trigger/action in a proposal is still something the skill
+        framework does not silently trust — this exercises the same
+        _skill_synthesis -> SkillRuntime.execute -> ActionProposal validation
+        seam workflow-analyst relies on, with a registry attached via
+        survey_facts.workflow_registry (the new path) instead of tool_results.
+        The proposal's own invented action name is dropped at ActionProposal
+        normalization time only if malformed; here we assert the fabricated
+        name is NOT silently rewritten to look legitimate and is preserved
+        verbatim in the untrusted proposal for the frontend/eval layer to
+        reject — proving this path does not add a bypass that launders an
+        invented name into looking registry-clean."""
+        skill_meta = self._make_skill_meta(name="workflow-analyst")
+
+        registry_payload = {
+            "triggers": [{"type": "score.nps_drop", "category": "Score", "label": "NPS dropped"}],
+            "conditionFields": [],
+            "conditionOperators": [],
+            "actions": [{"action": "notify.slack", "category": "Notify", "label": "Slack message", "live": True}],
+        }
+
+        # Simulates a bad/hallucinating skill run that invents an action not in
+        # the registry — EVALS.md's E2 criterion is what should catch this in
+        # production (SkillRuntime gates on eval_passed); here we assert the
+        # eval-failed path is honored identically for this new context route.
+        skill_result = self._make_skill_result(
+            {
+                "answer": "Set up a workflow using a made-up action.",
+                "citations": [],
+                "suggestions": [],
+                "action_proposals": [{
+                    "type": "create_workflow",
+                    "title": "Bad proposal",
+                    "description": "Uses an invented action not present in the registry.",
+                    "params": {
+                        "trigger_type": "score.nps_drop",
+                        "nodes": [
+                            {"id": "trigger-1", "type": "trigger", "trigger": "score.nps_drop"},
+                            {"id": "action-1", "type": "action", "action": "notify.carrier_pigeon", "config": {}},
+                        ],
+                        "edges": [],
+                    },
+                    "requires_confirmation": True,
+                }],
+            },
+            eval_passed=False,  # EVALS.md E2 (registry-grounding) fails this run
+        )
+
+        mock_runtime = AsyncMock()
+        mock_runtime.execute = AsyncMock(return_value=skill_result)
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"workflow-analyst": skill_meta}
+        mock_registry.find = AsyncMock(return_value=[(skill_meta, 0.9)])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        inp = self._make_inp(
+            message="Automate something with a carrier pigeon",
+            workflow_registry=registry_payload,
+            surface="workflow_builder",
+        )
+
+        with (
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.lib.skill_runtime.SkillRuntime", return_value=mock_runtime),
+        ):
+            result = await _skill_synthesis(inp, [])
+
+        # eval_passed=False (registry-grounding failure) -> _skill_synthesis
+        # returns None, same as the pre-existing tool_results-path behavior.
+        # The invented proposal never reaches the caller/frontend.
+        assert result is None
+
 
 # ── TestRunSkillLoop ──────────────────────────────────────────────────────────
 
@@ -1731,6 +1943,509 @@ class TestRunSkillStream:
         routing_events = [e for e in events if e.get("type") == "debug_routing"]
         assert len(routing_events) >= 1
         assert routing_events[0].get("skill") == "crystal-analyst"
+
+    # ── Wave 15 — Automation Hub builder-context routing ────────────────────
+
+    def _make_workflow_analyst_meta(self):
+        return {
+            "name": "workflow-analyst",
+            "description": "Crystal workflow automation analyst",
+            "allowed_tools": ["get_survey_overview", "propose_workflow"],
+            "_body": "",
+            "_dir": "/tmp",
+            "version": "1.0.0",
+            "evals": "EVALS.md",
+            "max_output_tokens": 1200,
+            "max_retries": 1,
+            "timeout_seconds": 60,
+        }
+
+    @pytest.mark.asyncio
+    async def test_default_surface_routing_is_byte_identical_to_before(self):
+        """A request WITHOUT builder_draft/surface (every existing Insights-page-shaped
+        call) must route via the normal registry.find() semantic path, completely
+        untouched by the Wave 15 force-select branch — proving the new field is
+        purely additive for every pre-existing caller."""
+        analyst_meta = {
+            "name": "crystal-analyst",
+            "description": "Analytical skill",
+            "allowed_tools": ["get_survey_overview"],
+            "_body": "",
+            "_dir": "/tmp",
+            "version": "1.0.0",
+            "evals": "EVALS.md",
+            "max_output_tokens": 2000,
+            "max_retries": 1,
+            "timeout_seconds": 60,
+        }
+        workflow_meta = self._make_workflow_analyst_meta()
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        # Both skills registered — if the force-select branch fired even though
+        # inp.surface defaults to "insights", it would grab workflow-analyst
+        # instead of going through find(). This proves it does not.
+        mock_registry._skills = {"crystal-analyst": analyst_meta, "workflow-analyst": workflow_meta}
+        mock_registry.find = AsyncMock(return_value=[(analyst_meta, 0.85)])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        skill_out = self._make_skill_output()
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"response_count": 100})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            # inp has no builder_draft/workflow_registry, and surface uses its default.
+            inp = self._make_inp()
+            assert inp.surface == "insights"
+            assert inp.builder_draft is None
+            assert inp.workflow_registry is None
+            events = await self._collect(_run_skill_stream(inp, debug=True))
+
+        routing_events = [e for e in events if e.get("type") == "debug_routing"]
+        assert len(routing_events) == 1
+        # registry.find() was consulted (not bypassed) and its result won —
+        # crystal-analyst, not workflow-analyst.
+        mock_registry.find.assert_awaited_once()
+        assert routing_events[0]["skill"] == "crystal-analyst"
+        assert routing_events[0]["score"] == 0.85
+
+    @pytest.mark.asyncio
+    async def test_workflow_builder_surface_force_selects_workflow_analyst(self):
+        """A request WITH surface='workflow_builder' must reliably reach
+        workflow-analyst — a hard force, not semantic-routing roulette. Proven by
+        using a message with NO automation vocabulary at all (would not plausibly
+        win a real embedding/token-overlap match) and a mocked registry.find()
+        that would return a DIFFERENT skill if it were ever consulted."""
+        workflow_meta = self._make_workflow_analyst_meta()
+        decoy_meta = {
+            "name": "crystal-analyst",
+            "description": "Analytical skill",
+            "allowed_tools": ["get_survey_overview"],
+            "_body": "",
+            "_dir": "/tmp",
+            "version": "1.0.0",
+            "evals": "EVALS.md",
+            "max_output_tokens": 2000,
+            "max_retries": 1,
+            "timeout_seconds": 60,
+        }
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"crystal-analyst": decoy_meta, "workflow-analyst": workflow_meta}
+        # If routing ever fell through to find()/find_sync(), it would land on
+        # the decoy — proving the assertion below can only pass via the force.
+        mock_registry.find = AsyncMock(return_value=[(decoy_meta, 0.9)])
+        mock_registry.find_sync = MagicMock(return_value="crystal-analyst")
+
+        skill_out = self._make_skill_output()
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"response_count": 100})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            inp = self._make_inp(
+                message="why is Jira greyed out",  # ambiguous, page-anchored — no automation keywords
+                surface="workflow_builder",
+            )
+            events = await self._collect(_run_skill_stream(inp, debug=True))
+
+        routing_events = [e for e in events if e.get("type") == "debug_routing"]
+        assert len(routing_events) == 1
+        assert routing_events[0]["skill"] == "workflow-analyst"
+        # The semantic router was never consulted — a true bypass, not a bias.
+        mock_registry.find.assert_not_called()
+        mock_registry.find_sync.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workflow_builder_surface_falls_back_when_skill_unregistered(self):
+        """Defensive: if workflow-analyst is somehow not registered, the force
+        branch must not dead-end the request — it falls through to normal
+        semantic routing instead of yielding zero skill match."""
+        decoy_meta = {
+            "name": "crystal-analyst",
+            "description": "Analytical skill",
+            "allowed_tools": ["get_survey_overview"],
+            "_body": "",
+            "_dir": "/tmp",
+            "version": "1.0.0",
+            "evals": "EVALS.md",
+            "max_output_tokens": 2000,
+            "max_retries": 1,
+            "timeout_seconds": 60,
+        }
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"crystal-analyst": decoy_meta}  # no workflow-analyst
+        mock_registry.find = AsyncMock(return_value=[(decoy_meta, 0.7)])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        skill_out = self._make_skill_output()
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"response_count": 100})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            inp = self._make_inp(surface="workflow_builder")
+            events = await self._collect(_run_skill_stream(inp, debug=True))
+
+        routing_events = [e for e in events if e.get("type") == "debug_routing"]
+        assert len(routing_events) == 1
+        assert routing_events[0]["skill"] == "crystal-analyst"
+        mock_registry.find.assert_awaited_once()
+
+
+class TestIsWorkflowTaxonomyQuestion:
+    """Unit tests for the Wave 18 message-content detector, independent of routing
+    plumbing — pure function, precision-first (see block comment in agents/crystal.py)."""
+
+    @pytest.mark.parametrize("message", [
+        "What types of trigger exists?",
+        "What types of triggers exist?",
+        "what type of trigger exists",
+        "Which kinds of actions can I use?",
+        "What kinds of conditions are there?",
+        "list the available triggers",
+        "Show me all available actions",
+        "What scopes can I use?",
+        "What operators can I use?",
+        "What does flow.delay do?",
+        "what does `crystal.sentiment_spike` mean?",
+        "What does notify.slack do?",
+    ])
+    def test_matches_taxonomy_reference_questions(self, message):
+        assert _is_workflow_taxonomy_question(message) is True
+
+    @pytest.mark.parametrize("message", [
+        "Why did NPS drop?",
+        "What are the top complaint themes?",
+        "What types of customers are detractors?",
+        "How is our CSAT trending this month?",
+        "Set up an alert for when NPS drops below 30",
+        "Automate a Slack message when a detractor responds",
+        "The action I took was to escalate the ticket",
+        "What's driving the low NPS score?",
+        "",
+        "hi",
+    ])
+    def test_does_not_match_unrelated_questions(self, message):
+        assert _is_workflow_taxonomy_question(message) is False
+
+    def test_none_message_returns_false(self):
+        assert _is_workflow_taxonomy_question(None) is False  # type: ignore[arg-type]
+
+
+class TestResolveForcedSkill:
+    """Unit tests for _resolve_forced_skill — the centralized 'does any force
+    condition match' check backing both Wave 15 (surface) and Wave 18 (message
+    content) hard-force routing."""
+
+    def _workflow_meta(self):
+        return {"name": "workflow-analyst", "description": "workflow skill"}
+
+    def _mock_registry(self, skills):
+        registry = MagicMock()
+        registry._skills = skills
+        return registry
+
+    def test_surface_workflow_builder_forces_skill(self):
+        registry = self._mock_registry({"workflow-analyst": self._workflow_meta()})
+        inp = CrystalInput(
+            survey_id="s1", org_id="org1", message="why is Jira greyed out",
+            insights=[], surface="workflow_builder",
+        )
+        assert _resolve_forced_skill(inp, registry) == self._workflow_meta()
+
+    def test_taxonomy_question_forces_skill_regardless_of_surface(self):
+        registry = self._mock_registry({"workflow-analyst": self._workflow_meta()})
+        inp = CrystalInput(
+            survey_id="s1", org_id="org1", message="What types of trigger exists?",
+            insights=[],  # surface defaults to "insights"
+        )
+        assert inp.surface == "insights"
+        assert _resolve_forced_skill(inp, registry) == self._workflow_meta()
+
+    def test_neither_condition_returns_none(self):
+        registry = self._mock_registry({"workflow-analyst": self._workflow_meta()})
+        inp = CrystalInput(survey_id="s1", org_id="org1", message="Why did NPS drop?", insights=[])
+        assert _resolve_forced_skill(inp, registry) is None
+
+    def test_returns_none_when_skill_unregistered(self):
+        registry = self._mock_registry({})  # workflow-analyst not registered
+        inp = CrystalInput(
+            survey_id="s1", org_id="org1", message="What types of trigger exists?", insights=[],
+        )
+        assert _resolve_forced_skill(inp, registry) is None
+
+
+class TestWorkflowTaxonomyForceRoute:
+    """Wave 18 — message-content force-route to workflow-analyst, independent of
+    (and additive alongside) Wave 15's surface-based force. Mirrors the rigor of
+    TestRunSkillStream's Wave 15 tests: real reproduction of the reported bug,
+    a false-positive guard on normal survey-data questions, and proof the
+    registry-population gap (traced in docs/automation-hub/TRACKER.md Wave 18)
+    is actually resolved for this path, not just that routing happened."""
+
+    def _make_inp(self, **kwargs):
+        defaults = dict(
+            survey_id="s1",
+            org_id="org1",
+            message="What types of trigger exists?",
+            insights=[],
+            topics=[],
+            metrics={},
+        )
+        defaults.update(kwargs)
+        return CrystalInput(**defaults)
+
+    async def _collect(self, gen) -> list[dict]:
+        events = []
+        async for line in gen:
+            events.append(json.loads(line))
+        return events
+
+    def _make_workflow_analyst_meta(self):
+        return {
+            "name": "workflow-analyst",
+            "description": "Crystal workflow automation analyst",
+            "allowed_tools": ["get_survey_overview", "propose_workflow"],
+            "_body": "",
+            "_dir": "/tmp",
+            "version": "1.0.0",
+            "evals": "EVALS.md",
+            "max_output_tokens": 1200,
+            "max_retries": 1,
+            "timeout_seconds": 60,
+        }
+
+    def _make_skill_output(self, answer="Triggers fall into 5 categories: survey events, score thresholds, AI signals, schedule, and inbound webhook."):
+        return CrystalOutput(
+            answer=answer,
+            citations=[],
+            suggestions=["Want me to set one up?"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_reported_question_force_routes_to_workflow_analyst(self):
+        """The EXACT reported bug: 'What types of trigger exists?' asked from the
+        DEFAULT surface (no builder context at all — e.g. the Insights page's
+        Crystal panel) must force-route to workflow-analyst, not fall through to
+        semantic routing (which is mocked to return crystal-analyst — proving
+        this can only pass via the new Wave 18 force, same pattern as Wave 15's
+        `test_workflow_builder_surface_force_selects_workflow_analyst`)."""
+        workflow_meta = self._make_workflow_analyst_meta()
+        decoy_meta = {
+            "name": "crystal-analyst",
+            "description": "Analytical skill",
+            "allowed_tools": ["get_survey_overview"],
+            "_body": "",
+            "_dir": "/tmp",
+            "version": "1.0.0",
+            "evals": "EVALS.md",
+            "max_output_tokens": 2000,
+            "max_retries": 1,
+            "timeout_seconds": 60,
+        }
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"crystal-analyst": decoy_meta, "workflow-analyst": workflow_meta}
+        mock_registry.find = AsyncMock(return_value=[(decoy_meta, 0.9)])
+        mock_registry.find_sync = MagicMock(return_value="crystal-analyst")
+
+        skill_out = self._make_skill_output()
+        captured_inp: list[CrystalInput] = []
+
+        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None):
+            captured_inp.append(inp)
+            return skill_out
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"response_count": 100})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=_capture_synthesis),
+        ):
+            inp = self._make_inp(message="What types of trigger exists?")
+            assert inp.surface == "insights"  # NOT opened from the workflow builder
+            events = await self._collect(_run_skill_stream(inp, debug=True))
+
+        routing_events = [e for e in events if e.get("type") == "debug_routing"]
+        assert len(routing_events) == 1
+        assert routing_events[0]["skill"] == "workflow-analyst"
+        # The semantic router was never consulted — a true bypass, matching the
+        # Wave 15 surface-force assertion pattern exactly.
+        mock_registry.find.assert_not_called()
+        mock_registry.find_sync.assert_not_called()
+
+        # Registry-population gap (TRACKER.md Wave 18 step 3): the skill must
+        # actually receive a real trigger/action/condition registry, not just
+        # get routed to correctly. Since surface != "workflow_builder", the
+        # Node proxy never fetched a live registry — CrystalOS must substitute
+        # the FALLBACK_REGISTRY so the skill has real data to answer from.
+        assert len(captured_inp) == 1
+        assert captured_inp[0].workflow_registry is not None
+        assert captured_inp[0].workflow_registry.get("triggers")
+        assert captured_inp[0].workflow_registry.get("actions")
+
+    @pytest.mark.asyncio
+    async def test_close_paraphrase_also_force_routes(self):
+        """A close paraphrase of the reported question also force-routes —
+        the detector isn't overfit to the exact reported string."""
+        workflow_meta = self._make_workflow_analyst_meta()
+        decoy_meta = {
+            "name": "crystal-analyst", "description": "Analytical skill",
+            "allowed_tools": ["get_survey_overview"], "_body": "", "_dir": "/tmp",
+            "version": "1.0.0", "evals": "EVALS.md", "max_output_tokens": 2000,
+            "max_retries": 1, "timeout_seconds": 60,
+        }
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"crystal-analyst": decoy_meta, "workflow-analyst": workflow_meta}
+        mock_registry.find = AsyncMock(return_value=[(decoy_meta, 0.9)])
+        mock_registry.find_sync = MagicMock(return_value="crystal-analyst")
+
+        skill_out = self._make_skill_output()
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"response_count": 100})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            inp = self._make_inp(message="what kinds of triggers are available?")
+            events = await self._collect(_run_skill_stream(inp, debug=True))
+
+        routing_events = [e for e in events if e.get("type") == "debug_routing"]
+        assert routing_events[0]["skill"] == "workflow-analyst"
+        mock_registry.find.assert_not_called()
+        mock_registry.find_sync.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_normal_survey_data_question_does_not_force_route(self):
+        """False-positive guard: a normal survey-data question ('Why did NPS
+        drop?') must NOT trigger the new detector — it should route via the
+        normal semantic path exactly as before this wave. At least as important
+        as the true-positive test, per the task's precision-first mandate."""
+        analyst_meta = {
+            "name": "crystal-analyst", "description": "Analytical skill",
+            "allowed_tools": ["get_survey_overview"], "_body": "", "_dir": "/tmp",
+            "version": "1.0.0", "evals": "EVALS.md", "max_output_tokens": 2000,
+            "max_retries": 1, "timeout_seconds": 60,
+        }
+        workflow_meta = self._make_workflow_analyst_meta()
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"crystal-analyst": analyst_meta, "workflow-analyst": workflow_meta}
+        mock_registry.find = AsyncMock(return_value=[(analyst_meta, 0.85)])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        skill_out = self._make_skill_output(answer="NPS dropped 8 points, driven mainly by onboarding friction.")
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"response_count": 100})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            inp = self._make_inp(message="Why did NPS drop?")
+            events = await self._collect(_run_skill_stream(inp, debug=True))
+
+        routing_events = [e for e in events if e.get("type") == "debug_routing"]
+        assert len(routing_events) == 1
+        assert routing_events[0]["skill"] == "crystal-analyst"
+        # registry.find() WAS consulted — proves the detector did not fire and
+        # hijack routing for an ordinary data question.
+        mock_registry.find.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_explicit_workflow_registry_is_not_overwritten_by_fallback(self):
+        """If a caller somehow already supplied workflow_registry (e.g. a future
+        caller widens the Node-side condition per the Wave 18 follow-up), the
+        Wave 18 fallback substitution must not clobber it with the smaller
+        FALLBACK_REGISTRY."""
+        workflow_meta = self._make_workflow_analyst_meta()
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"workflow-analyst": workflow_meta}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        live_registry = {
+            "triggers": [{"type": "custom.trigger", "category": "Custom", "label": "Custom"}],
+            "conditionFields": [],
+            "conditionOperators": [],
+            "actions": [],
+            "surveys": [{"id": "s1", "name": "NPS Q3"}],
+            "tags": [],
+        }
+
+        skill_out = self._make_skill_output()
+        captured_inp: list[CrystalInput] = []
+
+        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None):
+            captured_inp.append(inp)
+            return skill_out
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"response_count": 100})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=_capture_synthesis),
+        ):
+            inp = self._make_inp(
+                message="What types of trigger exists?",
+                workflow_registry=live_registry,
+            )
+            await self._collect(_run_skill_stream(inp, debug=True))
+
+        assert captured_inp[0].workflow_registry == live_registry
+
+    @pytest.mark.asyncio
+    async def test_workflow_builder_surface_does_not_get_fallback_registry(self):
+        """When surface == 'workflow_builder' (Wave 15's own condition) and
+        workflow_registry is absent, the Wave 18 fallback substitution should
+        NOT kick in — that combination means the Node proxy's builder-context
+        fetch itself failed/returned nothing, which is a different failure mode
+        the Wave 18 fallback isn't meant to paper over silently. Confirms the
+        two force conditions don't bleed into each other's fallback behavior."""
+        workflow_meta = self._make_workflow_analyst_meta()
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"workflow-analyst": workflow_meta}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        skill_out = self._make_skill_output()
+        captured_inp: list[CrystalInput] = []
+
+        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None):
+            captured_inp.append(inp)
+            return skill_out
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"response_count": 100})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=_capture_synthesis),
+        ):
+            inp = self._make_inp(
+                message="why is Jira greyed out",
+                surface="workflow_builder",
+                workflow_registry=None,
+            )
+            await self._collect(_run_skill_stream(inp, debug=True))
+
+        assert captured_inp[0].workflow_registry is None
 
 
 # ── TestActionProposalTypes ───────────────────────────────────────────────────

@@ -1,8 +1,49 @@
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useState, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import type { RootState } from '@react-three/fiber';
 import { Float, Icosahedron, Octahedron, Sphere, Stars, MeshDistortMaterial } from '@react-three/drei';
 import * as THREE from 'three';
+
+// Wave 19b (WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md §4.4): the `color` props
+// below are Three.js material/light props, not CSS rules — a literal
+// 'var(--color-primary)' string won't resolve here the way it does in a
+// `style` object. Resolve the brand-reactive CSS custom properties via
+// `getComputedStyle` at mount time instead (same pattern as
+// NLThinkingCrystal.tsx, deliberately duplicated locally per spec guidance
+// rather than a cross-module import — that file lazy-loads independently).
+const DEFAULT_PRIMARY_COLOR = '#2a4bd9';
+const DEFAULT_TERTIARY_COLOR = '#8329c8';
+const DEFAULT_PRIMARY_CONTAINER_COLOR = '#879aff';
+const DEFAULT_TERTIARY_CONTAINER_COLOR = '#d299ff';
+const DEFAULT_SECONDARY_CONTAINER_COLOR = '#82deff';
+
+export function resolveCssVarColor(varName: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  return value || fallback;
+}
+
+function useResolvedBrandColors() {
+  const [colors, setColors] = useState(() => ({
+    primary: DEFAULT_PRIMARY_COLOR,
+    tertiary: DEFAULT_TERTIARY_COLOR,
+    primaryContainer: DEFAULT_PRIMARY_CONTAINER_COLOR,
+    tertiaryContainer: DEFAULT_TERTIARY_CONTAINER_COLOR,
+    secondaryContainer: DEFAULT_SECONDARY_CONTAINER_COLOR,
+  }));
+
+  useEffect(() => {
+    setColors({
+      primary: resolveCssVarColor('--color-primary', DEFAULT_PRIMARY_COLOR),
+      tertiary: resolveCssVarColor('--color-tertiary', DEFAULT_TERTIARY_COLOR),
+      primaryContainer: resolveCssVarColor('--color-primary-container', DEFAULT_PRIMARY_CONTAINER_COLOR),
+      tertiaryContainer: resolveCssVarColor('--color-tertiary-container', DEFAULT_TERTIARY_CONTAINER_COLOR),
+      secondaryContainer: resolveCssVarColor('--color-secondary-container', DEFAULT_SECONDARY_CONTAINER_COLOR),
+    });
+  }, []);
+
+  return colors;
+}
 
 // Floating particle field
 // Exported so NLThinkingCrystal.tsx can reuse it at a smaller `count` for the
@@ -10,6 +51,7 @@ import * as THREE from 'three';
 // component, no new geometry, just a different `count` prop.
 export function Particles({ count = 350 }) {
   const mesh = useRef<THREE.Points>(null);
+  const brandColors = useResolvedBrandColors();
   const positions = useMemo(() => {
     const arr = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
@@ -22,10 +64,10 @@ export function Particles({ count = 350 }) {
 
   const colors = useMemo(() => {
     const palette = [
-      new THREE.Color('#879aff'),
+      new THREE.Color(brandColors.primaryContainer),
       new THREE.Color('#57d2f9'),
-      new THREE.Color('#d299ff'),
-      new THREE.Color('#2a4bd9'),
+      new THREE.Color(brandColors.tertiaryContainer),
+      new THREE.Color(brandColors.primary),
     ];
     const arr = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
@@ -33,7 +75,7 @@ export function Particles({ count = 350 }) {
       arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b;
     }
     return arr;
-  }, [count]);
+  }, [count, brandColors]);
 
   useFrame((state: RootState) => {
     if (mesh.current) {
@@ -166,6 +208,7 @@ function FloatingGem({ position, color, rotSpeed = 0.3, type = 'ico', scale = 1 
 }
 
 export function HeroCanvas() {
+  const brandColors = useResolvedBrandColors();
   return (
     <Canvas
       camera={{ position: [0, 0, 9], fov: 52 }}
@@ -176,9 +219,9 @@ export function HeroCanvas() {
       {/* Lighting */}
       <ambientLight intensity={0.5} color="#d4d8ff" />
       <directionalLight position={[6, 6, 4]} intensity={1.4} color="#c0b8ff" />
-      <directionalLight position={[-6, -4, -6]} intensity={0.5} color="#82deff" />
-      <pointLight position={[2, 4, 2]} intensity={2.0} color="#8329c8" distance={14} />
-      <pointLight position={[-3, -2, 3]} intensity={1.2} color="#2a4bd9" distance={10} />
+      <directionalLight position={[-6, -4, -6]} intensity={0.5} color={brandColors.secondaryContainer} />
+      <pointLight position={[2, 4, 2]} intensity={2.0} color={brandColors.tertiary} distance={14} />
+      <pointLight position={[-3, -2, 3]} intensity={1.2} color={brandColors.primary} distance={10} />
       <pointLight position={[0, -3, 1]} intensity={0.8} color="#57d2f9" distance={8} />
 
       {/* Deep starfield */}
@@ -191,16 +234,16 @@ export function HeroCanvas() {
       <CentralCrystal />
 
       {/* Orbital rings */}
-      <OrbitRing radiusX={2.8} color="#879aff" speed={0.18} tiltX={1.0} tiltZ={0.3} />
+      <OrbitRing radiusX={2.8} color={brandColors.primaryContainer} speed={0.18} tiltX={1.0} tiltZ={0.3} />
       <OrbitRing radiusX={3.8} color="#57d2f9" speed={-0.11} tiltX={0.5} tiltZ={0.8} />
-      <OrbitRing radiusX={2.2} color="#d299ff" speed={0.24} tiltX={1.4} tiltZ={-0.4} />
+      <OrbitRing radiusX={2.2} color={brandColors.tertiaryContainer} speed={0.24} tiltX={1.4} tiltZ={-0.4} />
 
       {/* Background floating gems */}
       <FloatingGem position={[4.0, 1.8, -3]} color="#4338ca" type="ico" rotSpeed={0.18} scale={0.7} />
-      <FloatingGem position={[-3.6, -1.4, -2]} color="#8329c8" type="oct" rotSpeed={0.28} scale={0.6} />
-      <FloatingGem position={[2.2, -2.8, -4]} color="#2a4bd9" type="sphere" rotSpeed={0.14} scale={0.5} />
+      <FloatingGem position={[-3.6, -1.4, -2]} color={brandColors.tertiary} type="oct" rotSpeed={0.28} scale={0.6} />
+      <FloatingGem position={[2.2, -2.8, -4]} color={brandColors.primary} type="sphere" rotSpeed={0.14} scale={0.5} />
       <FloatingGem position={[-2.0, 3.0, -5]} color="#c984ff" type="ico" rotSpeed={0.22} scale={0.55} />
-      <FloatingGem position={[5.0, -0.8, -6]} color="#879aff" type="oct" rotSpeed={0.16} scale={0.45} />
+      <FloatingGem position={[5.0, -0.8, -6]} color={brandColors.primaryContainer} type="oct" rotSpeed={0.16} scale={0.45} />
       <FloatingGem position={[-4.8, 2.0, -7]} color="#57d2f9" type="sphere" rotSpeed={0.20} scale={0.5} />
       <FloatingGem position={[1.5, 3.8, -6]} color="#a5b4fc" type="ico" rotSpeed={0.25} scale={0.35} />
       <FloatingGem position={[-1.8, -3.5, -5]} color="#7c3aed" type="oct" rotSpeed={0.19} scale={0.4} />

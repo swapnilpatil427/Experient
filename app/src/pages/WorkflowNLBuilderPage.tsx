@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useRef, useEffect, useCallback, lazy, Suspense, type ReactNode } from 'react';
 import { motion, type Variants } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from '../lib/i18n';
@@ -155,7 +155,18 @@ export function WorkflowNLBuilderPage() {
 
   function editInCanvas(result: ParseWorkflowNLResult) {
     navigate(ROUTES.WORKFLOW_CANVAS, {
-      state: { seed: { name: result.name, description: result.description, triggerType: result.triggerType, nodes: result.nodes, edges: result.edges } },
+      state: {
+        seed: {
+          name: result.name, description: result.description, triggerType: result.triggerType, nodes: result.nodes, edges: result.edges,
+          // Wave 12 Phase 2 (TRACKER.md) — carry Crystal's inferred scope
+          // through to the canvas builder so "Edit in canvas" doesn't lose it.
+          // Omitted entirely when absent/org, matching createWorkflow()'s
+          // convention below (never sends a bare `scopeType: undefined`).
+          ...(result.scopeType && result.scopeType !== 'org' ? { scopeType: result.scopeType } : {}),
+          ...(result.scopeType === 'survey' && result.scopeSurveyId ? { scopeSurveyId: result.scopeSurveyId } : {}),
+          ...(result.scopeType === 'tag' && result.scopeTagId ? { scopeTagId: result.scopeTagId } : {}),
+        },
+      },
     });
   }
 
@@ -163,6 +174,13 @@ export function WorkflowNLBuilderPage() {
     await api.createGraphWorkflow({
       name: result.name, description: result.description, triggerType: result.triggerType,
       nodes: result.nodes, edges: result.edges, status: 'draft',
+      // Wave 12 Phase 2 (TRACKER.md) — scope is strictly additive: omit the
+      // keys entirely when absent or 'org' so a parse result with no scope
+      // hint produces a byte-identical payload to pre-Wave-12 behavior
+      // (server already defaults absent scopeType to 'org').
+      ...(result.scopeType && result.scopeType !== 'org' ? { scopeType: result.scopeType } : {}),
+      ...(result.scopeType === 'survey' && result.scopeSurveyId ? { scopeSurveyId: result.scopeSurveyId } : {}),
+      ...(result.scopeType === 'tag' && result.scopeTagId ? { scopeTagId: result.scopeTagId } : {}),
     });
     invalidate('workflows');
     navigate(ROUTES.WORKFLOWS);
@@ -314,17 +332,17 @@ function ThinkingCrystalAccent() {
 // Crystal Alternative" section. No new fallback designed.
 function CssCrystalFallback() {
   return (
-    <div data-testid="nl-thinking-crystal-css" style={{ width: 96, height: 96, position: 'relative', filter: 'drop-shadow(0 10px 22px rgba(42,75,217,0.45))' }}>
+    <div data-testid="nl-thinking-crystal-css" style={{ width: 96, height: 96, position: 'relative', filter: 'drop-shadow(0 10px 22px color-mix(in srgb, var(--color-primary) 45%, transparent))' }}>
       <div style={{ position: 'absolute', inset: 0,
-        background: 'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)',
+        background: 'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)',
         clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
         animation: 'exp-hub-spin 20s linear infinite', filter: 'blur(0.5px)' }} />
       <div style={{ position: 'absolute', inset: '18%',
-        background: 'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)',
+        background: 'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)',
         clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
         animation: 'exp-hub-spin 10s linear infinite reverse', opacity: 0.78 }} />
       <div style={{ position: 'absolute', inset: '38%',
-        background: 'radial-gradient(circle, #ffffff, #82deff)',
+        background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))',
         borderRadius: '50%', filter: 'blur(5px)', animation: 'pulse-glow 2.5s ease-in-out infinite' }} />
       <style>{`@keyframes exp-hub-spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
     </div>
@@ -360,11 +378,71 @@ function actionLabelFor(action: string, actionDefs: ActionDef[]): string {
 function TriggerSummaryRow({ triggerType, triggers, variants }: { triggerType: string; triggers: Trigger[]; variants: Variants }) {
   return (
     <motion.div variants={variants} className="flex items-center gap-2 py-1.5">
-      <span className="w-6 h-6 rounded-md flex items-center justify-center text-white flex-shrink-0" style={{ background: '#2a4bd9' }}>
+      <span className="w-6 h-6 rounded-md flex items-center justify-center text-white flex-shrink-0" style={{ background: 'var(--color-primary)' }}>
         <Icon name="bolt" size={13} />
       </span>
       <span className="text-xs font-bold text-on-surface-variant uppercase">WHEN</span>
       <span className="text-sm text-on-surface">{triggerLabelFor(triggerType, triggers)}</span>
+    </motion.div>
+  );
+}
+
+// Resolves a Crystal-inferred scope (Wave 12 Phase 2, TRACKER.md) to a
+// human-readable label. Absent/'org' renders the exact same "Org-wide" copy
+// ScopeStepPanelContent.tsx uses elsewhere in the product (workflows.builder.
+// sentence.scope.orgLabel) — kept as its own nlBuilder.scopeOrgWide key since
+// this page has its own locale namespace, but the English string is
+// byte-identical by design. Survey/tag names are resolved client-side via
+// api.getSurvey/api.listTags since ParseWorkflowNLResult only carries an id.
+function ScopeSummaryRow({ scopeType, scopeSurveyId, scopeTagId, variants }: {
+  scopeType?: 'org' | 'survey' | 'tag'; scopeSurveyId?: string; scopeTagId?: string; variants: Variants;
+}) {
+  const { t } = useTranslation();
+  const api = useApi();
+  const [resolvedName, setResolvedName] = useState<string | null>(null);
+  const [resolving, setResolving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (scopeType === 'survey' && scopeSurveyId) {
+      setResolving(true);
+      api.getSurvey(scopeSurveyId)
+        .then((res) => { if (!cancelled) setResolvedName(res.survey?.title ?? null); })
+        .catch(() => { if (!cancelled) setResolvedName(null); })
+        .finally(() => { if (!cancelled) setResolving(false); });
+    } else if (scopeType === 'tag' && scopeTagId) {
+      setResolving(true);
+      api.listTags()
+        .then((res) => { if (!cancelled) setResolvedName(res.tags?.find((tg) => tg.id === scopeTagId)?.name ?? null); })
+        .catch(() => { if (!cancelled) setResolvedName(null); })
+        .finally(() => { if (!cancelled) setResolving(false); });
+    } else {
+      setResolvedName(null);
+      setResolving(false);
+    }
+    return () => { cancelled = true; };
+  }, [scopeType, scopeSurveyId, scopeTagId, api]);
+
+  let label: ReactNode;
+  if (scopeType === 'survey' && scopeSurveyId) {
+    label = resolving
+      ? <span className="skeleton inline-block h-4 w-24 rounded align-middle" />
+      : (resolvedName ?? t('workflows.nlBuilder.scopeSurveyFallback'));
+  } else if (scopeType === 'tag' && scopeTagId) {
+    label = resolving
+      ? <span className="skeleton inline-block h-4 w-24 rounded align-middle" />
+      : (resolvedName ?? t('workflows.nlBuilder.scopeTagFallback'));
+  } else {
+    label = t('workflows.nlBuilder.scopeOrgWide');
+  }
+
+  return (
+    <motion.div variants={variants} className="flex items-center gap-2 py-1.5" data-testid="scope-summary-row">
+      <span className="w-6 h-6 rounded-md flex items-center justify-center text-white flex-shrink-0" style={{ background: '#7c3aed' }}>
+        <Icon name={scopeType === 'survey' ? 'description' : scopeType === 'tag' ? 'sell' : 'public'} size={13} />
+      </span>
+      <span className="text-xs font-bold text-on-surface-variant uppercase">ON</span>
+      <span className="text-sm text-on-surface">{label}</span>
     </motion.div>
   );
 }
@@ -444,6 +522,7 @@ function ConfirmCard({ result, warnings, triggers, actionDefs, onDiscard, onEdit
       <Input value={name} onChange={(e) => setName(e.target.value)} className="mb-3 font-semibold" />
 
       <TriggerSummaryRow triggerType={result.triggerType} triggers={triggers} variants={row} />
+      <ScopeSummaryRow scopeType={result.scopeType} scopeSurveyId={result.scopeSurveyId} scopeTagId={result.scopeTagId} variants={row} />
       {conditionNodes.map((n) => <ConditionSummaryRow key={n.id} node={n} variants={row} />)}
       {actionNodes.map((n, i) => <ActionSummaryRow key={n.id} node={n} index={i + 1} actionDefs={actionDefs} variants={row} />)}
 
@@ -477,6 +556,7 @@ function LowConfidenceState({ result, warnings, triggers, actionDefs, onEditInCa
 
       <div className="p-3 rounded-xl border border-dashed border-border" style={{ opacity: 0.7 }}>
         <TriggerSummaryRow triggerType={result.triggerType} triggers={triggers} variants={row} />
+        <ScopeSummaryRow scopeType={result.scopeType} scopeSurveyId={result.scopeSurveyId} scopeTagId={result.scopeTagId} variants={row} />
         {conditionNodes.map((n) => <ConditionSummaryRow key={n.id} node={n} variants={row} />)}
         {actionNodes.map((n, i) => <ActionSummaryRow key={n.id} node={n} index={i + 1} actionDefs={actionDefs} variants={row} />)}
       </div>

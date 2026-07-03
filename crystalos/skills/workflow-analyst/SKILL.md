@@ -16,6 +16,25 @@ compatibility: |
   workflow registry (triggers/condition fields/actions) to be present in tool_results or passed
   as survey_facts context — this skill must never invent a trigger, condition field, or action
   name that is not in that registry.
+  Wave 15 (Automation Hub workflow-builder integration): when Crystal is opened from the
+  workflow builder page, `CrystalInput.surface="workflow_builder"` forces routing directly to
+  this skill (bypassing semantic routing — the page context already disambiguates intent), and
+  `CrystalInput.workflow_registry`/`builder_draft` are injected verbatim into
+  `survey_facts.workflow_registry`/`survey_facts.builder_draft` before the skill runs (context
+  injection, not a tool call — the Node proxy has already fetched this data up front, same as
+  `parse_workflow_nl`'s `registry` parameter). See `crystalos/agents/crystal.py`
+  `_run_skill_stream`/`_skill_synthesis` and `docs/automation-hub/TRACKER.md` Wave 15.
+  Wave 18 (message-content force-route): a SECOND, independent hard-force condition —
+  `_is_workflow_taxonomy_question(inp.message)` — routes here from ANY page (not just the
+  builder) for factual/reference questions about the trigger/action/condition taxonomy
+  (e.g. "what types of trigger exists"). When this condition fires without `surface ==
+  "workflow_builder"`, the Node proxy has NOT fetched a live `workflow_registry` (that fetch
+  is still conditioned solely on `surface`), so `_run_skill_stream` substitutes the
+  code-defined `crystal/workflow_nl.py::FALLBACK_REGISTRY` (the same conservative mirror
+  `execute_propose_workflow` already uses) — real and registry-grounded, but a smaller/
+  staler catalog than the live one, and without `surveys`/`tags` scope data. See
+  `docs/automation-hub/TRACKER.md` Wave 18 for the full gap analysis and the Node-side
+  follow-up (widening `isBuilderContext` to also cover this detector) needed to close it.
 allowed-tools: get_survey_overview propose_workflow
 evals: EVALS.md
 examples: EXAMPLES.md
@@ -49,6 +68,24 @@ about automation/action-on-trigger rather than about interpreting the data itsel
 - "Alert me if a new complaint theme shows up" (maps to `crystal.new_theme_detected`)
 - "Why didn't my workflow fire yesterday?"
 - "What workflows do I have running on this survey?"
+
+**Also route here for factual/reference questions about the trigger/action/condition
+taxonomy itself** — not just automation-intent requests. These are asked from any page
+(not just the workflow builder), have no "set up"/"automate"/"alert me" framing, and are
+just as wrong to answer from `crystal-analyst` (which has zero knowledge of this catalog
+and will hallucinate survey-data citations for them — see
+`docs/automation-hub/TRACKER.md` Wave 18):
+
+- "What types of triggers exist?"
+- "What kinds of actions can I use?"
+- "Which conditions/operators are available?"
+- "What does `flow.delay` do?"
+- "List the available triggers."
+
+(Wave 18 also hard-forces routing here for a narrow set of these phrasings via
+message-content pattern matching in `_run_skill_stream`/`_resolve_forced_skill` —
+these routing examples are defense-in-depth for phrasings the hard force doesn't
+catch, so normal semantic routing still has a fighting chance.)
 
 Stay with `crystal-analyst` for pure data questions ("what's our NPS this month",
 "what are the top complaint themes") even if the user later asks to automate on the answer —
@@ -124,6 +161,15 @@ today. When asked:
       "conditionFields": [{"field": "string", "label": "string", "kind": "number|string"}],
       "conditionOperators": ["string"],
       "actions": [{"action": "string", "category": "string", "label": "string", "live": "boolean|stub|env"}]
+    },
+    "builder_draft": {
+      "mode": "sentence|canvas",
+      "triggerType": "string | undefined",
+      "scopeSelection": {"scopeType": "org|survey|tag", "scopeSurveyId": "string?", "scopeTagId": "string?", "surveyName": "string?", "tagName": "string?"},
+      "conditionClauses": [{"field": "string", "op": "string", "value": "string"}],
+      "actions": [{"action": "string", "label": "string"}],
+      "workflowName": "string",
+      "isEditMode": "boolean"
     }
   },
   "tool_results": "dict (results from get_survey_overview / propose_workflow calls this turn)",
@@ -135,6 +181,22 @@ If `workflow_registry` is absent from both `survey_facts` and `tool_results`, do
 catalog — answer only with what you're certain is registry-stable (the AI trigger names, which
 are stable across the codebase) and avoid naming specific condition fields/actions you can't
 verify this turn.
+
+`builder_draft` (Wave 15) is present only when Crystal was opened from the Automation Hub
+workflow-builder page — it mirrors the frontend's in-progress draft (mode, trigger, scope,
+condition clauses, actions already configured, the working name, and whether this is an edit of
+an existing workflow). When present:
+- Treat it as ground truth for "what has the user already built" — never say you don't know
+  what's configured so far, and never contradict it.
+- If the user asks you to ADD something to the workflow (a new action, an extra condition), your
+  `create_workflow` proposal's `nodes`/`edges` must include the draft's EXISTING trigger/
+  conditions/actions PLUS the new addition — not just the new piece in isolation. A proposal that
+  silently drops an already-configured action would look like Crystal forgot what the user built,
+  or worse, like it's replacing the workflow rather than extending it.
+- `builder_draft` may be present (even as an empty/near-empty draft) while `workflow_registry` is
+  also present — both arrive together via the same builder-context request. Absence of
+  `builder_draft` does not imply absence of `workflow_registry` or vice versa; check each
+  independently.
 
 ## Output Schema
 
@@ -226,6 +288,11 @@ Workflows page as the source of truth, and do not emit an `action_proposals` ent
 Check `context_state.decisions` — if a workflow was already proposed earlier in the
 conversation and not yet confirmed, don't re-propose the same automation; ask if they want to
 adjust it instead.
+
+When `survey_facts.builder_draft` is present, it takes precedence over anything you'd otherwise
+have to infer from `context_state.decisions` about "what's been configured so far" — it's the
+live, authoritative state of the page the user is looking at right now, not a memory of an
+earlier turn.
 
 ## What Workflow Analyst Does NOT Do
 

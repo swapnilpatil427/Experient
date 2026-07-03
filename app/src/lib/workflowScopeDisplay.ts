@@ -6,7 +6,7 @@ import type { Workflow, WorkflowScopeType } from '../types';
 
 export function scopeRailColorVar(scopeType: WorkflowScopeType | undefined): string {
   if (scopeType === 'survey') return 'var(--color-primary)';
-  if (scopeType === 'tag') return 'var(--color-accent)';
+  if (scopeType === 'tag') return 'var(--color-tertiary)';
   return 'var(--color-outline)'; // org (default/quietest — see concept doc §2)
 }
 

@@ -56,7 +56,7 @@ export function EditorialView({ insights, scope, surveys }: ViewProps) {
         <div
           className="w-32 h-32 rounded-2xl flex items-center justify-center flex-shrink-0 holographic"
           style={{
-            background: 'linear-gradient(135deg, #2a4bd9, #8329c8)',
+            background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
             boxShadow: '0 10px 30px -10px rgba(0,0,0,0.10), inset 0 2px 4px rgba(255,255,255,0.8)',
             animation: 'float-bob 6s ease-in-out infinite',
           }}
@@ -185,7 +185,7 @@ export function EditorialView({ insights, scope, surveys }: ViewProps) {
             <svg viewBox="0 0 200 40" className="w-full h-10 mt-3">
               <path
                 d="M0,30 L20,25 L40,28 L60,18 L80,22 L100,15 L120,20 L140,12 L160,18 L180,22 L200,15"
-                stroke="#2a4bd9" strokeWidth="2" fill="none" strokeLinecap="round"
+                stroke="var(--color-primary)" strokeWidth="2" fill="none" strokeLinecap="round"
               />
             </svg>
           </GlassCard>
@@ -212,8 +212,8 @@ export function EditorialView({ insights, scope, surveys }: ViewProps) {
                     height: `${h}%`,
                     background:
                       i === 4
-                        ? 'linear-gradient(to top, #00647c, #2a4bd9)'
-                        : `rgba(0,100,124,${0.3 + i * 0.15})`,
+                        ? 'linear-gradient(to top, var(--color-secondary), var(--color-primary))'
+                        : `color-mix(in srgb, var(--color-secondary) ${(0.3 + i * 0.15) * 100}%, transparent)`,
                   }}
                 />
               ))}
@@ -225,7 +225,7 @@ export function EditorialView({ insights, scope, surveys }: ViewProps) {
         <motion.div custom={4} variants={fadeUp} initial="hidden" animate="visible">
           <div
             className="rounded-2xl p-6 holographic text-white relative overflow-hidden"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <div className="flex items-center justify-between mb-3 relative z-10">
               <span className="text-[10px] font-black uppercase tracking-widest opacity-90">
@@ -312,8 +312,8 @@ export function EditorialView({ insights, scope, surveys }: ViewProps) {
                         style={{
                           width: `${d.w}%`,
                           background: d.primary
-                            ? 'linear-gradient(to right, #2a4bd9, #8329c8)'
-                            : `rgba(42,75,217,${0.3 + d.w * 0.005})`,
+                            ? 'linear-gradient(to right, var(--color-primary), var(--color-tertiary))'
+                            : `color-mix(in srgb, var(--color-primary) ${(0.3 + d.w * 0.005) * 100}%, transparent)`,
                         }}
                       />
                       <div
@@ -367,7 +367,7 @@ export function EditorialView({ insights, scope, surveys }: ViewProps) {
                       className="flex-1 rounded-t"
                       style={{
                         height: `${h}%`,
-                        background: i === 3 ? '#d97706' : i === 4 ? 'rgba(217,119,6,0.6)' : 'rgba(42,75,217,0.6)',
+                        background: i === 3 ? '#d97706' : i === 4 ? 'rgba(217,119,6,0.6)' : 'color-mix(in srgb, var(--color-primary) 60%, transparent)',
                       }}
                     />
                   ))}
@@ -442,16 +442,16 @@ export function EditorialView({ insights, scope, surveys }: ViewProps) {
               <svg viewBox="0 0 600 100" className="w-full">
                 <defs>
                   <linearGradient id="forecastFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0" stopColor="#879aff" />
-                    <stop offset="1" stopColor="#879aff" stopOpacity="0" />
+                    <stop offset="0" stopColor="var(--color-primary-container)" />
+                    <stop offset="1" stopColor="var(--color-primary-container)" stopOpacity="0" />
                   </linearGradient>
                 </defs>
-                <path d="M0,75 L60,60 L120,65 L180,50 L240,55 L300,45 L360,42" stroke="#2a4bd9" strokeWidth="2.5" fill="none" />
+                <path d="M0,75 L60,60 L120,65 L180,50 L240,55 L300,45 L360,42" stroke="var(--color-primary)" strokeWidth="2.5" fill="none" />
                 <path
                   d="M360,42 L420,38 L480,32 L540,28 L600,26 L600,46 L540,50 L480,54 L420,58 L360,42 Z"
                   fill="url(#forecastFill)" opacity="0.6"
                 />
-                <path d="M360,42 L420,38 L480,32 L540,28 L600,26" stroke="#8329c8" strokeWidth="2.5" strokeDasharray="4 4" fill="none" />
+                <path d="M360,42 L420,38 L480,32 L540,28 L600,26" stroke="var(--color-tertiary)" strokeWidth="2.5" strokeDasharray="4 4" fill="none" />
                 <line x1="360" y1="0" x2="360" y2="100" stroke="#abadaf" strokeDasharray="2 4" />
                 <text x="368" y="14" fontSize="9" fill="#595c5e" fontWeight="700">NOW</text>
               </svg>
@@ -468,7 +468,7 @@ export function EditorialView({ insights, scope, surveys }: ViewProps) {
             <div className="flex items-center gap-3 relative z-10">
               <div
                 className="w-10 h-10 rounded-xl flex items-center justify-center"
-                style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               >
                 <Icon name="auto_awesome" size={22} style={{ color: 'white' }} />
               </div>

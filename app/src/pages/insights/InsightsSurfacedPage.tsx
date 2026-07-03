@@ -62,7 +62,7 @@ const ALL_FINDINGS: SurfacedFinding[] = [
     layer: 'prescriptive',
     type: 'DRIVER',
     icon: 'lightbulb',
-    iconColor: '#8329c8',
+    iconColor: 'var(--color-tertiary)',
     title: '"Email verification loop" is now the top driver of detractor sentiment',
     detail: '+3.2 NPS projected if fixed · 18 cited respondents · n=189. Moved from 3rd to 1st in the last 7 days.',
     reasoning: 'Causal forest model (Wager & Athey 2018) with 1000-bootstrap CI. Partial R² increased from 0.11 to 0.31 between May 7 and May 14. Consistent across 3 independent topic clusters.',
@@ -88,7 +88,7 @@ const ALL_FINDINGS: SurfacedFinding[] = [
     layer: 'predictive',
     type: 'PREDICT',
     icon: 'insights',
-    iconColor: '#2a4bd9',
+    iconColor: 'var(--color-primary)',
     title: 'Projected NPS at 500 responses: 51 ±4 by Friday',
     detail: 'Prophet + 1000-bootstrap CI · Promoters disproportionately complete in late waves. High confidence given current velocity.',
     reasoning: 'Prophet forecasting model trained on last 90 days of NPS data. Velocity input: 9.4 resp/hr. Promoter late-wave effect confirmed in prior 4 survey cycles (consistent pattern).',
@@ -101,7 +101,7 @@ const ALL_FINDINGS: SurfacedFinding[] = [
     layer: 'diagnostic',
     type: 'VOICE',
     icon: 'forum',
-    iconColor: '#2a4bd9',
+    iconColor: 'var(--color-primary)',
     title: '"Password reset confusion" grew 40% in mentions this week',
     detail: '18 → 25 mentions. 78% negative sentiment. New sub-theme: "reset link expires too fast" appeared in 11 of the 25 mentions.',
     reasoning: 'Week-over-week topic volume comparison. Semantic clustering identified new sub-theme "reset link expires too fast" with cosine similarity 0.87 to parent cluster.',
@@ -114,7 +114,7 @@ const ALL_FINDINGS: SurfacedFinding[] = [
     layer: 'descriptive',
     type: 'META',
     icon: 'psychology',
-    iconColor: '#2a4bd9',
+    iconColor: 'var(--color-primary)',
     title: 'Survey completion rate improved to 68% (+8% vs. last 30d)',
     detail: 'Likely driven by shorter median time-to-complete (4.2 min vs. 5.8 min). Drop-off most common at Q6 (open text). Consider making Q6 optional.',
     reasoning: 'Completion funnel analysis: 312 completions / 459 starts = 68%. Previous 30d: 60%. Time-to-complete reduced after removing 2 branching questions on May 5.',
@@ -290,7 +290,7 @@ export function InsightsSurfacedPage() {
                             <div className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mb-2 flex items-center gap-1.5">
                               <span
                                 className="w-4 h-4 rounded flex items-center justify-center text-white text-[9px]"
-                                style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
                               >
                                 ◆
                               </span>
@@ -365,13 +365,13 @@ export function InsightsSurfacedPage() {
                         style={{
                           background:
                             val === 0
-                              ? 'rgba(42,75,217,0.05)'
+                              ? 'color-mix(in srgb, var(--color-primary) 5%, transparent)'
                               : val <= 2
-                                ? 'rgba(42,75,217,0.2)'
+                                ? 'color-mix(in srgb, var(--color-primary) 20%, transparent)'
                                 : val <= 4
-                                  ? 'rgba(42,75,217,0.45)'
+                                  ? 'color-mix(in srgb, var(--color-primary) 45%, transparent)'
                                   : val <= 6
-                                    ? 'rgba(131,41,200,0.6)'
+                                    ? 'color-mix(in srgb, var(--color-tertiary) 60%, transparent)'
                                     : 'linear-gradient(135deg, #d97706, #b91c1c)',
                         }}
                         title={`${val} finding${val !== 1 ? 's' : ''}`}
@@ -384,7 +384,7 @@ export function InsightsSurfacedPage() {
             <div className="flex items-center gap-3 mt-3 text-[10px] text-on-surface-variant">
               <span>Less</span>
               {[0.05, 0.2, 0.45, 0.6].map((o) => (
-                <div key={o} className="w-4 h-4 rounded-sm" style={{ background: `rgba(42,75,217,${o})` }} />
+                <div key={o} className="w-4 h-4 rounded-sm" style={{ background: `color-mix(in srgb, var(--color-primary) ${(o) * 100}%, transparent)` }} />
               ))}
               <div className="w-4 h-4 rounded-sm" style={{ background: 'linear-gradient(135deg, #d97706, #b91c1c)' }} />
               <span>More</span>
@@ -404,9 +404,9 @@ export function InsightsSurfacedPage() {
               {[
                 { type: 'Anomaly (NPS outside prediction band)', active: true, icon: 'warning', color: '#d97706' },
                 { type: 'Bias warnings', active: true, icon: 'balance', color: '#b41340' },
-                { type: 'New top driver', active: true, icon: 'local_fire_department', color: '#8329c8' },
+                { type: 'New top driver', active: true, icon: 'local_fire_department', color: 'var(--color-tertiary)' },
                 { type: 'Velocity spikes', active: false, icon: 'trending_up', color: '#059669' },
-                { type: 'Predictive forecasts', active: false, icon: 'insights', color: '#2a4bd9' },
+                { type: 'Predictive forecasts', active: false, icon: 'insights', color: 'var(--color-primary)' },
               ].map((pref) => (
                 <div key={pref.type} className="flex items-center gap-3 py-2 border-b border-outline-variant/10 last:border-0">
                   <Icon name={pref.icon} size={16} style={{ color: pref.color, flexShrink: 0 }} />

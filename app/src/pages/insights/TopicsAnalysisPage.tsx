@@ -266,9 +266,9 @@ export function TopicsAnalysisPage() {
             style={
               timeWindow === value
                 ? {
-                    background: '#2a4bd9',
+                    background: 'var(--color-primary)',
                     color: '#fff',
-                    boxShadow: '0 1px 6px rgba(42,75,217,0.3)',
+                    boxShadow: '0 1px 6px color-mix(in srgb, var(--color-primary) 30%, transparent)',
                   }
                 : { color: 'var(--color-on-surface-variant, #6b7280)' }
             }
@@ -317,7 +317,7 @@ export function TopicsAnalysisPage() {
               <Icon
                 name="hub"
                 size={48}
-                style={{ color: '#2a4bd9', display: 'block', margin: '0 auto 16px' }}
+                style={{ color: 'var(--color-primary)', display: 'block', margin: '0 auto 16px' }}
               />
               <h3 className="text-lg font-bold text-on-surface mb-2">
                 {t('topicsAnalysis.selectSurveyTitle')}

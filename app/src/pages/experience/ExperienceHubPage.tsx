@@ -191,9 +191,9 @@ export function ExperienceHubPage() {
         className="relative overflow-hidden rounded-2xl"
         style={{
           background:
-            'radial-gradient(ellipse at 20% 0%,   rgba(42,75,217,0.52) 0%, transparent 54%),' +
-            'radial-gradient(ellipse at 80% 15%,  rgba(131,41,200,0.40) 0%, transparent 54%),' +
-            'radial-gradient(ellipse at 50% 115%, rgba(0,100,124,0.28)  0%, transparent 58%),' +
+            'radial-gradient(ellipse at 20% 0%,   color-mix(in srgb, var(--color-primary) 52%, transparent) 0%, transparent 54%),' +
+            'radial-gradient(ellipse at 80% 15%,  color-mix(in srgb, var(--color-tertiary) 40%, transparent) 0%, transparent 54%),' +
+            'radial-gradient(ellipse at 50% 115%, color-mix(in srgb, var(--color-secondary) 28%, transparent)  0%, transparent 58%),' +
             'linear-gradient(180deg, #07091F 0%, #0F0822 65%, #080A22 100%)',
         }}
       >
@@ -201,8 +201,8 @@ export function ExperienceHubPage() {
         <div className="absolute inset-x-0 bottom-0 pointer-events-none" style={{
           height: '44%',
           backgroundImage:
-            'linear-gradient(rgba(135,154,255,0.08) 1px, transparent 1px),' +
-            'linear-gradient(90deg, rgba(135,154,255,0.08) 1px, transparent 1px)',
+            'linear-gradient(color-mix(in srgb, var(--color-primary-container) 8%, transparent) 1px, transparent 1px),' +
+            'linear-gradient(90deg, color-mix(in srgb, var(--color-primary-container) 8%, transparent) 1px, transparent 1px)',
           backgroundSize: '56px 56px',
           transform: 'perspective(800px) rotateX(45deg)',
           transformOrigin: 'bottom',
@@ -210,9 +210,9 @@ export function ExperienceHubPage() {
         }} />
         {/* Ambient orbs */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
-          <div style={{ position:'absolute', left:'65%',  top:'5%',  width:340, height:340, background:'radial-gradient(circle, rgba(131,41,200,0.16), transparent 70%)', borderRadius:'50%' }} />
-          <div style={{ position:'absolute', left:'-4%',  top:'25%', width:260, height:260, background:'radial-gradient(circle, rgba(42,75,217,0.18),  transparent 70%)', borderRadius:'50%' }} />
-          <div style={{ position:'absolute', left:'40%',  top:'72%', width:190, height:190, background:'radial-gradient(circle, rgba(0,100,124,0.14),   transparent 70%)', borderRadius:'50%' }} />
+          <div style={{ position:'absolute', left:'65%',  top:'5%',  width:340, height:340, background:'radial-gradient(circle, color-mix(in srgb, var(--color-tertiary) 16%, transparent), transparent 70%)', borderRadius:'50%' }} />
+          <div style={{ position:'absolute', left:'-4%',  top:'25%', width:260, height:260, background:'radial-gradient(circle, color-mix(in srgb, var(--color-primary) 18%, transparent),  transparent 70%)', borderRadius:'50%' }} />
+          <div style={{ position:'absolute', left:'40%',  top:'72%', width:190, height:190, background:'radial-gradient(circle, color-mix(in srgb, var(--color-secondary) 14%, transparent),   transparent 70%)', borderRadius:'50%' }} />
         </div>
 
         <div className="relative z-10 px-6 md:px-12 pt-10 pb-10 text-white">
@@ -310,7 +310,7 @@ export function ExperienceHubPage() {
                           border: '1px solid rgba(255,255,255,0.13)',
                           color: 'rgba(255,255,255,0.85)',
                         }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(135,154,255,0.16)'; e.currentTarget.style.borderColor = 'rgba(135,154,255,0.35)'; }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--color-primary-container) 16%, transparent)'; e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--color-primary-container) 35%, transparent)'; }}
                         onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.07)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.13)'; }}
                       >
                         {/* Live indicator */}
@@ -335,7 +335,7 @@ export function ExperienceHubPage() {
                         </div>
                         <Icon name="arrow_forward" size={12}
                           className="flex-shrink-0 opacity-0 group-hover:opacity-60 transition-opacity"
-                          style={{ color: 'rgba(135,154,255,0.9)' }} />
+                          style={{ color: 'color-mix(in srgb, var(--color-primary-container) 90%, transparent)' }} />
                       </button>
                     ))}
                   </div>
@@ -376,19 +376,19 @@ export function ExperienceHubPage() {
             ci={portfolioCI>0?`±${portfolioCI}`:undefined}
             ciPosition={portfolioNps!=null ? Math.round(((portfolioNps+100)/200)*100) : undefined}
             sample={portfolioMetrics?.response_count ? `n=${portfolioMetrics.response_count.toLocaleString()}` : undefined}
-            icon="sentiment_satisfied" iconColor="#2a4bd9" loading={loading} />
+            icon="sentiment_satisfied" iconColor="var(--color-primary)" loading={loading} />
         </motion.div>
         <motion.div variants={rise}>
           <KpiTile label={t('experience.hub.kpi.csat')}
             value={portfolioCsat!=null ? portfolioCsat.toFixed(1) : '—'}
             unit={portfolioCsat!=null ? t('experience.hub.kpi.csatScale') : undefined}
-            icon="star" iconColor="#00647c" loading={loading} />
+            icon="star" iconColor="var(--color-secondary)" loading={loading} />
         </motion.div>
         <motion.div variants={rise}>
           <KpiTile label={t('experience.hub.kpi.activeSurveys')}
             value={loading?'—':String(activeSurveys.length)}
             unit={!loading&&surveys.length ? t('experience.hub.kpi.ofTotal', { n: String(surveys.length) }) : undefined}
-            icon="dynamic_form" iconColor="#8329c8" loading={loading} />
+            icon="dynamic_form" iconColor="var(--color-tertiary)" loading={loading} />
         </motion.div>
         <motion.div variants={rise}>
           <KpiTile label={t('experience.hub.kpi.totalResponses')}
@@ -455,7 +455,7 @@ export function ExperienceHubPage() {
                     surveyId: surveys.filter(s => (s.response_count ?? 0) > 0)[0].id,
                   })}>
                     <Button size="sm" className="text-xs font-bold text-white border-0"
-                      style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                      style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                       <Icon name="auto_awesome" size={13} /> {t('experience.hub.intelligence.generate')}
                     </Button>
                   </Link>
@@ -513,8 +513,8 @@ export function ExperienceHubPage() {
         {!loading && surveys.length === 0 && (
           <GlassCard className="p-14 text-center">
             <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5"
-              style={{ background:'linear-gradient(135deg, rgba(42,75,217,0.12), rgba(131,41,200,0.12))' }}>
-              <Icon name="dynamic_form" size={32} style={{ color:'#2a4bd9' }} />
+              style={{ background:'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), color-mix(in srgb, var(--color-tertiary) 12%, transparent))' }}>
+              <Icon name="dynamic_form" size={32} style={{ color:'var(--color-primary)' }} />
             </div>
             <h3 className="text-xl font-black font-headline mb-2">{t('experience.hub.surveys.emptyTitle')}</h3>
             <p className="text-sm text-on-surface-variant mb-5 max-w-xs mx-auto leading-relaxed">
@@ -522,7 +522,7 @@ export function ExperienceHubPage() {
             </p>
             <Link to={ROUTES.CREATE}>
               <Button className="font-bold text-white border-0 shadow-md"
-                style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                 <Icon name="add" size={16} /> {t('experience.hub.surveys.createButton')}
               </Button>
             </Link>
@@ -593,17 +593,17 @@ export function ExperienceHubPage() {
 // ── Crystal orb ──────────────────────────────────────────────────────────────
 function CrystalOrb() {
   return (
-    <div style={{ width:152, height:152, position:'relative', filter:'drop-shadow(0 20px 44px rgba(42,75,217,0.45))' }}>
+    <div style={{ width:152, height:152, position:'relative', filter:'drop-shadow(0 20px 44px color-mix(in srgb, var(--color-primary) 45%, transparent))' }}>
       <div style={{ position:'absolute', inset:0,
-        background:'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)',
+        background:'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)',
         clipPath:'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
         animation:'exp-hub-spin 20s linear infinite', filter:'blur(0.5px)' }} />
       <div style={{ position:'absolute', inset:'18%',
-        background:'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)',
+        background:'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)',
         clipPath:'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
         animation:'exp-hub-spin 10s linear infinite reverse', opacity:0.78 }} />
       <div style={{ position:'absolute', inset:'38%',
-        background:'radial-gradient(circle, #ffffff, #82deff)',
+        background:'radial-gradient(circle, #ffffff, var(--color-secondary-container))',
         borderRadius:'50%', filter:'blur(5px)', animation:'pulse-glow 2.5s ease-in-out infinite' }} />
       <style>{`@keyframes exp-hub-spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
     </div>
@@ -636,16 +636,16 @@ function KpiTile({
       <div className="text-[9px] font-black uppercase tracking-widest text-on-surface-variant mb-1.5">{label}</div>
       {ciPosition!=null && (
         <div className="relative h-1 rounded-full mb-1.5"
-          style={{ background:'linear-gradient(90deg, rgba(42,75,217,0.10), rgba(42,75,217,0.35), rgba(42,75,217,0.10))' }}>
+          style={{ background:'linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 10%, transparent), color-mix(in srgb, var(--color-primary) 35%, transparent), color-mix(in srgb, var(--color-primary) 10%, transparent))' }}>
           <div className="absolute top-[-3px] w-[2px] h-[7px] rounded-full"
-            style={{ left:`${ciPosition}%`, background:'#2a4bd9' }} />
+            style={{ left:`${ciPosition}%`, background:'var(--color-primary)' }} />
         </div>
       )}
       {sparkBars && sparkBars.length>0 && (
         <div className="flex items-end gap-[2px] h-5 mt-1">
           {sparkBars.map((h,i)=>(
             <span key={i} className="flex-1 rounded-sm"
-              style={{ height:h, background:sparkColor??'#2a4bd9', opacity:0.50+(i/sparkBars.length)*0.45 }} />
+              style={{ height:h, background:sparkColor??'var(--color-primary)', opacity:0.50+(i/sparkBars.length)*0.45 }} />
           ))}
         </div>
       )}
@@ -752,7 +752,7 @@ function SurveyCard({
   const statusColor =
     survey.status==='active' ? '#059669' :
     survey.status==='paused' ? '#d97706' :
-    survey.status==='closed' ? '#94a3b8' : '#2a4bd9';
+    survey.status==='closed' ? '#94a3b8' : 'var(--color-primary)';
 
   // Use real sparkline from backend; deterministic fallback from survey ID
   const spark = useMemo<number[]>(() => {
@@ -778,7 +778,7 @@ function SurveyCard({
             {survey.title || t('experience.hub.surveys.untitled')}
           </h3>
           <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0"
-            style={{ background:`${statusColor}14`, color:statusColor }}>
+            style={{ background:`color-mix(in srgb, ${statusColor} 8%, transparent)`, color:statusColor }}>
             <span className="w-1.5 h-1.5 rounded-full" style={{ background:statusColor }} />
             {survey.status}
           </span>
@@ -807,7 +807,7 @@ function SurveyCard({
             </div>
             <div className="h-1 rounded-full bg-surface-container overflow-hidden">
               <div className="h-full rounded-full"
-                style={{ width:`${pct}%`, background:'linear-gradient(to right, #2a4bd9, #8329c8)' }} />
+                style={{ width:`${pct}%`, background:'linear-gradient(to right, var(--color-primary), var(--color-tertiary))' }} />
             </div>
           </div>
         )}
@@ -882,12 +882,12 @@ function SparklineChart({ surveyId, points }: { surveyId: string; points: number
     <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ overflow:'visible', flexShrink:0 }}>
       <defs>
         <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#2a4bd9" stopOpacity="0.22"/>
-          <stop offset="1" stopColor="#2a4bd9" stopOpacity="0"/>
+          <stop offset="0" stopColor="var(--color-primary)" stopOpacity="0.22"/>
+          <stop offset="1" stopColor="var(--color-primary)" stopOpacity="0"/>
         </linearGradient>
       </defs>
       <path d={fill} fill={`url(#${gid})`} />
-      <path d={path} stroke="#2a4bd9" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={path} stroke="var(--color-primary)" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

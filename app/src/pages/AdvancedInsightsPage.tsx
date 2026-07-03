@@ -398,7 +398,7 @@ export function AdvancedInsightsPage() {
                 <circle
                   cx="64" cy="64" r="54"
                   fill="transparent"
-                  stroke="#82deff"
+                  stroke="var(--color-secondary-container)"
                   strokeWidth="12"
                   strokeDasharray="339.29"
                   strokeDashoffset={dashOffset}

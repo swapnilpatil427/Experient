@@ -349,7 +349,7 @@ function LaunchSettingsPanel({ survey }: { survey: Survey | null }) {
           disabled={saving || !survey}
           className="self-end flex items-center gap-2 font-bold rounded-xl px-6"
           style={{
-            background: saved ? '#059669' : 'linear-gradient(135deg, #2a4bd9, #879aff)',
+            background: saved ? '#059669' : 'linear-gradient(135deg, var(--color-primary), var(--color-primary-container))',
             color: '#fff',
           }}
         >
@@ -407,7 +407,7 @@ function ChannelPanel({
               onClick={() => copy(surveyUrl, 'link')}
               className="shrink-0 font-bold px-5 rounded-xl"
               style={{
-                background: copied === 'link' ? '#059669' : 'linear-gradient(135deg, #2a4bd9, #879aff)',
+                background: copied === 'link' ? '#059669' : 'linear-gradient(135deg, var(--color-primary), var(--color-primary-container))',
                 color: '#fff',
               }}
             >
@@ -548,7 +548,7 @@ function ChannelPanel({
           target="_blank"
           rel="noopener noreferrer"
           className="self-start flex items-center gap-2 font-bold px-5 py-3 rounded-xl text-white transition-all hover:-translate-y-0.5"
-          style={{ background: 'linear-gradient(135deg, #8329c8, #a855f7)' }}
+          style={{ background: 'linear-gradient(135deg, var(--color-tertiary), #a855f7)' }}
         >
           <Icon name="open_in_new" size={16} />
           {channels.kiosk?.cta}
@@ -626,7 +626,7 @@ export function ResponseCollectionPage() {
       {!survey && (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
-            style={{ background: 'rgba(42,75,217,0.08)' }}>
+            style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)' }}>
             <Icon name="share" size={32} className="text-primary" />
           </div>
           <h3 className="text-lg font-bold text-on-surface mb-2">{t('collection.noSurveys')}</h3>

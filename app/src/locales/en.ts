@@ -1833,13 +1833,13 @@ const en = {
     pageSubtitle: 'Automated Operations',
     mainHeading: 'Workflows & Triggers',
     mainDescription: 'Orchestrate your intelligence response. Connect AI-detected patterns directly to team actions and system events.',
-    buildVisually: 'Build Visually',
-    buildVisuallySubtext: 'Step-by-step sentence builder',
-    buildVisuallyTooltip: 'Build Visually — a guided, step-by-step sentence builder for simple automations',
-    buildOnCanvas: 'Build on Canvas',
-    buildOnCanvasSubtext: 'Drag-and-drop, branching logic',
-    buildOnCanvasTooltip: 'Build on Canvas — a free-form drag-and-drop canvas for branching logic and conditions',
-    buildWithCrystal: 'Build with Crystal',
+    // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §1) — replaces the previous
+    // buildWithCrystal/buildVisually*/buildOnCanvas* keys (3 header buttons
+    // collapsed into 1). Not "New Workflow" (Wave 10 killed that label
+    // deliberately) and not "Build Visually" (that name only made sense
+    // disambiguating itself from two sibling buttons).
+    buildWorkflow: 'Build Workflow',
+    buildWorkflowTooltip: 'Build Workflow — a guided sentence builder; ask Crystal for help or switch to Advanced canvas from inside it',
     templatesHeading: 'Workflow Templates',
     featured: 'Featured',
     useTemplate: 'Start from Template',
@@ -2017,6 +2017,13 @@ const en = {
       backToList: 'Back to Workflows',
       needBranching: 'Need to branch into different actions depending on the result?',
       switchToCanvas: 'Switch to canvas builder',
+      // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §2.3) — AskCrystalFab copy.
+      // `label` is the one-time first-view chip; `aria` is fuller (screen
+      // reader announcement + hover title once the chip's been dismissed).
+      askCrystal: {
+        label: 'Ask Crystal',
+        aria: 'Ask Crystal — get help or build with AI',
+      },
       unified: {
         // NOTE: this namespace is legacy-named (Wave 5's "Unified Builder") but
         // still live — ScheduleTriggerConfigPanel.tsx, WorkflowSettingsPanel.tsx,
@@ -2387,6 +2394,15 @@ const en = {
       tryAgain: 'Try again',
       buildManually: 'Build manually',
       registryDriftWarning: '"{type}" isn\'t recognized — you can still create this workflow, but review it in canvas first',
+      // Scope summary row (Wave 12 Phase 2, TRACKER.md) — mirrors the copy
+      // conventions already established in workflows.builder.sentence.scope
+      // (ScopeStepPanelContent.tsx) so "Org-wide" reads identically everywhere
+      // in the product. The two fallback strings only render if a
+      // scopeSurveyId/scopeTagId Crystal resolved at parse-time no longer
+      // matches a real survey/tag (deleted in between) — never a raw UUID.
+      scopeOrgWide: 'Org-wide',
+      scopeSurveyFallback: 'a specific survey',
+      scopeTagFallback: 'a specific tag',
     },
   },
 

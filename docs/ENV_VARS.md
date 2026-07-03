@@ -87,6 +87,7 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `JOB_{EXPIRE_BROADCASTS,RECONCILIATION,COST_DOWN_DIVIDEND,CREDIT_LEDGER_MAINTENANCE,CREDENTIAL_HEALTH,RENOTIFY_STALE_APPROVALS,RESUME_DELAYED_EXECUTIONS}` (+ `_SEC`) | enabled / per-job | Scheduler job toggles + intervals (`JOB_CREDENTIAL_HEALTH_SEC` default 21600 = 6h; `JOB_RENOTIFY_STALE_APPROVALS_SEC` default 3600 = 1h tick; `JOB_RESUME_DELAYED_EXECUTIONS_SEC` default 60 = 1min tick) |
 | `CREDENTIAL_EXPIRY_WARN_DAYS` | 14 | `credential-health` warns + alerts when a key's days-to-expiry drops below this |
 | `WORKFLOW_APPROVAL_RENOTIFY_HOURS` | 72 | `renotify-stale-approvals` job: re-notify a `workflow_approvals` row's owner after it's sat `pending` this many hours since request/last notify. Never auto-rejects — simple expiry + re-notify only. |
+| `WORKFLOW_RESUME_DELAYED_BATCH_SIZE` | 200 | `resume-delayed-executions` job: max `flow.delay`-waiting rows resumed per tick (oldest-due-first). Caps one tick's wall-clock time under a large post-outage backlog; leftover rows resume on subsequent ticks, not dropped. |
 
 ## Prism — data ingestion / migration engine (backend)
 

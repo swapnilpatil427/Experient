@@ -15,11 +15,11 @@ export function SignInPage() {
         <div className="mesh-grid absolute inset-0 opacity-40" />
         <div
           className="absolute top-[-15%] left-[-10%] w-[40%] h-[40%] rounded-full"
-          style={{ background: 'rgba(42,75,217,0.08)', filter: 'blur(120px)' }}
+          style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', filter: 'blur(120px)' }}
         />
         <div
           className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full"
-          style={{ background: 'rgba(131,41,200,0.08)', filter: 'blur(150px)' }}
+          style={{ background: 'color-mix(in srgb, var(--color-tertiary) 8%, transparent)', filter: 'blur(150px)' }}
         />
       </div>
 

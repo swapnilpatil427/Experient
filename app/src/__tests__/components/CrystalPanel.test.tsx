@@ -72,6 +72,14 @@ vi.mock('../../contexts/crystalPanel', () => ({
     openCrystal:     vi.fn(),
     toggleCrystal:   vi.fn(),
     setCrystalData:  vi.fn(),
+    // Wave 14 — null everywhere except an active builder page; this is the
+    // default-off state every pre-existing (non-builder) test exercises.
+    builderContext:          null,
+    builderDraft:            null,
+    builderDraftHydrator:    null,
+    setBuilderContext:       vi.fn(),
+    setBuilderDraft:         vi.fn(),
+    setBuilderDraftHydrator: vi.fn(),
   })),
 }));
 
@@ -118,7 +126,7 @@ vi.mock('../../lib/auth', () => ({
 }));
 
 // ── import component AFTER all vi.mock declarations ──────────────────────────
-import { CrystalPanel, resolveReportProposalAction } from '../../components/CrystalPanel';
+import { CrystalPanel, resolveReportProposalAction, classifyAsSupport } from '../../components/CrystalPanel';
 import { useCrystalPanel } from '../../contexts/crystalPanel';
 import type { ActionProposal } from '../../types';
 
@@ -204,6 +212,12 @@ beforeEach(() => {
     openCrystal:     vi.fn(),
     toggleCrystal:   vi.fn(),
     setCrystalData:  vi.fn(),
+    builderContext:          null,
+    builderDraft:            null,
+    builderDraftHydrator:    null,
+    setBuilderContext:       vi.fn(),
+    setBuilderDraft:         vi.fn(),
+    setBuilderDraftHydrator: vi.fn(),
   });
 
   // Mock window.location.href setter
@@ -601,6 +615,124 @@ describe('CrystalPanel — action execution: in-app actions', () => {
       expect(mockApi.createGraphWorkflow).not.toHaveBeenCalled();
     });
   });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — create_workflow: builder draft hydration (Wave 14)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE14_UNIFIED_BUILDER_SPEC.md §4 — the new `builderDraftHydrator` branch is
+// checked BEFORE the `!surveyId` guard in executeAction's `create_workflow`
+// case. These tests exercise that branch directly; every pre-existing
+// create_workflow test above (which runs with builderDraftHydrator: null, the
+// default) is left completely unmodified — proof the new branch is additive.
+
+  it('routes a create_workflow proposal through the hydrator instead of persisting, when a hydrator is registered', async () => {
+    const mockHydrator = vi.fn().mockReturnValue(true);
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen: true, initialQuery: '', crystalCtx: {}, scope: 'survey-abc',
+      agenticInsights: [], topics: [],
+      closeCrystal: mockCloseCrystal, setScope: mockSetScope, setCrystalCtx: mockSetCrystalCtx,
+      openCrystal: vi.fn(), toggleCrystal: vi.fn(), setCrystalData: vi.fn(),
+      builderContext: { kind: 'workflow_builder' },
+      builderDraft: null,
+      builderDraftHydrator: mockHydrator,
+      setBuilderContext: vi.fn(), setBuilderDraft: vi.fn(), setBuilderDraftHydrator: vi.fn(),
+    });
+
+    const proposal = makeProposal({
+      id: 'ap-wf-hydrate', type: 'create_workflow', title: 'Alert on NPS drop',
+      params: { trigger_type: 'response_submitted', nodes: [{ id: 'n1' }], edges: [] },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockHydrator).toHaveBeenCalledWith(expect.objectContaining({ id: 'ap-wf-hydrate' }));
+    });
+    expect(mockApi.createGraphWorkflow).not.toHaveBeenCalled();
+    expect(mockApi.createWorkflow).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Applied .* to the current draft below/i)).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to api.createGraphWorkflow when the hydrator declines (returns false)', async () => {
+    const mockHydrator = vi.fn().mockReturnValue(false);
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen: true, initialQuery: '', crystalCtx: {}, scope: 'survey-abc',
+      agenticInsights: [], topics: [],
+      closeCrystal: mockCloseCrystal, setScope: mockSetScope, setCrystalCtx: mockSetCrystalCtx,
+      openCrystal: vi.fn(), toggleCrystal: vi.fn(), setCrystalData: vi.fn(),
+      builderContext: { kind: 'workflow_builder' },
+      builderDraft: null,
+      builderDraftHydrator: mockHydrator,
+      setBuilderContext: vi.fn(), setBuilderDraft: vi.fn(), setBuilderDraftHydrator: vi.fn(),
+    });
+
+    const nodes = [{ id: 'n1', type: 'trigger', data: {} }];
+    const edges: unknown[] = [];
+    const proposal = makeProposal({
+      id: 'ap-wf-decline', type: 'create_workflow', title: 'Alert on NPS drop',
+      params: { name: 'NPS Drop Alert', trigger_type: 'response_submitted', nodes, edges },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockHydrator).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(mockApi.createGraphWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'NPS Drop Alert', triggerType: 'response_submitted', nodes, edges, status: 'draft' }),
+      );
+    });
+  });
+
+  it('calls api.createGraphWorkflow exactly as before when builderDraftHydrator is null (default) — byte-identical regression proof', async () => {
+    // Explicitly re-assert the default (matches beforeEach, but stated here
+    // for clarity of intent) — this is the literal proof the shared
+    // component's existing behavior for every non-builder caller is untouched.
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen: true, initialQuery: '', crystalCtx: {}, scope: 'survey-abc',
+      agenticInsights: [], topics: [],
+      closeCrystal: mockCloseCrystal, setScope: mockSetScope, setCrystalCtx: mockSetCrystalCtx,
+      openCrystal: vi.fn(), toggleCrystal: vi.fn(), setCrystalData: vi.fn(),
+      builderContext: null,
+      builderDraft: null,
+      builderDraftHydrator: null,
+      setBuilderContext: vi.fn(), setBuilderDraft: vi.fn(), setBuilderDraftHydrator: vi.fn(),
+    });
+
+    const nodes = [{ id: 'n1', type: 'trigger', data: {} }];
+    const edges: unknown[] = [];
+    const proposal = makeProposal({
+      id: 'ap-wf-nohydrate', type: 'create_workflow', title: 'Alert on NPS drop',
+      params: { name: 'NPS Drop Alert', trigger_type: 'response_submitted', nodes, edges },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.createGraphWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'NPS Drop Alert', triggerType: 'response_submitted', nodes, edges, status: 'draft' }),
+      );
+    });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — action execution: in-app actions (continued)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
 
   it('create_alert calls api.createAlertRule with mapped params', async () => {
     const proposal = makeProposal({
@@ -753,6 +885,12 @@ describe('CrystalPanel — scope propagation', () => {
       openCrystal:     vi.fn(),
       toggleCrystal:   vi.fn(),
       setCrystalData:  vi.fn(),
+      builderContext:          null,
+      builderDraft:            null,
+      builderDraftHydrator:    null,
+      setBuilderContext:       vi.fn(),
+      setBuilderDraft:         vi.fn(),
+      setBuilderDraftHydrator: vi.fn(),
     });
 
     global.fetch = mockFetchWithAnswer();
@@ -987,6 +1125,78 @@ describe('CrystalPanel — action execution: tag report', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — Wave 15 builder-context wiring (submitQuery)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+// docs/automation-hub/TRACKER.md Wave 15, Phase 2 (Elias) — submitQuery must
+// relay `surface`/`builder_draft` to backend/src/routes/experience.ts's
+// `/:scope/crystal/stream` proxy ONLY when builderContext (Wave 14, set by
+// the workflow builder pages) is active. Every other page's request body
+// (builderContext: null, the default — see beforeEach) must be byte-identical
+// to before this wave: this is the single most important test here.
+
+  const SAMPLE_BUILDER_DRAFT = {
+    mode: 'sentence' as const,
+    triggerType: 'response_submitted',
+    scopeSelection: { scopeType: 'survey' as const, scopeSurveyId: 'survey-abc', surveyName: 'Customer NPS' },
+    conditionClauses: [{ field: 'nps_score', op: 'lt', value: '6' }],
+    actions: [{ action: 'notify_slack', label: 'Notify #cs-team on Slack' }],
+    workflowName: 'NPS Drop Alert',
+    isEditMode: false,
+  };
+
+  it('includes surface and builder_draft in the request body when builderContext is set', async () => {
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen: true, initialQuery: '', crystalCtx: {}, scope: 'survey-abc',
+      agenticInsights: [], topics: [],
+      closeCrystal: mockCloseCrystal, setScope: mockSetScope, setCrystalCtx: mockSetCrystalCtx,
+      openCrystal: vi.fn(), toggleCrystal: vi.fn(), setCrystalData: vi.fn(),
+      builderContext: { kind: 'workflow_builder' },
+      builderDraft: SAMPLE_BUILDER_DRAFT,
+      builderDraftHydrator: null,
+      setBuilderContext: vi.fn(), setBuilderDraft: vi.fn(), setBuilderDraftHydrator: vi.fn(),
+    });
+
+    global.fetch = mockFetchWithAnswer();
+    renderPanel('survey-abc');
+
+    const user = userEvent.setup();
+    const textarea = screen.getByPlaceholderText(/ask anything/i);
+    await user.type(textarea, 'what have I built so far?');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalled();
+    });
+
+    const [, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body.surface).toBe('workflow_builder');
+    expect(body.builder_draft).toEqual(SAMPLE_BUILDER_DRAFT);
+  });
+
+  it('omits surface and builder_draft entirely when builderContext is null (every existing non-builder page)', async () => {
+    // builderContext: null is the beforeEach default, matching every current
+    // caller (Insights pages, org portfolio) — reasserted here explicitly.
+    global.fetch = mockFetchWithAnswer();
+    renderPanel('survey-abc');
+
+    const user = userEvent.setup();
+    const textarea = screen.getByPlaceholderText(/ask anything/i);
+    await user.type(textarea, 'why did nps drop?');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalled();
+    });
+
+    const [, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body).not.toHaveProperty('surface');
+    expect(body).not.toHaveProperty('builder_draft');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 describe('resolveReportProposalAction — Phase 6 insight proposal dispatch', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -1033,5 +1243,84 @@ describe('resolveReportProposalAction — Phase 6 insight proposal dispatch', ()
   it('manual-run proposals require a survey in scope → noop when surveyId is undefined', () => {
     const p = makeProposal({ type: 'generate_intelligence_report', params: {} });
     expect(resolveReportProposalAction(p, undefined)).toMatchObject({ kind: 'noop' });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('classifyAsSupport — Wave 18 reference/enumeration keyword gap', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('classifies the exact reported phrasing ("what types of X exists") as support', () => {
+    // The literal bug-report phrasing — note "trigger exists" (singular noun +
+    // "exists"), a subject/verb-number mismatch that a naive "exist" match
+    // would miss.
+    expect(classifyAsSupport('What types of trigger exists?')).toBe(true);
+  });
+
+  it('classifies "what types of X are there" as support', () => {
+    expect(classifyAsSupport('What types of triggers are there?')).toBe(true);
+  });
+
+  it('classifies "what kinds of X exist" as support', () => {
+    expect(classifyAsSupport('What kinds of workflow actions exist?')).toBe(true);
+  });
+
+  it('classifies "which X are available" as support', () => {
+    expect(classifyAsSupport('Which plans are available?')).toBe(true);
+  });
+
+  it('classifies other genuine product/platform enumeration questions as support', () => {
+    expect(classifyAsSupport('What types of surveys can I create?')).toBe(true);
+  });
+
+  it('does NOT classify a genuine survey-data question containing "types" as support', () => {
+    // Precision boundary: this is a real question about the user's own survey
+    // data (their response set), not a product/platform reference question —
+    // it must fall through to the normal (data-analysis) Crystal path.
+    expect(classifyAsSupport('what types of responses mention pricing')).toBe(false);
+  });
+
+  it('does NOT classify other data-shaped enumeration questions as support', () => {
+    expect(classifyAsSupport('what types of responses have low sentiment')).toBe(false);
+    expect(classifyAsSupport('What types of NPS detractors exist in my data?')).toBe(false);
+    expect(classifyAsSupport('which segments are available in this survey?')).toBe(false);
+  });
+
+  it('still classifies existing bug/how-to keyword phrasing as support (no regression)', () => {
+    expect(classifyAsSupport('My export is broken')).toBe(true);
+    expect(classifyAsSupport('How do I add skip logic?')).toBe(true);
+  });
+
+  it('does not classify ordinary analyst questions as support', () => {
+    expect(classifyAsSupport('Why did NPS drop recently?')).toBe(false);
+    expect(classifyAsSupport('Which survey has highest churn risk?')).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — Wave 19a brand-token rendering (header/avatar gradient)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('renders the header gem icon gradient using brand-reactive CSS vars, not literal hex', () => {
+    const { container } = renderPanel();
+
+    // The Crystal gem icon in the panel header — style={{ background:
+    // 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
+    // (previously hardcoded '#2a4bd9'/'#8329c8' — see WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md).
+    const gemIcon = container.querySelector('.w-8.h-8.rounded-xl');
+    expect(gemIcon).toBeTruthy();
+    const style = (gemIcon as HTMLElement).getAttribute('style') ?? '';
+    expect(style).toContain('var(--color-primary)');
+    expect(style).toContain('var(--color-tertiary)');
+    expect(style).not.toMatch(/#2a4bd9|#8329c8/);
+  });
+
+  it('the "Xperiq Copilot" badge next to the Crystal title uses --color-primary, not a literal hex', () => {
+    renderPanel();
+
+    const badge = screen.getByText('Xperiq Copilot');
+    const style = badge.getAttribute('style') ?? '';
+    expect(style).toContain('var(--color-primary)');
+    expect(style).not.toMatch(/#2a4bd9/);
   });
 });

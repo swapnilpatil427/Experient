@@ -1,5 +1,1119 @@
 # Xperiq Actions (Workflow Automation) — Implementation Tracker
 
+## Wave 19 — App-wide Crystal visual identity consistency (2026-07-03, COMPLETE)
+
+**Scope note**: unlike every prior wave, this one is APP-WIDE, not automation-hub
+-scoped — tracked here anyway for process continuity (same team, same dispatch
+pattern). Per user's explicit decisions:
+1. Existing session work committed first (commit `926ca16`, 46 files).
+2. Fix scope: the ENTIRE app, not just Automation Hub.
+3. Problem: INCONSISTENCY, not absence — Crystal's gradient identity
+   (`#2a4bd9` → `#8329c8`, confirmed hardcoded as raw hex in 20+ files via
+   grep, not a shared token) already exists everywhere but isn't tokenized,
+   which both risks drift and (per root CLAUDE.md's Brand Theme System)
+   breaks for any org with a customized brand primary color.
+4. **"Use org setting and use it everywhere"** — Crystal's visual identity
+   should be driven by the existing `--brand-*`/`--color-*` org-customizable
+   token cascade, not fixed hex values, applied consistently across every
+   surface that currently hardcodes it.
+5. **"Be very very careful and accurate"** — full inventory before any
+   change, staged rollout, full regression gate.
+
+**Team dispatch, sequential (spec → build → verify):**
+- **Rohan** (UX) — full inventory of every hardcoded Crystal-identity value
+  (colors, gradients, fonts) across the whole app; design exactly how
+  Crystal's 2-color gradient maps onto the existing `--brand-primary`/
+  `--brand-accent`/`--brand-secondary` token system (a single brand color
+  doesn't obviously map to a 2-stop gradient — this needs a real decision,
+  not a guess); produce an implementation-ready token spec.
+- **Elias** (frontend) — build from Rohan's spec, systematically, file by
+  file, across the full inventory.
+- **Kenji** (QA) — full regression + visual-consistency verification, confirm
+  zero remaining hardcoded instances, confirm brand customization actually
+  takes effect on Crystal-branded elements now.
+
+**Note on dispatch mechanics**: this wave was run with a lower agent-concurrency
+cap than earlier waves (2 background agents at a time, no `isolation: "worktree"`)
+after a prior session hit an `E2BIG` shell failure caused by git-worktree buildup
+from many concurrent worktree-isolated agents. All Wave 19 work happened directly
+in the main checkout — no worktrees created. This is the dispatch pattern to keep
+using going forward for large fan-out waves.
+
+**Rohan — spec complete.** Full spec at `docs/automation-hub/WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md`:
+68-file inventory (3 categories: Crystal-identity core, generic-brand-reuse long
+tail, incidental/unrelated-do-not-touch), the `--color-accent` vs `--color-tertiary`
+trap (a real pre-existing bug found in `workflowScopeDisplay.ts`), the JS-resolution
+wrinkle for Three.js/third-party-SDK color props, and a 3-stage rollout plan.
+
+**Elias — build complete, in 4 passes:**
+1. **19a (Crystal-identity core)**: `CrystalPanel.tsx`, `AskCrystalFab.tsx`,
+   `NLThinkingCrystal.tsx`, `CrystalNarrativeWidget.tsx`, `ExperienceHubPage.tsx`,
+   `SurveyIntelligencePage.tsx`, `GeneratingOverlay.tsx`, `SupportCommandPalette.tsx`.
+2. **19b (generic-brand-reuse long tail)**: ~50 files across `components/*`,
+   top-level `pages/*`, `pages/insights/*`, `pages/experience/*`, dispatched as 3
+   background batches (2 concurrent at a time, disjoint file sets, no worktrees).
+3. **19c**: `workflowScopeDisplay.ts`'s `--color-accent` → `--color-tertiary` bug fix.
+4. **Gap-fill pass** (post-batch audit, done directly rather than via another
+   agent — small and well-understood): a repo-wide grep after all 3 batches found
+   ~15 more files with genuine brand-reuse hex that weren't in Rohan's original
+   68-file inventory (the spec itself flagged its file lists as "not exhaustive,
+   grep-and-fix systematically") — `PipelineEventFeed.tsx`, `PipelineStats.tsx`,
+   `DashboardFilterBar.tsx`, `DashboardScopeBar.tsx`, `InsightDocumentCard.tsx`,
+   `RolesPanel.tsx`, `TeamPanel.tsx`, `DocEditorPage.tsx`, `DocGapsPage.tsx`,
+   `DocPipelinePage.tsx`, `DocReviewPage.tsx`, `PipelineStatsPage.tsx`,
+   `IntegrationsSettingsPage.tsx`, `SignInPage.tsx`, `ContactsPage.tsx`,
+   `ContactDetailPage.tsx`. Also found and fixed: **`ExperienceHubPage.tsx` and
+   `SurveyIntelligencePage.tsx` — spec's own named Wave-19a core-scope files —
+   were only partially tokenized** (the dark-hero radial gradients, KPI icon
+   colors, sparkline/progress-bar colors, "Ask Crystal" bar, and perspective-grid
+   floor dots still had literal hex); the static-hex regression test only covers
+   3 of the 8 Wave-19a files, so it didn't catch this. Fully swept both files,
+   correctly preserving the `LAYER_BORDER`/`getCapabilityLayers` insight-layer
+   taxonomy restatements (category c) that intentionally keep fixed hex.
+   Also fixed several `${color}NN` hex-alpha-suffix string patterns (invalid CSS
+   once `color` becomes a `var(...)` string) with `color-mix(in srgb, ...)` —
+   same technique across `LoadingStates.tsx`, `SurveyActionModal.tsx`,
+   `ExperienceHubPage.tsx`'s survey-status pill, `SurveyIntelligencePage.tsx`'s
+   tier banner, `BrandSettingsPage.tsx`'s team-status badge. One incidental bug
+   found+fixed: `PrismHomePage.tsx` had a mismatched `var(--color-primary-container,
+   #82deff)` fallback (wrong hex for that token) — corrected to `--color-secondary-container`.
+   Two new JS-resolution hooks added (`HeroCanvas.tsx`, `TopicDetailPanel.tsx`),
+   following the `NLThinkingCrystal.tsx` `resolveCssVarColor` pattern (not
+   cross-imported — each file has its own small local copy).
+
+**Kenji — verification complete:**
+- Zero remaining hardcoded Crystal-brand hex/rgba anywhere in `app/src` outside
+  verified category-(c) exclusions (insight-layer taxonomy, question/survey-type
+  enums, plan-tier badges, priority/status/channel/dimension enums, demo-data
+  avatar palettes, token *definitions* in `theme.css`/`brandTheme.ts`, and dead
+  code `IrisChat.tsx`/`AiChatPanel.tsx`) — confirmed by repo-wide grep covering
+  all 7 mapped hex values + all their rgba-decimal forms (primary, tertiary,
+  secondary, primary-dim, primary-container, tertiary-container, secondary-container).
+- Zero-visual-diff for default-brand orgs holds by construction (token defaults
+  are byte-identical to the replaced hex, per spec §4.2) — every replacement in
+  this wave preserved this property.
+- Brand-override reaches Crystal now via the same already-proven CSS-var cascade
+  (`applyBrandTheme()` → `--brand-*` → `--color-*`) the rest of the app already
+  uses successfully — this is the actual bug fix this wave exists to deliver.
+- **Full suite: 90 files / 1036 tests, 1036 passing.** `npx tsc --noEmit`: 0
+  errors. `npm run lint`: 0 errors/warnings. (Two intermittent failures surfaced
+  mid-wave — `scheduleConfig.test.ts` cron timeouts and
+  `NotifyTargetPicker.test.tsx`'s aria-activedescendant test — both in files
+  untouched by this wave, both confirmed flaky by re-running in isolation
+  multiple times with 100% pass rate; not Wave 19 regressions.)
+
+---
+
+## Wave 18c — Full org registry for the message-content force route (2026-07-03, COMPLETE)
+
+Closes the one gap Amara explicitly flagged (not hid) in Wave 18a: her new
+message-content detector correctly force-routes trigger/action/condition
+REFERENCE questions to `workflow-analyst` from any page, and substitutes
+`FALLBACK_REGISTRY` (a real, code-defined, but smaller/staler catalog) when
+no live registry is present — this already fixes the exact reported
+hallucination, but doesn't give the skill the org's actual live scope
+data (surveys/tags) the way Wave 15's page-context force already does.
+
+**Team dispatch: Nina** (owns `backend/src/routes/experience.ts`'s registry
+plumbing from Wave 15/18b). Scope: widen the condition that decides whether
+to fetch+attach the org's live registry so it ALSO covers Amara's detector
+firing — not just `surface === 'workflow_builder'`. Since the detector logic
+itself lives in CrystalOS (Python), the Node proxy can't literally re-run it,
+so the practical options are: (a) run an equivalent lightweight detection at
+the Node layer too (some duplication, but Node already can't avoid deciding
+whether to pay the extra DB-query cost), or (b) always attach the registry
+whenever a `message` is present regardless of surface (simpler, slightly
+higher DB cost on every Crystal turn) — Nina's call, with reasoning, given
+she owns this file and the query-cost tradeoff from her own Wave 15 work.
+
+**Nina — DONE. Chose Option A (lightweight conservative mirror in TypeScript),
+not Option B (always-attach).** Reasoning: Option B would add 2 extra indexed
+queries to EVERY Crystal turn across the whole app (Insights pages, org
+portfolio, group insights — the overwhelming majority of traffic), for zero
+benefit on the vast majority of those calls (a "why did NPS drop?" question
+never uses `workflow_registry`). That's a real, permanent cost increase for
+no corresponding value, not a simplification worth its price. Option A's
+duplication risk (a second detector, in a second language) is real and is
+the same class of smell Nina flagged in Wave 18b — but the precision bar
+here is fundamentally different from Amara's: her detector decides ROUTING
+(a false positive mis-routes a real survey question — a wrong-answer risk).
+This one only decides whether to run 2 cheap, read-only, indexed queries — a
+false positive here costs a wasted query, never a wrong answer. That gap in
+stakes justifies keeping the two detectors independent rather than forcing
+a cross-language unification neither needs.
+
+- **`mentionsWorkflowTaxonomy`** (`backend/src/routes/experience.ts`, new,
+  module-scope): a single conservative regex —
+  `/\b(?:trigger|action|condition|automation|workflow|scope|operator)s?\b/i` —
+  deliberately looser than Amara's `_WORKFLOW_TAXONOMY_PATTERNS` allowlist
+  (no question-structure requirement, just noun presence). Intentional: this
+  function only gates an extra DB round-trip, not a routing decision, so
+  recall is favored over precision here (the opposite tradeoff from Amara's
+  detector, and explicitly documented as such in the code comment).
+- **`shouldAttachWorkflowRegistry = isBuilderContext || mentionsWorkflowTaxonomy(body.message)`**
+  now gates the surveys/tags queries + `workflow_registry` attach (both the
+  happy-path and the context-load-failure fallback branches, mirroring Wave
+  15's dual-branch structure exactly). `builder_draft` relay stays gated to
+  `isBuilderContext` alone — it's only meaningful when the client actually
+  claims to be in the builder; a taxonomy question from Insights has no draft
+  to relay and correctly omits the key.
+- **Verified harmless additive key**: `workflow_registry` is just one more
+  key on `agentBody`; skills that don't read it (`crystal-analyst`, etc.)
+  ignore it identically to how they already ignore `builder_draft` today —
+  confirmed by re-running all pre-existing Wave 15/18b tests unmodified.
+- **Tests** (`experienceCrystalStreamBuilderContext.test.js`, +4, new describe
+  block): (1) "What types of trigger exists?" from a plain org-scope call
+  with NO `surface` — the literal reported-bug shape — now gets
+  `workflow_registry` attached with the real surveys/tags fixtures, and
+  correctly omits `builder_draft`/`surface`; (2) "Why did NPS drop?" from the
+  same non-builder shape does NOT trigger the extra queries (asserts
+  `surveysCall`/`tagsCall` both `undefined`, same call-count-proof pattern as
+  Wave 15's own negative test); (3) an actual `surface: 'workflow_builder'`
+  call is unaffected — still gets the registry and still relays
+  `builder_draft`; (4) a request with no `message` field at all doesn't throw
+  and correctly omits `workflow_registry`. All 5 pre-existing Wave 15/18b
+  tests in the same file pass unmodified (byte-identical-when-absent
+  regression, builder-context attach, no-op query-count proof, credit
+  metering, 402-before-queries) — confirmed via direct re-run, not assumed.
+- **Full suite, orchestrator-verifiable**: backend **89 files / 1233 tests,
+  1232 passing before → 89 files / 1237 tests, 1236 passing after** (+4,
+  exactly the new tests; same single pre-existing, documented, unrelated
+  `workflowEngine.test.js` "RED, proves 2d" marker, unchanged). `tsc --noEmit`
+  shows zero new errors touching `experience.ts` (the only pre-existing
+  errors are in unrelated `src/lib/prism/uploads.ts`, untouched by this wave).
+
+---
+
+## Wave 18 — Crystal hallucinated an answer to "What types of trigger exists?" (2026-07-03, IN PROGRESS)
+
+**User-reported, via screenshot**: asking Crystal "What types of trigger exists?"
+produced a hallucinated answer ("common trigger types often include...") citing
+2 FAKE sources ("NPS Feedback — Q3 2026") — survey data completely unrelated to
+the product's actual trigger registry.
+
+**Root cause, confirmed by direct investigation (3 layers):**
+1. `CrystalPanel.tsx`'s `classifyAsSupport()` — a plain keyword-substring list
+   deciding whether to route into `crystal-support` mode at all — has zero
+   keywords matching "what types/kinds of X exist"-style reference questions
+   (list: 'help'/'error'/'broken'/'how do i'/'stuck'/etc.). This question
+   matched none, so it never entered support mode.
+2. Falling through to the normal semantic-routed path, it almost certainly
+   landed on `crystal-analyst` (the survey-data skill) — which has zero
+   knowledge of the trigger registry and, per its own citation-grounding
+   habit, hallucinated a plausible answer and cited whatever survey data was
+   in its context, regardless of relevance.
+3. **Even fixing #1/#2 wouldn't fully close this**: `support_docs` (the table
+   `crystal-support`'s `search_support_docs` tool queries) has ZERO actual
+   content about Xperiq Actions/workflow triggers seeded anywhere — confirmed
+   by grepping the seed migration (only unrelated Postgres DB `CREATE TRIGGER`
+   statements matched "trigger"). Authoring/maintaining static docs that could
+   drift from the real registry is the wrong fix when a perfect, always-current
+   source of truth already exists: `workflow-analyst`'s live registry access
+   (Wave 15).
+
+**Decision**: route trigger/action/workflow REFERENCE questions (not just
+"help me build X" intent) to `workflow-analyst`, hard-forced by message-content
+pattern-matching — mirroring the exact hard-force-beats-soft-bias pattern
+Wave 15 already proved works for page-context (`surface === 'workflow_builder'`),
+now triggered by message vocabulary instead, so it works from ANY page, not
+just the workflow builder.
+
+**Team dispatch:**
+- **Amara** (CrystalOS) — crystalos/-only: build a message-content detector
+  for workflow-taxonomy reference questions, force-route to `workflow-analyst`
+  independent of page context; extend the skill's own routing examples too as
+  a defense-in-depth improvement to normal semantic routing.
+- **Nina** (frontend/backend integration) — app/-only: fix `classifyAsSupport`'s
+  keyword gap for reference/enumeration phrasing; assess whether this
+  classification belongs client-side at all vs. being folded into the
+  server-side routing this wave is building anyway.
+
+**Amara's CrystalOS-side fix — COMPLETE:**
+
+- **Detector** (`_is_workflow_taxonomy_question`, `crystalos/agents/crystal.py`):
+  a small allowlist of precision-first regexes, not a broad keyword net — each
+  pattern requires BOTH a taxonomy noun (trigger/action/condition/workflow/
+  automation/scope/operator) AND a question/enumeration structure: "what/which
+  type(s)/kind(s) of `<noun>`", "list/show (me) ... `<noun>`", "what `<noun>`
+  can I use", or a literal dotted registry token ("what does `flow.delay` do").
+  A message containing the noun in passing ("the action I took was...") does
+  not match. Chose regex-allowlist over a scored/fuzzy classifier (unlike
+  `lib/support_classifier.py`'s keyword-scoring approach) specifically because
+  false positives here (misrouting a real survey-data question) are a
+  regression in their own right — recall is intentionally sacrificed at the
+  margins (an unusual phrasing may miss the hard force) in favor of near-zero
+  false-positive rate; the SKILL.md routing-examples update below is the
+  defense-in-depth catching what the hard force doesn't.
+- **Routing refactor** (`_resolve_forced_skill`): centralizes "does ANY force
+  condition match" so Wave 15's `surface == "workflow_builder"` and this
+  wave's message-content detector are both single-line checks in one function,
+  reusing the exact same forced-selection code path in `_run_skill_stream` — a
+  future third force condition is a one-line addition here, not a new branch.
+- **Registry-population gap, traced and resolved for this wave's scope**:
+  confirmed the Node proxy (`backend/src/routes/experience.ts`) fetches
+  `workflow_registry` ONLY when `surface === 'workflow_builder'` — a message-
+  content force-route from a non-builder page (e.g. the Insights page, the
+  reported bug's actual origin) would otherwise reach `workflow-analyst` with
+  `workflow_registry: None`, which would just trade a hallucination for a
+  hedge, not a real fix. CrystalOS has no independent DB/Node-callback path to
+  fetch the live, org-accurate registry (confirmed: `lib/db.py` has no
+  survey/tag registry query; the registry is Node-fetched-and-forwarded only).
+  **Resolution**: when the message-content force fires without a live
+  `workflow_registry` present, `_run_skill_stream` substitutes
+  `crystal/workflow_nl.py::FALLBACK_REGISTRY` — the same conservative,
+  code-defined mirror `execute_propose_workflow` already uses for its own
+  no-live-registry case. This gives the skill a real, registry-grounded
+  trigger/condition/action catalog (smaller/staler than the live one, and
+  without `surveys`/`tags` scope data) rather than nothing — closing the
+  "still hallucinates" failure mode for this wave. **Follow-up for Nina/a
+  later wave**: widen `isBuilderContext` in `experience.ts` to also cover "the
+  Wave 18 detector fired" so the FULL live, org-accurate registry (incl.
+  scope) reaches the skill for non-builder-page taxonomy questions too — not
+  done here (CrystalOS-only wave), and explicitly not silently left unfixed:
+  the fallback registry is a real, correct, but intentionally smaller stopgap.
+- **SKILL.md**: added a "factual/reference questions" routing-example block
+  distinct from the existing automation-intent examples, plus a Wave 18
+  compatibility note documenting the fallback-registry substitution.
+- **Tests** (`tests/test_crystal.py`, +32): `TestIsWorkflowTaxonomyQuestion`
+  (true/false-positive coverage for the detector in isolation),
+  `TestResolveForcedSkill` (the centralized force-check, unit-level), and
+  `TestWorkflowTaxonomyForceRoute` (`_run_skill_stream` end-to-end) —
+  including the exact reported question force-routing with `registry.find`/
+  `find_sync` asserted never called (Wave 15's own pattern), a false-positive
+  guard proving "Why did NPS drop?" still routes normally, proof the
+  substituted `FALLBACK_REGISTRY` actually reaches the skill's input (not just
+  that routing happened), a guard that an already-present live registry is
+  never clobbered by the fallback, and a guard that the Wave 15 surface-force
+  path does NOT get the Wave 18 fallback (keeps the two conditions' failure
+  modes distinct). All pre-existing Wave 15 `surface`-based tests pass
+  unmodified.
+- **Full suite**: **1706 → 1738 passed, 0 failed** (+32, exactly the new
+  tests added — no regressions).
+
+---
+
+## Wave 17 — Fix the stale-graph-on-resume gap (2026-07-03, COMPLETE)
+
+Implemented per the user's explicit decision on Wave 16's open finding:
+**snapshot the exact graph at pause time; a resume always executes that
+snapshot regardless of later edits.**
+
+**Migration** `20260703090000_workflow_execution_pause_snapshot.sql` —
+`workflow_executions` gains `snapshot_nodes`/`snapshot_edges`/
+`snapshot_trigger_type` (JSONB/JSONB/TEXT, all nullable, no backfill). Three
+separate columns, not one blob, matching this table's established
+one-column-per-concern convention. `snapshot_nodes IS NULL` is the
+unambiguous "legacy pre-migration pause" signal.
+
+**`workflowEngine.ts`**: `persistPause()` now writes the snapshot from
+whatever `nodes`/`edges`/`triggerType` are already in scope (no extra fetch),
+unconditionally on every pause including re-pauses (an approval→delay chain
+keeps re-snapshotting correctly). New `resolveResumeGraphSource()` centralizes
+the decision for both `resumeWorkflow` and `resumeDelayedExecution`: snapshot
+present → use it (the live `workflows` row's graph is never consulted at
+all); snapshot absent → fall back to today's live-fetch behavior, exclusively
+for executions that were already paused before this migration landed (a
+narrow, self-draining transition window, not a permanent path). The Wave 16
+tier-gate re-check now uses the resolved (snapshot-or-fallback) trigger type,
+consistent with "regardless of later edits" — changing a workflow's trigger
+type while paused doesn't retroactively change what governs its resume.
+
+**Tests** (`workflowCrossWaveInteractions.test.js`): the 3 Wave 16
+"DOCUMENTS REAL GAP" tests are inverted in place to "FIXED (was BUG)" —
+orchestrator verified one directly: same edited-live-row scenario, assertion
+flipped from `not.toHaveBeenCalled()` to `toHaveBeenCalled()`, now proving the
+original snapshotted action runs regardless of the edit, not just renamed
+with unchanged logic. Plus 2 new backward-compat tests (NULL snapshot →
+correct live-row fallback, both resume paths) and 2 new tier-gate-snapshot
+tests (trigger type changed while paused doesn't affect the gate either
+direction).
+
+**Verified — orchestrator independently re-ran the suite and read the
+migration, the engine changes, and the test assertions directly (not just
+the report):** backend **89 files / 1233 tests, 1232 passing** (same single
+pre-existing, documented, unrelated `workflowEngine.test.js` marker since
+Wave 10 — confirmed still the only failure). +4 tests over Wave 16's 1229.
+
+**This closes the one open item from Wave 16's business-logic review.**
+
+---
+
+## Wave 17 — Fix the stale-graph-on-resume gap (2026-07-03, IN PROGRESS)
+
+Per user decision on Wave 16's open finding: **snapshot the exact graph at
+pause time; a resume always executes that snapshot regardless of later
+edits** (not "fail loud if edited," not "always re-read the live row").
+
+**The bug being fixed** (Wave 16, Priya): `resumeWorkflow`/
+`resumeDelayedExecution` both re-fetch `workflows.nodes`/`edges` fresh at
+resume time. If the workflow is edited while paused, resume can silently
+execute a DIFFERENT action than what a human approver approved, or silently
+no-op if the node array shape changed — no error either way.
+
+**Team dispatch: Priya** (owns the state machine/schema — she diagnosed this
+in Wave 16, has full context). Scope:
+1. New column(s) on `workflow_executions` capturing `nodes`/`edges` (and
+   `trigger_type`, needed for the tier-gate re-check) AT PAUSE TIME.
+2. `persistPause()` writes the snapshot when a workflow first pauses
+   (`flow.approval` or `flow.delay`).
+3. `resumeWorkflow`/`resumeDelayedExecution` read the snapshot, not a fresh
+   `workflows` row, for nodes/edges/trigger_type — "regardless of later
+   edits" per the user's explicit decision.
+4. **Backward compatibility for already-paused executions**: any execution
+   that paused BEFORE this migration lands has no snapshot. Must not crash
+   or silently misbehave for these — fall back to today's live-fetch
+   behavior for legacy rows only (a narrow, self-resolving transition
+   window), not for anything paused after this ships.
+5. Full regression suite gate, plus the Wave 16 tests Priya already wrote
+   (`workflowCrossWaveInteractions.test.js`) should flip from "documents
+   real gap" to "proves the fix," not be deleted.
+
+---
+
+## Wave 16 — Full business-logic review, cross-wave interaction audit (2026-07-03, COMPLETE)
+
+Per user request: "Review all the business logic, make sure everything is
+working." Unlike prior waves (which verify one wave's changes), this wave
+specifically hunted for bugs where features BUILT IN DIFFERENT WAVES interact
+incorrectly — every prior pass checked each wave in isolation, never in
+combination. 3 engineers dispatched in parallel on disjoint angles, all
+findings independently re-verified by the orchestrator (re-ran suites,
+read every fix/test directly).
+
+**Priya (cross-feature state machine) — 1 real bug fixed, 1 real gap found
+and correctly escalated rather than unilaterally fixed:**
+1. **FIXED**: resumed executions (`resumeWorkflow`/`resumeDelayedExecution`)
+   never re-checked plan-tier gating — a workflow paused on `flow.delay` for
+   hours could keep firing a Growth-gated action even after the org
+   downgraded to Free mid-pause, directly contradicting Wave 11's own stated
+   "downgrade takes effect immediately" design intent. New
+   `reCheckTierGateOnResume()` closes this for both resume paths.
+2. **FOUND, NOT FIXED — needs a product decision**: resuming a paused
+   workflow re-reads the CURRENT workflow row, not a snapshot from pause
+   time. If a workflow is edited while paused (a completely realistic
+   scenario — "let's route this to Jira instead"), the resume can silently
+   execute a DIFFERENT action than what a human approver actually approved,
+   or silently no-op entirely if the node array shape changed — with zero
+   error, `status: 'completed'` either way. Verified with real, non-crashing
+   reproduction tests (not hypothetical). **Open question for the user**:
+   should a resume refuse to proceed if the graph has changed since pause
+   (fail loud), snapshot the graph at pause time and always execute that
+   exact snapshot (ignore later edits), or something else? Documented with
+   permanent regression tests proving current behavior, deliberately not
+   fixed pending that decision.
+
+**Kenji (foundational rule re-verification) — 0 bugs, 28 new tests closing
+real coverage gaps:** cooldown, idempotency, retry/dead-letter, and
+scope-based event matching were all already correct. Two real gaps: 5 of 11
+condition operators (`neq`/`gt`/`gte`/`not_contains`/`not_in`) had zero
+direct test coverage (closed with a table-driven test + a catalog-drift
+guard), and multi-action success-path ordering + `flow.stop` halting a
+multi-action chain were only tested for the failure case, not the clean-stop
+case (closed with 4 new tests, both linear and branching).
+
+**Nina (cross-surface consistency + permissions) — 0 bugs, verified-safe on
+every axis:** scope resolution is provably consistent across all 3 paths that
+can set it (manual pill, Crystal NL inference, Crystal proposal-into-open-
+draft) — all converge on the same schema validation, and the Wave 14 proposal
+-hydration path was proven (not just read) to never silently overwrite a
+manually-selected scope. Audit-trail scope (workflow-config changes only, not
+execution-state changes like approvals or delay-resumes) is confirmed
+intentional, not a gap. All 16 routes in `routes/workflows.ts` — mutating AND
+read-only/static — are uniformly permission-gated, confirmed via existing
+loop-based coverage across all 16. Tier-gating has one single source of truth
+(`planGating.ts`) at both save-time and execution-time, no drift.
+
+**Final 2-layer counts (orchestrator-verified, CrystalOS untouched this
+wave):** Backend **89 files / 1229 tests, 1228 passing** (1 pre-existing,
+documented, unrelated `workflowEngine.test.js` marker — same one since
+Wave 10). Frontend **85 files / 1003 tests, 1002 passing** (1 pre-existing,
+documented `NotifyTargetPicker.test.tsx` flake — confirmed passes clean in
+isolation and in most full runs).
+
+**Net verdict: the business logic holds up well under real cross-wave
+scrutiny.** One real, meaningful bug was found and fixed (tier-gate resume
+gap). One real, meaningful gap was found and correctly NOT fixed without a
+product decision (stale-graph-on-resume). Everything else checked out as
+correct, now backed by real tests proving it rather than just asserting it.
+
+## Wave 15 — Wire the workflow-builder Crystal icon into the existing `workflow-analyst` skill (2026-07-03, COMPLETE)
+
+**All 4 phases shipped and independently verified (orchestrator + Kenji, each
+re-confirming the other's findings by direct code read, not trust):**
+
+- **Amara (CrystalOS)**: `CrystalInput` gained `surface`/`builder_draft`/
+  `workflow_registry` (all optional, additive). Routing: a hard force to
+  `workflow-analyst` when `surface == "workflow_builder"` (not a soft bias —
+  justified because the signal is page-derived, not guessed from ambiguous
+  text), with a defensive fallback to normal semantic routing if the skill is
+  ever unregistered. Registry + draft delivered via direct `survey_facts`
+  injection, not a new tool (the data arrives already-fetched, matching
+  `parse_workflow_nl`'s existing pattern). **Found and fixed a real bug
+  herself**: `crystal_stream_endpoint` builds `CrystalInput` via explicit
+  keyword arguments, not `**body` — without adding the 3 explicit
+  `body.get(...)` passthroughs, none of this would have worked despite every
+  other layer being correct.
+- **Nina (backend)**: `experience.ts`'s `/:scope/crystal/stream` proxy
+  detects `surface: 'workflow_builder'`, fetches the registry (reusing her
+  own Wave 12 `parse-nl` query pattern exactly), attaches it as
+  `workflow_registry`, relays `builder_draft` unchanged — a clean +32-line
+  purely additive diff, correctly re-applied across both the happy path and
+  the context-load-failure fallback.
+- **Elias (frontend)**: `CrystalPanel.tsx`'s `submitQuery` sends `surface`/
+  `builder_draft` only when `builderContext` is set (conditional spread —
+  keys absent, not undefined, for every other page). Support mode
+  deliberately left untouched (different endpoint/pipeline entirely).
+- **Kenji (final gate) — found and fixed a second, sibling bug via a
+  systematic sweep** (explicitly requested, not just spot-checking the 3 new
+  fields): `tag_ids` was ALSO declared on `CrystalInput` but never forwarded
+  by `crystal_stream_endpoint` — the exact same bug class Amara had just
+  fixed, latent (no current caller sends it yet) but a real landmine. Fixed
+  with one line, plus a new **generic, future-proofing test**
+  (`test_every_declared_field_has_a_body_get_passthrough`) that reads the
+  endpoint's own source and checks EVERY `CrystalInput` field has a
+  passthrough — will catch this bug class automatically if a future field
+  addition forgets it, not just today's two instances. Also wrote the
+  first-ever end-to-end wire-shape test tracing a realistic payload through
+  both the backend and CrystalOS halves of the contract.
+
+**Orchestrator independently re-verified every claim** (re-ran all 3 suites
+fresh, read the `tag_ids` fix and the generic sweep test directly, confirmed
+the routing force/fallback structure and the `survey_facts` injection by
+direct code read) — everything checked out exactly as reported.
+
+**Final 3-layer counts, orchestrator-confirmed:**
+- CrystalOS: **1706 passed, 0 failed** (was 1695 before this wave)
+- Backend: **1191 total, 1190 passed** (1 pre-existing, documented,
+  unrelated `workflowEngine.test.js` marker)
+- Frontend: **1002 total, 1001 passed** (1 pre-existing, documented,
+  unrelated `NotifyTargetPicker.test.tsx` flake — passes clean in isolation)
+
+**Net result**: opening Crystal from the workflow builder now hard-routes to
+the `workflow-analyst` skill, which receives the live trigger/action/
+condition-field registry and the current in-progress draft, and can both
+answer contextual questions and propose workflow-shaped additions that are
+aware of what's already configured — reusing the existing
+propose/confirm/apply/hydrate pipeline end to end, with zero new backend
+machinery and zero measurable change to any other Crystal conversation in
+the app.
+
+Per user question ("shouldn't Crystal understand it's on the workflow builder
+page and suggest workflow-related things?") + follow-up ("is there something
+we can do with the CrystalOS skill framework?"): orchestrator investigated
+directly and found the mechanism already mostly exists.
+
+**Confirmed by direct code read (not assumed):**
+- `crystalos/skills/workflow-analyst/` already exists, is registered in
+  `plugin.json`, and is reachable today via the SAME endpoint the workflow
+  builder's Crystal icon already calls (`/api/experience/:scope/crystal/stream`
+  → CrystalOS's `/insights/crystal/stream` → `_run_skill_stream`, semantic-
+  routed by default).
+- **Gap 1**: `CrystalInput` (`crystalos/agents/crystal.py`) has zero fields
+  for a workflow registry, a builder draft, or a page/surface hint — every
+  field is survey/insights-shaped.
+- **Gap 2**: `workflow-analyst`'s `allowed-tools` is only
+  `get_survey_overview propose_workflow` — no tool exists anywhere in the
+  45-tool `TOOL_REGISTRY` to fetch the live trigger/condition-field/action
+  catalog, so it can't yet honor its own "registry-grounded, never invented"
+  principle for the builder-page scenario.
+- **Gap 3**: no forced/hinted skill-selection mechanism found — routing
+  relies entirely on semantic-embedding match against message text, which
+  works for clearly-automation-shaped phrasing but not for ambiguous,
+  page-anchored questions ("why is Jira greyed out").
+
+**Hard backward-compatibility invariant (explicit user instruction: "do not
+break any other existing business logic"):** `CrystalInput` and the
+`/api/experience/:scope/crystal/stream` payload are used by EVERY Crystal
+conversation across the whole app (Insights pages, org portfolio view, etc.)
+— every new field must be optional/additive, defaulting to today's exact
+behavior when absent. This is the same class of shared-surface risk as
+Wave 14's `CrystalPanel.tsx` change — treat it with the same rigor.
+
+**Team dispatch:**
+- **Phase 1 (parallel, disjoint: `crystalos/` vs `backend/`):**
+  - **Amara** (CrystalOS) — extend `CrystalInput` with optional
+    `builder_draft`/registry/surface-hint fields, wire a routing bias/force
+    toward `workflow-analyst` when builder context is present, get the
+    registry + draft into the skill's actual context (tool call or
+    survey_facts injection — her call), update SKILL.md/EVALS.md/EXAMPLES.md
+    as needed.
+  - **Nina** (backend) — `backend/src/routes/experience.ts`'s
+    `/:scope/crystal/stream` proxy: when the frontend signals builder
+    context, fetch + attach the registry (reuse the exact Wave 12
+    `parse-nl` pattern, don't reinvent).
+- **Phase 2:** **Elias** — `CrystalPanel.tsx`'s `submitQuery` sends
+  `builder_draft`/the surface hint only when `builderContext` is set.
+- **Phase 3:** **Kenji** — full 3-layer regression, explicit proof every
+  existing non-builder Crystal conversation is byte-identical.
+
+**Amara (Phase 1, CrystalOS) — DONE:**
+- `CrystalInput` (`crystalos/agents/crystal.py`) gained 3 optional fields, all
+  defaulting to today's exact behavior: `surface: str = "insights"` (new
+  `"workflow_builder"` value), `builder_draft: dict | None = None`,
+  `workflow_registry: dict | None = None`. `surface` is an explicit signal
+  rather than inferring builder-context from `builder_draft is not None` —
+  a user can open Crystal from the builder before configuring anything, so
+  `builder_draft` alone would be `None` even while genuinely in the builder.
+- **Routing**: `_run_skill_stream` hard force-selects `workflow-analyst`
+  (`registry._skills.get("workflow-analyst")`) when `inp.surface ==
+  "workflow_builder"`, bypassing `registry.find`/`find_sync` entirely rather
+  than biasing them — the correct skill is already known from page context,
+  not guessed from message text, so a hard force is both simpler and safer
+  than a soft bias for ambiguous/page-anchored questions ("why is Jira greyed
+  out"). Falls through to normal semantic routing if `workflow-analyst` is
+  ever unregistered (defensive, doesn't dead-end the request). Every existing
+  caller (`surface` defaults to `"insights"`) takes the untouched `find()`
+  path — proven with a decoy-skill test.
+- **Context delivery**: injected directly into `_skill_synthesis`'s
+  `survey_facts` bundle (`survey_facts.workflow_registry` /
+  `survey_facts.builder_draft`) — no new tool. This data arrives
+  already-fetched from Nina's proxy, exactly like `parse_workflow_nl`'s
+  `registry` parameter; a tool would only wrap a value already in hand.
+  Keys are omitted (not null) when absent, so non-builder `survey_facts` is
+  byte-identical to before.
+- **`main.py` wiring**: `crystal_stream_endpoint` was not forwarding
+  `surface`/`builder_draft`/`workflow_registry` from the request body into
+  `CrystalInput` at all (a gap that would have silently no-op'd Nina's and
+  Elias's work) — added the 3 `body.get(...)` passthroughs alongside the
+  existing ones, same pattern as `scope`/`brand_id`.
+- **SKILL.md/EXAMPLES.md** updated: `compatibility` block documents the
+  Wave 15 wire path, input schema gained `builder_draft`, new "Continuity"
+  guidance says `builder_draft` is authoritative over `context_state`
+  inference. 2 new examples: reading back the draft ("what have I built so
+  far?") and an additive proposal that keeps an existing Slack action while
+  adding a requested Jira action (not just the new action in isolation).
+- **Registry-grounding**: unchanged principle, new path — a test proves an
+  eval-failed (fabricated-action) skill result via the builder-context route
+  still returns `None` from `_skill_synthesis`, identical to the pre-existing
+  tool_results-path behavior.
+- **Tests**: 6 new tests in `crystalos/tests/test_crystal.py` — default-surface
+  routing untouched (decoy skill would win if the force branch ever fired),
+  builder-surface hard-forces `workflow-analyst` with the semantic router
+  never consulted, defensive fallback when `workflow-analyst` is unregistered,
+  context actually reaches the skill (mocked response correctly merges a new
+  Jira action with the draft's existing Slack action), absent-context omits
+  the new `survey_facts` keys entirely, and registry-grounding still rejects
+  a fabricated action via this path.
+- **Full suite**: baseline **1695 passed** → after **1701 passed** (+6, exactly
+  the new tests; zero regressions), re-run clean after the `main.py` wiring
+  fix too.
+
+---
+
+## Wave 14 — POST-SHIP BUG: Crystal FAB was a silent no-op (2026-07-03, FIXED)
+
+**User report:** "Clicking crystal icon after clicking Build workflow, does
+not even work." Real, confirmed bug — Wave 14's own "verified end-to-end"
+claim was wrong, because every verification pass (orchestrator, Elias, Kenji)
+tested against a MOCKED `useCrystalPanel()`, which by construction cannot
+catch a bug in whether the real `CrystalPanel` component gets mounted at all.
+This is exactly the class of bug `app/CLAUDE.md`'s "test the feature in a
+browser, tests verify correctness not feature-ness" rule exists to catch —
+skipped this wave because no browser tool was available; fixed instead via
+careful direct code tracing.
+
+**Root cause:** `AppShell.tsx`'s `isBuilder` detection — meant only for the
+full-bleed survey QUESTION builder (`/surveys/:id/build`) — used a loose regex
+that ALSO matched `/app/workflows/build` (the Wave 14 sentence builder), and,
+being an unanchored substring test, silently matched `/app/workflows/build/nl`
+(the Crystal NL builder) too. When `isBuilder` is true, AppShell does not
+render `<CrystalPanel>` in the DOM at all (and suppresses gutters, footer,
+BottomNav, and ⌘K). `AskCrystalFab`'s `onOpen={() => openCrystal()}` was
+therefore setting state on a component that was never mounted — a completely
+silent no-op, exactly matching the report.
+
+**Second, undiscovered bug found via the same trace, not yet reported by the
+user:** `WorkflowCanvasPage.tsx`'s route (`/app/workflows/canvas`) does NOT
+match the old regex, so `CrystalPanel` — and AppShell's own pre-existing
+generic default Crystal FAB (near-identical diamond icon, near-identical
+bottom-right position) — was already rendering there before Wave 14. Adding
+`AskCrystalFab` to that page on top of the existing default FAB would produce
+two overlapping "open Crystal" buttons in the same corner.
+
+**Fix** (`app/src/components/AppShell.tsx`):
+1. Narrowed `isBuilder` to an anchored regex matching ONLY the survey builder
+   (`/^\/surveys\/[^/]+\/build$/`) — confirmed via `app/src/pages/CLAUDE.md`'s
+   documented page pattern that neither workflow builder page's own layout
+   ever expected/needed full-bleed treatment (both use a normal
+   `max-w-* mx-auto` container). This also restores gutters/footer/BottomNav/
+   ⌘K on the Crystal NL builder page, which had been silently missing them
+   the whole time — a pre-existing bug that predates Wave 14 entirely, fixed
+   as a byproduct.
+2. Added `hasOwnCrystalFab` (`WORKFLOW_BUILD`/`WORKFLOW_CANVAS` exact-route
+   check) to suppress AppShell's generic default Crystal FAB specifically on
+   the two pages that mount their own contextual `AskCrystalFab` — closing
+   the duplicate-button bug on the canvas page before it could ever surface.
+3. New `app/src/__tests__/components/AppShell.test.tsx` (10 tests) — the
+   first test in this repo to render the REAL `AppShell` + real
+   `CrystalPanelProvider` (every other Crystal test mocks the hook directly,
+   which structurally cannot catch this class of bug). Proves: `CrystalPanel`
+   now mounts on both workflow builder routes and remains correctly absent on
+   the real survey builder; chrome (footer) is restored on the workflow
+   builder route and remains correctly suppressed on the survey builder; the
+   generic default FAB is absent on both Wave 14 pages (no duplicate button)
+   and still present on ordinary pages.
+
+**Verified:** `tsc --noEmit` clean, `npm run lint` clean, full suite
+**85 files / 1000 tests, all passing** (was 84/990 — +1 file/+10 tests, zero
+regressions; the previously-noted flaky `NotifyTargetPicker` test also passed
+clean on this run). Independently re-confirmed no other component assumes the
+old chrome-less behavior for either workflow builder route (grepped for fixed-
+position elements and other route references).
+
+## Wave 14 — Unified builder: one entry button, one Crystal surface (2026-07-02, IN PROGRESS)
+
+Per user decision after reviewing Wave 13's Maya/Rohan evaluations
+(`WAVE13_UNIFIED_BUILDER_EVALUATION_PM.md`/`_UX.md`): adopt the direction, with
+the user's own explicit refinements layered on top:
+1. **Scope changes ONLY when the customer explicitly asks Crystal to change it**
+   — never a silent/automatic update. Manual pill click (existing, unchanged)
+   or an explicit, user-confirmed Crystal proposal apply are the only two ways
+   scope can change; ambient chat/Q&A must never touch it.
+2. **No second assistant.** The existing global `CrystalPanel` (right-docked,
+   product-wide) is the only Crystal surface. A small icon at the bottom of the
+   builder page is a TRIGGER for that existing panel (scoped to "we are
+   operating on the Automation Hub"), not a new chat component.
+3. Crystal from this icon can both (a) answer general help questions and
+   (b) help build the workflow — reusing the already-built `create_workflow`
+   proposal/confirm/apply pipeline, not a new mechanism.
+4. **Keep the Save button completely unchanged** — position, label, payload.
+5. Collapse the list page's 3 build buttons (Crystal / Visually / Canvas) to 1.
+
+**Explicit safety framing (user's words: "build this carefully, without
+breaking any functionality"):** this wave is scoped to be FRONTEND-ONLY — no
+backend or CrystalOS changes are needed (confirmed in Maya's Wave 13 doc §3:
+the parse-nl contract and `create_workflow`'s proposal pipeline are both
+already entry-point-agnostic). The safest interpretation of "one button" is
+adopted: the sentence builder becomes the single entry point (already the most
+guided surface, already has an existing canvas-escape-hatch link from Wave 6);
+canvas is NOT merged into one physical page component this wave — that fuller
+merge (Wave 13 Maya's "v2") is deferred. `WorkflowNLBuilderPage.tsx` and
+`WorkflowCanvasPage.tsx` are NOT deleted — only unlinked from the primary
+header — so nothing that depends on their routes/components breaks.
+
+**Team dispatch, sequential (spec → build → verify), per established pattern:**
+- **Rohan** (UX) — finalize the exact icon placement/style for the Crystal
+  trigger, the one-button header design, and the precise behavioral spec for
+  "apply a create_workflow proposal from inside an open builder draft"
+  (hydrate local state, do NOT immediately persist via a second workflow
+  creation — preserving `Save` as the one persist action) vs. every other
+  existing call site of the same proposal type elsewhere in the app, which
+  must keep its current immediate-create behavior unchanged.
+- **Elias** (frontend) — build from Rohan's spec.
+- **Kenji** (QA) — full regression pass, with explicit proof that the
+  existing `create_workflow` proposal behavior is byte-identical everywhere
+  it was already wired (Insights pages etc.), and that scope never changes
+  without an explicit user action.
+
+**STATUS: COMPLETE. All 3 phases shipped and independently verified.**
+
+**Rohan (spec) → Elias (build) → Kenji (verify), all done:**
+- List page: 3 build buttons collapsed to 1 "Build Workflow" CTA →
+  `ROUTES.WORKFLOW_BUILD` (sentence builder). `WorkflowNLBuilderPage.tsx`/
+  `WorkflowCanvasPage.tsx` unlinked from the header only — routes/components
+  fully intact (canvas reachable via the sentence builder's existing escape
+  hatch + edit-route resolution; NL builder's capability absorbed into "ask
+  Crystal," page itself left live but unlinked, not deleted or redirected,
+  per explicit instruction not to invent an unrequested behavior change).
+- New `AskCrystalFab.tsx` — floating trigger icon (bottom-right,
+  `bottom-24 md:bottom-6` to clear mobile `BottomNav`), on both builder
+  pages, opens the **existing** global `CrystalPanel` via `openCrystal()` —
+  confirmed zero new chat surface.
+- `CrystalPanelContext` extended additively: `builderContext`/`builderDraft`/
+  `builderDraftHydrator`, alongside the untouched `scope: SurveyScope` field.
+  Both builder pages register/unregister on mount/unmount.
+- **The crux fix**: `CrystalPanel.tsx`'s `executeAction`'s
+  `case 'create_workflow'` gained one new branch, checked BEFORE the
+  pre-existing `!surveyId` guard (required — the builder page has no survey
+  in scope, so the guard would otherwise block the path entirely). If a
+  builder page has registered a hydrator, the proposal populates that page's
+  own local draft state instead of persisting a second workflow —
+  **Save remains the only persist action**, exactly as instructed. Every
+  other existing caller (hydrator `null` by default) falls through to
+  today's exact, unmodified `api.createGraphWorkflow` path.
+- **Real bug caught and fixed during the build** (Elias): a naive
+  `setState(hydrator)` would have React treat the passed function as a
+  `(prev) => next` updater and invoke it immediately instead of storing it —
+  fixed via `setState(() => hydrator)`, with its own regression test.
+
+**Orchestrator + Kenji verification, independently re-confirmed:**
+- Full suite: **990/990 tests, 84/84 files** (clean runs); one known-flaky,
+  pre-existing, unrelated test (`NotifyTargetPicker.test.tsx`'s keyboard-nav
+  test) intermittently fails under certain run conditions and passes 20/20 in
+  isolation every time checked — confirmed NOT a Wave 14 regression across
+  multiple independent full-suite runs. `tsc --noEmit` and `npm run lint`
+  both clean.
+- **The 3 pre-existing `create_workflow` tests in `CrystalPanel.test.tsx` are
+  byte-for-byte unmodified** (confirmed via `git diff`, zero removed/changed
+  lines, only additions) — direct proof the shared component's existing
+  behavior did not change.
+- **Exactly 2 call sites** of `setBuilderContext`/`setBuilderDraft`/
+  `setBuilderDraftHydrator` exist in the whole app (`WorkflowBuilderPage.tsx`,
+  `WorkflowCanvasPage.tsx`) — confirmed by grep, independently re-confirmed by
+  the orchestrator. No other page can trigger the new branch.
+- **Scope-safety claim re-verified against current code, not just the spec's
+  abstract argument**: `executeAction` has exactly 2 call sites, both gated
+  behind an explicit user click (`ActionProposalCard`'s Apply, and an
+  unrelated pre-existing "create ticket" button that hardcodes a
+  `create_case` proposal — confirmed by the orchestrator to not even be
+  `create_workflow`-shaped, so it can't reach the new branch at all
+  regardless of click-gating). No path exists from Crystal's AI-generated
+  chat content into `executeAction` — `submitQuery` only ever writes to
+  `messages`/`actionProposals` state, never calls it directly.
+- Branch-ordering fix (before `!surveyId`) and the `setState(() => hydrator)`
+  fix both confirmed present and correct by direct code read.
+
+**Verdict: shipped safely. Zero regressions found across three independent
+verification passes (orchestrator spot-checks after Phase 2, Kenji's Phase 3,
+orchestrator's own final re-check after Phase 3).**
+
+---
+
+## Wave 12 — Build with Crystal is missing scope ("source") entirely (2026-07-02, COMPLETE)
+
+**Post-close addendum — a second, more severe, pre-existing bug found via a real
+production log (user-reported "same error" after Phase 3 closed):** the user hit
+"Crystal wasn't able to match that to a valid trigger and action" on the built-in
+example "Every Monday at 9am, email the team a summary of last week's responses."
+Orchestrator added one diagnostic log line (`workflow_nl_parse_low_confidence` at
+the `confidence < UNPARSEABLE_THRESHOLD` branch in `workflow_nl.py` — this branch
+had NO logging at all before, a real observability gap now closed) and the user
+pasted back the real log. Root cause, confirmed by direct code read: `_call_llm()`
+built its `user` message from ONLY the description — `_SYSTEM_PROMPT` claims the
+model "will be given... the exact catalog of valid triggers... actions" but that
+catalog was NEVER actually included in any message sent to the LLM, and
+`call_agent()` does no injection of its own. The model was guessing generic,
+plausible-sounding identifiers from its own training data (`"schedule"`,
+`"email_report"`) instead of this project's real registry strings
+(`"time.schedule"`, `"notify.email"`) — confirmed unrelated to Wave 12's
+`scope_hint` work (the log showed `scope_hint: null`, correctly). This means the
+feature's reliability for ANY trigger/action whose registry name doesn't happen
+to match common naming conventions has been down to luck since this module was
+first built — a pre-existing bug, not a regression from this wave.
+
+**Amara — fixed, orchestrator-verified:** new `_format_catalog(registry)` renders
+a compact `"type (label)"` line-per-entry block (triggers/condition
+fields/operators/actions) from the SAME registry object already used for
+post-validation; `_call_llm(description, registry)` now appends this block to
+the `user` message. Format chosen deliberately compact (not raw JSON) — cheaper,
+equally copyable, and every string `_draft_to_engine_graph` validates against is
+now verbatim-present. With the current bounded catalog this adds well under 1KB
+per call. New tests (+4, `test_workflow_nl.py` 24→28): critical proof —
+`test_call_llm_message_contains_exact_registry_strings` mocks `call_agent`
+itself (not `_call_llm`) and asserts the literal `user` message contains
+`"time.schedule"`, `"notify.email"`, etc. verbatim; a regression test
+reconstructs the EXACT degraded draft from the real production log
+(`trigger_type="schedule"`, `action="email_report"`, invented `day_of_week`/
+`time_of_day` fields, confidence 0.14) and confirms existing validation still
+correctly rejects it — proving the fix is entirely on the "give the model
+better material" side, the drop/penalty validation logic was already correct.
+**Full suite: 1691 → 1695 passed, 0 failures.** Orchestrator independently
+re-ran the full suite (matches exactly) and read both new tests directly to
+confirm they assert on the real message contents, not a superficial pass.
+`_draft_to_engine_graph`'s validation logic, Wave 12's scope-resolution code,
+and the diagnostic logging were all correctly left untouched.
+
+Per explicit user report: "Build with Crystal is not working. As per new design we
+need trigger, source, action." Orchestrator investigated directly before dispatch
+(not assumed): confirmed via direct code read across all 3 layers that
+`crystalos/crystal/workflow_nl.py` (the LLM draft schema, `_draft_to_engine_graph`,
+`WorkflowNLResult`), the FastAPI `POST /workflows/parse-nl` endpoint, the Node
+proxy (`agentsClient.parseWorkflowNL`, `ParseWorkflowNLSuccess` type), and
+`WorkflowNLBuilderPage.tsx` (confirm-card's `TriggerSummaryRow`/
+`ConditionSummaryRow`/`ActionSummaryRow` — no `ScopeSummaryRow`;
+`createWorkflow()`'s `api.createGraphWorkflow()` call omits scope entirely) have
+**zero concept of scope anywhere in the pipeline** — every NL-created workflow is
+silently forced to org-wide scope with no way to see or change it, because this
+whole pipeline predates the Wave 6 scope redesign (`BUILDER_REDESIGN_V2_SCOPE.md`)
+and was never updated to match it. All 27 existing `WorkflowNLBuilderPage.test.tsx`
+tests pass — this is a confirmed design gap, not a regression from Wave 10/11.
+
+**Hard backward-compatibility invariant for this whole wave** (explicit user
+instruction: "be careful not to break existing changes"): an NL description that
+doesn't mention a survey/tag by name must continue to produce an org-scoped
+workflow, identical to today's behavior, in every case. Scope inference is
+strictly additive — it only activates when the LLM's draft proposes a scope hint
+that confidently matches a REAL survey/tag in the org (same fail-safe pattern
+already used for trigger/action/condition-field registry validation: unmatched
+proposals are dropped with a warning + confidence penalty, never guessed).
+
+**Phase 1 (parallel — disjoint file footprints: `crystalos/` vs `backend/`):**
+- **Amara** (AI/ML, Crystal NL parsing owner) — extend the LLM draft schema with
+  an optional scope hint, map it onto a REAL org survey/tag list (newly forwarded
+  by the Node proxy) using the same drop-and-warn safety pattern as
+  triggers/actions, return `scopeType`/`scopeSurveyId`/`scopeTagId` in
+  `WorkflowNLResult`/the endpoint response.
+- **Nina** (Platform Integrity, confirm-card contract owner) — extend the Node
+  `POST /api/workflows/parse-nl` proxy to fetch and forward the org's surveys/tags
+  (reusing the exact same `listSurveys`/`listTags` backend queries
+  `ScopeStepPanelContent.tsx` already calls — no new data-fetch mechanism),
+  extend `ParseWorkflowNLSuccess` to carry the new scope fields through.
+
+**Phase 2 (after Phase 1 verified):** Elias adds a `ScopeSummaryRow` to the
+confirm-card and low-confidence states, plumbs scope through
+`createWorkflow()`/`editInCanvas()`.
+
+**Phase 3 (after Phase 2 verified):** Kenji — full 3-layer regression suite
+(CrystalOS pytest + backend vitest + frontend vitest), explicit verification of
+the backward-compatibility invariant above and the safe-fallback-to-org behavior
+for an unmatched/hallucinated scope mention.
+
+**Nina — Phase 1 backend work COMPLETE** (extended registry payload + type
+plumbing, `routes/workflows.ts`/`lib/agentsClient.ts`, disjoint from Amara's
+in-flight `crystalos/crystal/workflow_nl.py` work — confirmed no file overlap):
+
+1. **Extended registry payload, this call site only.** `POST /parse-nl`'s
+   handler now runs two lightweight queries in parallel before calling
+   `agentsClient.parseWorkflowNL` — `SELECT id, title AS name FROM surveys
+   WHERE org_id = $1 AND deleted_at IS NULL` and `SELECT id, name FROM
+   survey_tags WHERE org_id = $1` — the exact same underlying tables/filters
+   `GET /api/surveys` (routes/surveys.ts) and `GET /api/survey-tags`
+   (routes/tags.ts) already query, trimmed to `{id, name}` since that's all
+   Amara's scope-matching skill needs. Confirmed tags are real `{id, name,
+   slug, color, ...}` objects (`survey_tags` table), not plain strings, before
+   assuming the shape. Merged onto `registry()`'s existing shape as `{
+   ...registry(), surveys: [...], tags: [...] }` — `registry()` itself is
+   UNCHANGED (still used as-is by `GET /api/workflows/registry` for the
+   no-code builders, which don't need a survey/tag catalog).
+2. **`ParseWorkflowNLSuccess` (backend) / `ParseWorkflowNLResult` (frontend)**
+   both gained `scopeType?: 'org'|'survey'|'tag'`, `scopeSurveyId?: string`,
+   `scopeTagId?: string` — all optional, so an old/lagging CrystalOS deploy
+   that omits them entirely doesn't break parsing; absence is treated
+   identically to `scopeType: 'org'` (today's behavior), mirroring how
+   `schemas/workflows.ts`'s `updateWorkflowSchema` already defaults an absent
+   `scopeType` to `'org'`. The route's response mapping (`res.json(result)`)
+   passes these through unchanged — no new mapping logic needed since the
+   route already forwards `agentsClient`'s result as-is.
+3. **Tests (`workflowsParseNl.test.js`, +4 net):** extended-registry-payload
+   assertion (surveys/tags present, sourced from the same org-scoped queries —
+   asserted via `queryMock` call args, not a new fetch mechanism); scope
+   fields pass through correctly when CrystalOS returns them; **the
+   single most important test** — a CrystalOS response that omits scope
+   fields entirely still produces a byte-identical response to pre-Wave-12
+   behavior. Updated (not just added to) the existing "maps CrystalOS success"
+   test to assert the extended registry shape now sent. All 11 tests in the
+   file pass; no other existing test needed changes.
+4. **Full suite (fresh baseline, not trusted from an old doc): 86 files/1178
+   tests before this pass, 1 pre-existing failure** (Wave 10's documented RED
+   TDD marker in `workflowEngine.test.js`, unrelated) **→ 86 files/1181 tests
+   after, same 1 pre-existing failure — zero regressions.** `tsc --noEmit`
+   clean for every file touched (`agentsClient.ts`, `routes/workflows.ts`);
+   the only backend `tsc` errors present (`lib/prism/uploads.ts` — missing
+   `@aws-sdk/client-s3` dep, duplicate `fs` import) are pre-existing and
+   untouched by this wave. Frontend `tsc --noEmit` (for the `api.ts` type
+   change) is clean.
+
+**Amara — Phase 1 CrystalOS work COMPLETE** (`crystalos/crystal/workflow_nl.py`,
+`crystalos/main.py`, disjoint from Nina's `backend/` work — confirmed no file
+overlap): `WorkflowNLDraft` gained one optional field, `scope_hint: str | None`
+— the LLM proposes only a free-text *name* it noticed in the description
+("Onboarding Survey"), never a type or id; new `_scope_catalog_lookup()`/
+`_resolve_scope_hint()` map that hint onto `registry.surveys`/`registry.tags`
+(new optional `{id, name}[]` keys Nina's proxy now sends). **Matching
+algorithm:** no hint → `org`, no warning, no confidence change (the normal
+case); case-insensitive exact name match → confident resolve; no exact match →
+conservative unambiguous-substring-only match (any ambiguity — multiple
+candidates, or a hit in both surveys and tags — is treated as no match, never
+guessed); hint present but unmatched → falls back to `org` + a warning +
+`_REGISTRY_DRIFT_PENALTY`, the identical severity class already used for
+hallucinated triggers/actions/fields. Rationale: scope determines what real
+data a workflow acts on, so under-matching to the safe org default is always
+preferred over a wrong guess. `WorkflowNLResult` gained `scope_type: str =
+"org"`, `scope_survey_id`/`scope_tag_id: str | None = None`; the endpoint
+response gained `scopeType`/`scopeSurveyId`/`scopeTagId` (camelCase, alongside
+`triggerType`). The legacy in-chat `execute_propose_workflow` call site (which
+uses `FALLBACK_REGISTRY`, no `surveys`/`tags` keys) continues to resolve to
+`org` unchanged — verified, not assumed. **Tests:** baseline (fresh) 1678
+passed / 0 failed → **1691 passed / 0 failed after, zero regressions** (+13:
+`test_workflow_nl.py` 15→24, `test_workflow_nl_endpoint.py` 6→10). Single most
+important test, `test_no_scope_hint_defaults_to_org_byte_identical_to_before`
+— proves the hard backward-compatibility invariant end-to-end.
+
+**Orchestrator verification (Phase 1 complete, both agents):** re-ran the full
+CrystalOS suite independently (`.venv/bin/python -m pytest -q`) — **1691
+passed, 0 failed**, matches exactly; the 2 targeted files alone also verified
+in isolation (24+10=34, matches). Spot-checked by direct code read:
+`_scope_catalog_lookup`/`_resolve_scope_hint` exist and match the described
+algorithm; `test_no_scope_hint_defaults_to_org_byte_identical_to_before`
+genuinely drives `parse_workflow_nl()` with a mocked LLM and asserts the exact
+backward-compatible output (org/None/None/unchanged-confidence/no-warnings);
+a second test confirms the same default holds even when the registry has no
+`surveys`/`tags` keys at all (the legacy-caller case). `git status` confirms
+Amara touched zero `backend/`/`app/` files and Nina touched zero `crystalos/`
+files — the disjoint-footprint plan held with no conflicts.
+5. **Deliverable for Elias's Phase 2:** extended registry payload shape is
+   `{ triggers, conditionFields, conditionOperators, actions, surveys:
+   {id,name}[], tags: {id,name}[] }` (sent to CrystalOS only, not exposed on
+   any response); `ParseWorkflowNLResult`/`ParseWorkflowNLSuccess` both add
+   the three optional scope fields above, unpopulated = org-wide exactly like
+   today.
+
+**Elias — Phase 2 frontend work COMPLETE** (`app/src/pages/WorkflowNLBuilderPage.tsx`,
+`app/src/__tests__/pages/WorkflowNLBuilderPage.test.tsx`, `app/src/locales/en.ts` —
+disjoint from Nina's/Amara's Phase 1 files, confirmed no overlap):
+
+1. **`ScopeSummaryRow`** added, mirroring `TriggerSummaryRow`'s structure
+   (icon chip + uppercase label word + value). Renders `t('workflows.nlBuilder.
+   scopeOrgWide')` ("Org-wide" — byte-identical copy to `ScopeStepPanelContent.
+   tsx`'s `workflows.builder.sentence.scope.orgLabel`) when `scopeType` is
+   `'org'` or absent, with **zero API calls** in that path — absence is a
+   terminal state, not a lookup that happens to resolve to org. For
+   `'survey'`/`'tag'`, resolves the display name client-side (`api.getSurvey(id)`
+   — a single-item lookup already existed, no need to fetch the whole list;
+   `api.listTags()` + find-by-id, since no single-tag GET exists) with a
+   `.skeleton` placeholder while resolving, and falls back to
+   `scopeSurveyFallback`/`scopeTagFallback` ("a specific survey"/"a specific
+   tag") — never a raw UUID — if the id doesn't resolve (deleted between parse
+   and now) or the lookup errors. Wired into both `ConfirmCard` and
+   `LowConfidenceState`, immediately after `TriggerSummaryRow` (WHEN → ON → IF
+   → THEN sentence order).
+2. **`createWorkflow()`** now conditionally spreads `scopeType`/`scopeSurveyId`/
+   `scopeTagId` onto the `api.createGraphWorkflow()` payload only when
+   `scopeType` is present and not `'org'` — an absent-scope or explicit-org
+   result produces a payload with **no scope keys at all**, matching
+   `WorkflowBuilderPage.tsx`'s established conditional-spread convention and
+   the server's existing absent-defaults-to-org behavior.
+3. **`editInCanvas()`**'s seed object carries the same three fields through
+   with the same conditional-omission rule. **Found and flagged, not silently
+   assumed:** `WorkflowCanvasPage.tsx` does NOT currently read any scope field
+   from its seed (`CanvasSeed` interface has no `scopeType`/`scopeSurveyId`/
+   `scopeTagId`, confirmed by direct read) — Wave 11 and earlier never wired
+   this. The seed now forward-compatibly carries the fields (harmless extra
+   keys today), but a user who clicks "Edit in canvas" on a scoped NL result
+   will currently land on a canvas that silently drops back to org-wide with
+   no visible scope picker state. **Open follow-up for Phase 3 (Kenji) or a
+   future wave:** `WorkflowCanvasPage.tsx` needs its own scope state + seed
+   consumption + save-payload wiring (same shape as `WorkflowBuilderPage.tsx`'s
+   `ScopeSelection`) before this handoff is actually lossless.
+4. **Tests (`WorkflowNLBuilderPage.test.tsx`, +15 net):** org-wide default
+   when scope fields are entirely absent (asserts zero `getSurvey`/`listTags`
+   calls — the single most important test, mirroring Phase 1's rigor); explicit
+   `scopeType: 'org'`; survey-scope name resolution (asserts the raw id never
+   renders); tag-scope name resolution; survey/tag unresolvable-id fallback
+   (404 and empty-list cases); loading-skeleton-then-name transition; scope row
+   present in the low-confidence state; `createWorkflow()`'s conditional field
+   inclusion (absent, explicit org, survey, tag — 4 tests, each asserting the
+   omitted keys are absent via `not.toHaveProperty`, not just checking the
+   included ones); `editInCanvas()`'s seed carrying scope through (absent-omits,
+   survey, tag-from-low-confidence — 3 tests).
+5. **Full suite (fresh baseline, not trusted from an old number): 82 files /
+   946 tests before this pass, 0 failures → 82 files / 961 tests after, 0
+   failures — zero regressions.** `npx tsc --noEmit` clean; `npm run lint`
+   clean. The single test file alone: 27 → 42 (+15, matches the delta above).
+
+**Orchestrator verification (Phase 2 complete):** re-ran the full frontend
+suite independently — first run showed 1 transient failure (960/961), a clean
+immediate re-run showed **82 files / 961 tests, all passing** — confirmed
+flaky/environmental, not a real regression (no failure details captured on
+either the first run's grep or a dedicated re-run targeting it). `tsc
+--noEmit` clean, `npm run lint` clean. Spot-checked by direct code read:
+`createWorkflow()`/`editInCanvas()`'s conditional spreads only add scope keys
+when non-org, exactly as described; `ScopeSummaryRow`'s API calls are
+genuinely gated behind `scopeType === 'survey'/'tag'` (confirmed via the
+`useEffect`'s branch structure, not just the component's prose description);
+`WorkflowCanvasPage.tsx` confirmed to have zero scope-field references
+anywhere — Elias's flagged limitation is real, not a bug he introduced, and
+correctly logged as an open follow-up rather than silently patched or
+scope-crept into this dispatch.
+
+**Phase 3 (dispatched next):** Kenji — full 3-layer regression suite
+(CrystalOS pytest + backend vitest + frontend vitest) plus explicit
+verification of the backward-compatibility invariant and the safe-fallback
+behavior for an unmatched/hallucinated scope mention, end-to-end through all
+3 layers (not just per-layer, as Phase 1/2 already did) — the final gate
+before this wave is considered done.
+
+**Kenji — Phase 3 end-to-end seam verification COMPLETE (final gate, Wave 12
+done):**
+
+1. **Full 3-layer regression, run fresh (not trusted from prior reports):**
+   CrystalOS **1691 passed, 0 failed** (matches Amara's number exactly).
+   Backend **86 files / 1181 tests, 1 pre-existing failure**
+   (`workflowEngine.test.js`'s documented Wave 10 RED TDD marker, unrelated —
+   matches Nina's baseline exactly). Frontend: two consecutive full runs each
+   surfaced exactly 1 different, unrelated test failing
+   (`NotifyTargetPicker`'s keyboard-nav test, then `scheduleConfig`'s cron
+   builder test) — both pass 100% in isolation; a clean run gave **82 files /
+   962 tests, all passing**. Confirmed environmental/parallel-worker
+   flakiness, not a regression — the same "1 transient failure, clean
+   re-run" pattern the orchestrator already documented at Phase 2.
+2. **Seam trace (Node↔CrystalOS, CrystalOS↔Node, Node↔frontend) — read the
+   real wire-construction code on both sides of each boundary, not each
+   side's own (self-mocking) tests.** All three boundaries align
+   field-for-field: `agentsClient.parseWorkflowNL` sends
+   `{org_id, description, registry}`, which is exactly what
+   `parse_workflow_nl_endpoint` reads via `body.get(...)`; CrystalOS returns
+   camelCase `scopeType`/`scopeSurveyId`/`scopeTagId` (never snake_case) in
+   both its 200 dict and its deliberately-flat (non-`HTTPException`-wrapped)
+   422 body; the route's `res.json(result)` passes the object through
+   unchanged; `ParseWorkflowNLSuccess` (backend) and `ParseWorkflowNLResult`
+   (frontend) declare the identical three optional fields. No key-naming
+   drift, no null-vs-absent mismatch found. New test file
+   `backend/src/__tests__/workflowsParseNlEndToEnd.test.js` (+5 tests) proves
+   this isn't just a read — it fakes ONLY `node-fetch` (the one real
+   external boundary `agentsClient.ts` crosses) so the REAL
+   `agentsClient.parseWorkflowNL` and the REAL route handler both execute
+   end-to-end, against raw HTTP-shaped bodies matching exactly what
+   `crystalos/main.py` actually produces (200 with scope, 200 without, flat
+   422, and a defensive `detail`-wrapped 422 to prove the documented FastAPI
+   risk degrades gracefully rather than crashing). All 5 passed on the first
+   run — the seam was genuinely correct, not just independently tested.
+3. **Backward-compatibility invariant, verified across a real boundary (not
+   a mock).** The single most important test in the new file: a raw
+   CrystalOS-shaped 200 JSON body with `scopeType`/`scopeSurveyId`/
+   `scopeTagId` entirely absent (simulating an old/lagging CrystalOS
+   instance mid-deploy) flows through the REAL `agentsClient.parseWorkflowNL`
+   and REAL route handler to produce a response with exactly the 7
+   pre-Wave-12 keys — `Object.keys(body)` asserted directly, plus
+   `'scopeType' in body === false` — genuinely indistinguishable from
+   pre-Wave-12 behavior. This closes the gap Nina's/Amara's/Elias's own
+   (self-mocking) tests couldn't: each proved their own layer defaults
+   correctly in isolation, but none exercised the real
+   `agentsClient.ts`-to-CrystalOS wire boundary together until now.
+4. **`WorkflowCanvasPage.tsx` scope gap — assessed, confirmed safe, NOT
+   fixed (per explicit task scope).** Direct code read: `CanvasSeed` has no
+   scope fields, and `save()`'s payload (`{name, description, triggerType,
+   nodes, edges, status, ...version}`) never includes `scopeType`/
+   `scopeSurveyId`/`scopeTagId` under any circumstance — confirmed this is
+   the *latter* of the two possible severities, not the former: no path
+   writes an unintended/wrong/destructive scope. `schemas/workflows.ts`'s
+   `checkScopeFields` defaults an absent `scopeType` to `'org'`, and
+   `routes/workflows.ts`'s `POST /` INSERT uses `scopeType || 'org'` — the
+   exact same safe default every other scope-less caller already gets. New
+   regression test in `WorkflowCanvasPage.test.tsx`
+   ("a scoped Crystal seed (survey scope) still saves with NO scope keys in
+   the payload") drives a canvas seeded with `scopeType: 'survey'`/
+   `scopeSurveyId` (the exact shape `editInCanvas()` sends) through a real
+   save and asserts zero scope keys reach `createGraphWorkflow()` — proving
+   the outcome is "silently org-wide," never "silently wrong-scope." Verdict:
+   a real UX gap (Crystal's inferred scope is invisible and has to be
+   manually re-picked... except the canvas has no scope picker at all yet
+   either), but not a data-safety bug — correctly left as Elias's already-
+   logged deferred follow-up (a canvas-side `ScopeSelection` build), not
+   scope-crept into this verification pass.
+5. **Footprint:** two files touched, both additive-only — new
+   `backend/src/__tests__/workflowsParseNlEndToEnd.test.js` (+5 tests) and
+   `app/src/__tests__/pages/WorkflowCanvasPage.test.tsx` (+58 lines, +1
+   test, 31→32). `tsc --noEmit` clean on the frontend; backend's only errors
+   are the pre-existing, already-documented `lib/prism/uploads.ts` gaps
+   (missing `@aws-sdk/client-s3` dep, duplicate `fs` import), untouched by
+   this pass.
+
+**Verdict: YES, Wave 12 is safe to consider done.** All 3 layers pass their
+full regression suites at their documented baselines with zero regressions;
+the 3 wire boundaries (Node→CrystalOS, CrystalOS→Node, Node→frontend) were
+independently re-verified field-for-field against the REAL request/response
+construction code (not each side's mocks) and found genuinely aligned; the
+hard backward-compatibility invariant was proven across a real (not mocked)
+`agentsClient`-to-CrystalOS boundary, closing the one gap per-layer testing
+structurally couldn't reach; and the one known open item
+(`WorkflowCanvasPage.tsx`'s missing scope picker) was confirmed — by test,
+not assumption — to degrade safely to the existing org-wide default rather
+than risk writing to the wrong scope, so deferring its larger UI build to a
+future wave carries no data-safety risk in the meantime.
+
+---
+
 ## Wave 11 — 5 deferred Wave-10 gaps, full team re-assembled (2026-07-02, IN PROGRESS)
 
 Per explicit user request: implement the remaining Wave 10-deferred items — audit
@@ -156,19 +1270,105 @@ match the reports; both new migrations (`20260702090000`,
 changes stayed within `backend/`, consistent with the planned disjoint
 footprints (zero file-overlap conflicts materialized).
 
-**Phase 2 (dispatched):** Elias builds frontend consumption + the
-mobile/accessibility fixes already fully specified in `DEEP_AUDIT_UX_FINDINGS.md`
-(C-3, S-2, A-1, A-2, A-3, V-2) — no new spec needed for those, existing audit
-citations are implementation-ready. Elias's work consumes: Nina's `GET
-/:id/audit-log` + PUT's `version`/409 contract, Priya's `flow.delay` action
-(config UI + action-pill rendering), and Rohan's `WAVE11_UX_SPECS.md` in full
-(condition-step + delay config panel).
+**Elias — Phase 2 frontend work COMPLETE** (all under `app/src/`, backend
+untouched): (1) concurrent-edit conflict UI — new `WorkflowConflictError`
+(mirrors `ConnectorTestError`'s `rawHttp` pattern so a 409's body survives),
+`version`/`updated_by` added to the `Workflow` type, both builders track
+`version` in edit mode only (omitted entirely in create mode) and show a
+Reload-latest/Overwrite-anyway dialog on conflict; (2) audit-trail UI — new
+`AuditLogHistory` dialog off a "Change history" icon on `WorkflowsPage.tsx`,
+deliberately kept separate from the existing run-history button (different
+question: config changes vs. executions); (3) `flow.delay` — new
+`DelayActionConfigPanel.tsx` (unit-aware duration + live preview), wired into
+both builders' action pickers and `ActionClauseList.tsx`'s category-tinted
+pill rendering; (4) condition-step — new `ConditionStepPanelContent.tsx` +
+additive 4th `SentencePillState`, with **the critical zero-condition
+backward-compatibility regression test passing** (orchestrator-verified below);
+(5) all 6 mobile/accessibility findings (C-3, S-2, A-1, A-2, A-3, V-2) closed,
+including a from-scratch minimal WAI-ARIA combobox for `NotifyTargetPicker`
+with no new dependency. **Full suite: 82 files / 946 tests, all passing**
+(+2 files/+78 tests over the 80/868 baseline, zero regressions).
 
-**Phase 3 (after Phase 2 verified):** Kenji — dedicated fault-tolerance/scale/
-regression safety pass over the whole wave (optimistic-locking race conditions,
-delay-scheduler crash-recovery and catch-up behavior, load characteristics of
-the new resume query, full regression suite) — directly answers the user's
-"very safe integration" bar.
+**Orchestrator verification (Phase 2 complete):** re-ran the full frontend
+suite independently — **82 files / 946 tests, all passing**, matches exactly.
+`tsc --noEmit` clean, `npm run lint` clean. Spot-checked by direct code read:
+the zero-condition regression test (`WorkflowBuilderPage.test.tsx`) genuinely
+drives the real builder UI end-to-end (types a name, picks a trigger, adds an
+action, saves — never touches the condition pill) and asserts the exact saved
+payload is `nodes: ['trigger','action']` with zero condition nodes and an
+unchanged 2-node edge chain — this is real proof, not an assertion of intent.
+`WorkflowBuilderPage.tsx`'s `version` state confirmed `undefined` in create
+mode with `...(isEditMode && !forceOverwrite ? { version } : {})` in the save
+payload, matching the reported create-mode-omission behavior exactly.
+`git status` confirms all tracked changes stayed within `app/`.
+
+**This closes Phase 1 + Phase 2 of Wave 11 for all 5 requested items.**
+
+**Kenji — Phase 3 fault-tolerance/scale safety pass COMPLETE — found and fixed
+2 genuine bugs, not just verified:**
+
+1. **TOCTOU race in optimistic locking (real bug, fixed).** Nina's original PUT
+   checked `version` via a separate SELECT, then ran the UPDATE with no
+   `version` predicate at all — two concurrent requests carrying the same
+   stale version could both pass the SELECT check before either UPDATE
+   committed, both succeeding (a silent lost update, neither getting a 409).
+   Proved it with a true-concurrency test (`Promise.all` + a barrier forcing
+   both SELECTs to resolve before either UPDATE) that fails `[200,200]`
+   against the pre-fix code (confirmed via `git stash` bisection) and passes
+   `[200,409]` against the fix. **Fix:** fold `AND version = $version` into
+   the UPDATE's own WHERE clause (not a separate SELECT) — Postgres's
+   row-level locking then serializes concurrent writers for free; a
+   post-UPDATE zero-rows re-check re-fetches and returns the 409, preserving
+   the pre-existing "PUT against a nonexistent/cross-org id is a silent
+   no-op" behavior exactly.
+2. **Unbounded batch in the delay-resume scheduler job (real scale bug,
+   fixed).** `resumeDelayedExecutions`'s SELECT had no `LIMIT` — checked
+   precedent (`reNotifyStaleApprovals`, `expireStaleBroadcasts`) and confirmed
+   neither batches either, so this was a genuine, previously-unaddressed gap:
+   unlike those two (single bulk SQL statements), this job runs a full
+   per-row execution pipeline (network calls, DB writes), so a large
+   post-outage backlog could make one tick run unpredictably long. **Fix:**
+   `ORDER BY resume_at ASC LIMIT $1`, env-overridable via
+   `WORKFLOW_RESUME_DELAYED_BATCH_SIZE` (default 200, documented in
+   `.env.example`/`docs/ENV_VARS.md`) — backlog beyond the cap resumes
+   oldest-first on subsequent ticks, never dropped. Proved with a
+   multi-tick-backlog test (5 overdue rows, batch size 2 → 3 ticks drain
+   completely, correct order, no dupes/drops).
+3. **Verified safe, no fix needed:** the per-row `resumeDelayedExecution`
+   claim's crash-recovery (any overdue row resumes correctly regardless of
+   how overdue) and idempotency (Priya's existing double-resume tests); the
+   new partial index's predicate is an exact match/strict subset of both
+   consuming queries' WHERE clauses (checked side-by-side against the
+   migration, not assumed); audit-log failure isolation — strengthened with
+   new tests loading the REAL `writeWorkflowAuditLog` (not a full-module
+   mock) with a DB mock that throws specifically on the `workflow_audit_log`
+   INSERT, covering POST/PUT/DELETE/toggle, confirming the mutation still
+   succeeds in every case.
+
+**Verdict: yes, Wave 11 meets the "very safe, fault-tolerant, ready for
+scale" bar** — after these 2 fixes. Both were real, exploitable-in-production
+deviations from that bar at the time Phase 3 started, not cosmetic; both are
+now closed with minimal, targeted changes (a WHERE-clause fold, a LIMIT
+clause — no architecture changes) and a test proven to actually fail
+pre-fix, not just pass trivially.
+
+**Orchestrator verification (Phase 3 complete, final gate):** re-ran both full
+suites independently — backend **86 files / 1178 tests, 1177 passing**
+(same 1 pre-existing, documented-unrelated failure), frontend **82 files / 946
+tests, all passing** — both match exactly. Spot-checked by direct code read:
+the version predicate is genuinely folded into the UPDATE's WHERE clause
+(not just the SELECT) with the lost-race re-check present as described; the
+scheduler job's `LIMIT $1`/`ORDER BY resume_at ASC`/`batchSize()` env-override
+all present and match; `WORKFLOW_RESUME_DELAYED_BATCH_SIZE` documented in both
+`.env.example` and `docs/ENV_VARS.md` per the project's env-var rule; the
+`[TRUE RACE]`-named test exists and matches its stated intent.
+
+## Wave 11 — COMPLETE. All 5 requested items shipped, tested, and
+independently verified across all 3 phases: audit trail, concurrent-edit
+protection (with a real race condition found and closed), a wait/delay
+action (with a real scale gap found and closed), a condition-step in the
+sentence builder (with a proven backward-compatibility guarantee), and the
+6 mobile/accessibility findings from Wave 10's audit.
 
 ---
 

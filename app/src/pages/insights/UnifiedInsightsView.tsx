@@ -400,7 +400,7 @@ export function UnifiedInsightsView({
                 type="submit"
                 size="sm"
                 className="text-xs font-bold text-white border-0 flex-shrink-0"
-                style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               >
                 <Icon name="arrow_upward" size={14} />
                 Ask Crystal
@@ -418,8 +418,8 @@ export function UnifiedInsightsView({
               <GlassCard
                 className="p-6 overflow-hidden relative"
                 style={{
-                  background: 'linear-gradient(135deg, rgba(42,75,217,0.06) 0%, rgba(131,41,200,0.04) 100%)',
-                  borderColor: 'rgba(42,75,217,0.2)',
+                  background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 6%, transparent) 0%, color-mix(in srgb, var(--color-tertiary) 4%, transparent) 100%)',
+                  borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)',
                 }}
               >
                 {/* Featured label */}
@@ -464,7 +464,7 @@ export function UnifiedInsightsView({
                 {/* Decorative gradient orb */}
                 <div
                   className="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none"
-                  style={{ background: 'radial-gradient(circle, rgba(42,75,217,0.12), transparent 70%)' }}
+                  style={{ background: 'radial-gradient(circle, color-mix(in srgb, var(--color-primary) 12%, transparent), transparent 70%)' }}
                 />
               </GlassCard>
             </motion.div>
@@ -846,7 +846,7 @@ export function UnifiedInsightsView({
                           key={i}
                           className="flex-1 h-2 rounded-full transition-all duration-500"
                           style={{
-                            background: i < responseCount ? '#2a4bd9' : 'var(--color-outline-variant)',
+                            background: i < responseCount ? 'var(--color-primary)' : 'var(--color-outline-variant)',
                           }}
                         />
                       ))}
@@ -877,7 +877,7 @@ export function UnifiedInsightsView({
                 {/* Primary CTA */}
                 {emptyKind === 'no_responses' && focusSurvey && (
                   <Link to={ROUTES.RESPONDENTS}>
-                    <Button size="lg" className="font-bold text-white border-0 shadow-md" style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                    <Button size="lg" className="font-bold text-white border-0 shadow-md" style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                       <Icon name="share" size={16} />
                       {t('surveyInsights.empty.noResponses.cta')}
                     </Button>
@@ -888,7 +888,7 @@ export function UnifiedInsightsView({
                   <>
                     {/* Collecting more is the encouraged path — primary */}
                     <Link to={ROUTES.RESPONDENTS}>
-                      <Button size="lg" className="font-bold text-white border-0 shadow-md" style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                      <Button size="lg" className="font-bold text-white border-0 shadow-md" style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                         <Icon name="share" size={16} />
                         {t('surveyInsights.empty.insufficient.cta')}
                       </Button>
@@ -906,7 +906,7 @@ export function UnifiedInsightsView({
                     size="lg"
                     onClick={onGenerate}
                     className="font-bold text-white border-0 shadow-lg"
-                    style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                    style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
                   >
                     <Icon name="auto_awesome" size={18} />
                     {emptyKind === 'low_confidence'
@@ -920,7 +920,7 @@ export function UnifiedInsightsView({
                     size="lg"
                     onClick={onGenerate}
                     className="font-bold text-white border-0 shadow-md"
-                    style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                    style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
                   >
                     <Icon name="refresh" size={16} />
                     {t('surveyInsights.empty.failed.cta')}
@@ -972,7 +972,7 @@ export function UnifiedInsightsView({
                         key={item.labelKey}
                         className="p-3 rounded-xl border border-outline-variant/30 bg-surface-container/50"
                       >
-                        <Icon name={item.icon} size={20} style={{ color: '#2a4bd9', marginBottom: 6 }} />
+                        <Icon name={item.icon} size={20} style={{ color: 'var(--color-primary)', marginBottom: 6 }} />
                         <div className="text-xs font-black">
                           {t(`surveyInsights.empty.capabilities.${item.labelKey}`)}
                         </div>
@@ -1053,9 +1053,9 @@ export function UnifiedInsightsView({
             className="relative overflow-hidden rounded-2xl"
         style={{
           background:
-            'radial-gradient(ellipse at 25% 0%, rgba(42,75,217,0.45) 0%, transparent 55%),' +
-            'radial-gradient(ellipse at 75% 20%, rgba(131,41,200,0.35) 0%, transparent 55%),' +
-            'radial-gradient(ellipse at 50% 100%, rgba(0,100,124,0.25) 0%, transparent 60%),' +
+            'radial-gradient(ellipse at 25% 0%, color-mix(in srgb, var(--color-primary) 45%, transparent) 0%, transparent 55%),' +
+            'radial-gradient(ellipse at 75% 20%, color-mix(in srgb, var(--color-tertiary) 35%, transparent) 0%, transparent 55%),' +
+            'radial-gradient(ellipse at 50% 100%, color-mix(in srgb, var(--color-secondary) 25%, transparent) 0%, transparent 60%),' +
             'linear-gradient(180deg, #07091F 0%, #0F0822 60%, #070920 100%)',
         }}
       >
@@ -1087,7 +1087,7 @@ export function UnifiedInsightsView({
               style={{
                 width: 200,
                 height: 60,
-                background: 'radial-gradient(ellipse, rgba(131,41,200,0.5), transparent 70%)',
+                background: 'radial-gradient(ellipse, color-mix(in srgb, var(--color-tertiary) 50%, transparent), transparent 70%)',
                 filter: 'blur(16px)',
                 bottom: -20,
               }}
@@ -1148,7 +1148,7 @@ export function UnifiedInsightsView({
                 type="submit"
                 size="sm"
                 className="flex-shrink-0 text-xs font-bold text-white border-0 shadow-lg"
-                style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               >
                 <Icon name="arrow_upward" size={15} />
                 Ask Crystal
@@ -1265,9 +1265,9 @@ export function UnifiedInsightsView({
         <GlassCard className="p-8 text-center border-2 border-dashed border-primary/20">
           <div
             className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4"
-            style={{ background: 'linear-gradient(135deg, rgba(42,75,217,0.12), rgba(131,41,200,0.12))' }}
+            style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), color-mix(in srgb, var(--color-tertiary) 12%, transparent))' }}
           >
-            <Icon name="hub" size={28} style={{ color: '#2a4bd9' }} />
+            <Icon name="hub" size={28} style={{ color: 'var(--color-primary)' }} />
           </div>
           <h3 className="text-lg font-black font-headline mb-2">
             Portfolio analysis coming soon
@@ -1354,13 +1354,13 @@ function Crystal() {
   return (
     <div
       className="relative mx-auto"
-      style={{ width: 200, height: 200, filter: 'drop-shadow(0 24px 48px rgba(42,75,217,0.3))' }}
+      style={{ width: 200, height: 200, filter: 'drop-shadow(0 24px 48px color-mix(in srgb, var(--color-primary) 30%, transparent))' }}
     >
       <div
         className="absolute inset-0"
         style={{
           background:
-            'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)',
+            'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)',
           clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
           animation: 'spin-crystal 20s linear infinite',
           filter: 'blur(0.5px)',
@@ -1371,7 +1371,7 @@ function Crystal() {
         style={{
           inset: '18%',
           background:
-            'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)',
+            'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)',
           clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
           animation: 'spin-crystal 10s linear infinite reverse',
           opacity: 0.75,
@@ -1381,7 +1381,7 @@ function Crystal() {
         className="absolute"
         style={{
           inset: '38%',
-          background: 'radial-gradient(circle, #ffffff, #82deff)',
+          background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))',
           borderRadius: '50%',
           filter: 'blur(5px)',
           animation: 'pulse-glow 2.5s ease-in-out infinite',
@@ -1449,8 +1449,8 @@ function EmptyOrb({ kind }: { kind: 'no_responses' | 'insufficient' | 'low_confi
   const config = {
     no_responses:   { from: '#94a3b8', to: '#cbd5e1', icon: 'inbox',        iconColor: '#64748b' },
     insufficient:   { from: '#f59e0b', to: '#fbbf24', icon: 'hourglass_top', iconColor: '#b45309' },
-    low_confidence: { from: '#2a4bd9', to: '#8329c8', icon: 'psychology',    iconColor: 'white'   },
-    ready:          { from: '#2a4bd9', to: '#8329c8', icon: 'auto_awesome',  iconColor: 'white'   },
+    low_confidence: { from: 'var(--color-primary)', to: 'var(--color-tertiary)', icon: 'psychology',    iconColor: 'white'   },
+    ready:          { from: 'var(--color-primary)', to: 'var(--color-tertiary)', icon: 'auto_awesome',  iconColor: 'white'   },
     failed:         { from: '#f43f5e', to: '#e11d48', icon: 'error_outline', iconColor: 'white'   },
   }[kind];
 

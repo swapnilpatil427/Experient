@@ -704,6 +704,20 @@ export interface ParseWorkflowNLSuccess {
   edges: Record<string, unknown>[];
   confidence: number;
   warnings: string[];
+  // Scope hint (Wave 12, docs/automation-hub/BUILDER_REDESIGN_V2_SCOPE.md) — Amara's
+  // CrystalOS parser matches an NL mention of a survey/tag against the real
+  // `surveys`/`tags` lists this client now forwards in the registry payload (see
+  // routes/workflows.ts's POST /parse-nl) and returns the match here. All three
+  // fields are OPTIONAL: an older/lagging CrystalOS deploy that predates this
+  // change simply omits them, and the route/frontend must treat that exactly like
+  // `scopeType: 'org'` with no survey/tag — i.e. today's byte-identical org-wide
+  // behavior — mirroring how `schemas/workflows.ts`'s `updateWorkflowSchema`
+  // already defaults an absent `scopeType` to `'org'`. Never guess: CrystalOS only
+  // populates these when it confidently matched a REAL org survey/tag; an
+  // unmatched/hallucinated mention is dropped there, not defaulted here.
+  scopeType?: 'org' | 'survey' | 'tag';
+  scopeSurveyId?: string;
+  scopeTagId?: string;
 }
 
 /**

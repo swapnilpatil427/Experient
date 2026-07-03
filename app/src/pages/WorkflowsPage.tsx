@@ -56,13 +56,13 @@ function triggerLabel(wf: Workflow, triggers: RegistryTrigger[]): string | null 
 const WORKFLOW_VISUALS = {
   w1: {
     badgeBg: 'rgba(180,19,64,0.1)',  badgeColor: '#b41340',
-    iconGradient: GRADIENTS.primaryLight, iconBg: 'rgba(42,75,217,0.08)',
-    conditionColor: '#b41340', actionColor: '#00647c',
+    iconGradient: GRADIENTS.primaryLight, iconBg: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
+    conditionColor: '#b41340', actionColor: 'var(--color-secondary)',
   },
   w2: {
-    badgeBg: 'rgba(131,41,200,0.1)', badgeColor: '#8329c8',
-    iconGradient: GRADIENTS.purple,  iconBg: 'rgba(131,41,200,0.08)',
-    conditionColor: '#8329c8',       actionColor: '#2a4bd9',
+    badgeBg: 'color-mix(in srgb, var(--color-tertiary) 10%, transparent)', badgeColor: 'var(--color-tertiary)',
+    iconGradient: GRADIENTS.purple,  iconBg: 'color-mix(in srgb, var(--color-tertiary) 8%, transparent)',
+    conditionColor: 'var(--color-tertiary)',       actionColor: 'var(--color-primary)',
   },
   w3: {
     badgeBg: 'rgba(217,119,6,0.1)',  badgeColor: '#d97706',
@@ -72,9 +72,9 @@ const WORKFLOW_VISUALS = {
 };
 
 const DEFAULT_VISUALS = {
-  badgeBg: 'rgba(42,75,217,0.1)', badgeColor: '#2a4bd9',
-  iconGradient: GRADIENTS.primaryLight, iconBg: 'rgba(42,75,217,0.08)',
-  conditionColor: '#2a4bd9',      actionColor: '#8329c8',
+  badgeBg: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', badgeColor: 'var(--color-primary)',
+  iconGradient: GRADIENTS.primaryLight, iconBg: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
+  conditionColor: 'var(--color-primary)',      actionColor: 'var(--color-tertiary)',
 };
 
 function getVisuals(wf: Workflow) {
@@ -180,48 +180,27 @@ export function WorkflowsPage() {
                   variant="outline"
                   onClick={() => navigate(ROUTES.SETTINGS_INTEGRATIONS)}
                   className="rounded-xl"
-                  style={{ background: 'rgba(42,75,217,0.08)', color: 'var(--color-primary)', border: 'none' }}
+                  style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)', border: 'none' }}
                 >
                   <Icon name="cable" size={16} className="mr-1.5" />
                   {t('integrationsSettings.entryPointLabel')}
                 </Button>
-                <Button variant="outline" onClick={() => navigate(ROUTES.WORKFLOW_NL_BUILD)}>
-                  <Icon name="auto_awesome" size={16} className="mr-1.5" />
-                  {t('workflows.buildWithCrystal')}
-                </Button>
-                {/* DEEP_AUDIT_FIX_SPECS.md Issue 2 / Rohan DEEP_AUDIT_UX_FINDINGS.md
-                    L-1 — "Build Visually" and "New Workflow" used to navigate to the
-                    identical route with no distinguishing behavior; "New Workflow"
-                    is now deleted entirely (not repurposed into a dropdown — a
-                    dropdown-of-3-things next to the same 3 things as individual
-                    buttons has no clear reason to exist) and "Build Visually" is
-                    promoted to the sole primary/solid CTA. Using the real `Button`
-                    `variant="default"` also fixes finding V-1 (the old "New
-                    Workflow" button's hardcoded `style={{ background: '#2a4bd9' }}`
-                    bypassed the brand-theming system) for free. */}
+                {/* Wave 14 (docs/automation-hub/WAVE14_UNIFIED_BUILDER_SPEC.md §1) —
+                    collapses the previous 3 header buttons ("Build with Crystal" /
+                    "Build Visually" / "Build on Canvas") into one. The sentence
+                    builder (ROUTES.WORKFLOW_BUILD) is the single entry point now —
+                    it already has the Crystal trigger icon (§2) AND the canvas
+                    escape hatch (switchToCanvas()), so every other builder surface
+                    is still one click/one Crystal-question away. Neither
+                    WorkflowNLBuilderPage nor WorkflowCanvasPage nor their routes
+                    are deleted — only unlinked from this header. */}
                 <Button
                   variant="default"
                   onClick={() => navigate(ROUTES.WORKFLOW_BUILD)}
-                  title={t('workflows.buildVisuallyTooltip')}
-                  className="flex-col items-start h-auto py-2"
+                  title={t('workflows.buildWorkflowTooltip')}
                 >
-                  <span className="flex items-center gap-1.5">
-                    <Icon name="account_tree" size={16} />
-                    {t('workflows.buildVisually')}
-                  </span>
-                  <span className="text-[11px] font-normal opacity-80 pl-[22px]">{t('workflows.buildVisuallySubtext')}</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => navigate(ROUTES.WORKFLOW_CANVAS)}
-                  title={t('workflows.buildOnCanvasTooltip')}
-                  className="flex-col items-start h-auto py-2"
-                >
-                  <span className="flex items-center gap-1.5">
-                    <Icon name="schema" size={16} />
-                    {t('workflows.buildOnCanvas')}
-                  </span>
-                  <span className="text-[11px] font-normal text-on-surface-variant pl-[22px]">{t('workflows.buildOnCanvasSubtext')}</span>
+                  <Icon name="add" size={16} className="mr-1.5" />
+                  {t('workflows.buildWorkflow')}
                 </Button>
               </div>
             }
@@ -231,7 +210,7 @@ export function WorkflowsPage() {
           <div className="grid grid-cols-3 gap-4 mb-8">
             {[
               { labelKey: 'workflows.stats.active',        value: workflows.filter((w) => w.status === 'active').length, color: '#059669', bg: '#d1fae5' },
-              { labelKey: 'workflows.stats.triggersToday', value: workflows.reduce((a, w) => a + (w.trigger_count || 0), 0), color: '#2a4bd9', bg: '#e0e7ff' },
+              { labelKey: 'workflows.stats.triggersToday', value: workflows.reduce((a, w) => a + (w.trigger_count || 0), 0), color: 'var(--color-primary)', bg: '#e0e7ff' },
               { labelKey: 'workflows.stats.paused',        value: workflows.filter((w) => w.status === 'paused').length, color: '#d97706', bg: '#fef3c7' },
             ].map((stat) => (
               <Card key={stat.labelKey} className="p-4 rounded-2xl bg-white border-0"

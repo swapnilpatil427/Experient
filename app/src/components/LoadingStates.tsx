@@ -6,14 +6,20 @@ interface SpinnerProps {
   className?: string;
 }
 
-export function Spinner({ size = 24, color = '#2a4bd9', className = '' }: SpinnerProps) {
+// Wave 19b (WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md §5 item 1): the border uses a
+// `color-mix()` instead of the old `${color}22` hex-alpha-suffix trick, because
+// that trick only works when `color` is a literal hex string — it silently
+// produces invalid CSS (`var(--color-primary)22`) once the default becomes a
+// CSS var. `color-mix(in srgb, ${color} 13%, transparent)` works identically
+// for both hex strings and CSS var references (13% ≈ the old 0x22/0xff alpha).
+export function Spinner({ size = 24, color = 'var(--color-primary)', className = '' }: SpinnerProps) {
   return (
     <div
       className={`rounded-full animate-spin flex-shrink-0 ${className}`}
       style={{
         width: size,
         height: size,
-        border: `${Math.max(2, size / 10)}px solid ${color}22`,
+        border: `${Math.max(2, size / 10)}px solid color-mix(in srgb, ${color} 13%, transparent)`,
         borderTopColor: color,
       }}
     />

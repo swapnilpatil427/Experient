@@ -22,7 +22,9 @@ import {
 } from '../lib/workflowCanvas';
 import { ActionConfigPanel } from '../components/workflow-builder/canvas/ActionConfigPanel';
 import { extractNotifyTarget } from '../components/workflow-builder/sentence/contentSections';
-import type { WorkflowStatus } from '../types';
+import { useCrystalPanel } from '../contexts/crystalPanel';
+import { AskCrystalFab } from '../components/workflow-builder/AskCrystalFab';
+import type { WorkflowStatus, ActionProposal } from '../types';
 import { WorkflowConflictError } from '../lib/api';
 
 interface Trigger { type: string; label: string; category: string }
@@ -114,6 +116,74 @@ export function WorkflowCanvasPage() {
   // Opens ActionConfigPanel for the given action node (DEEP_AUDIT_FIX_SPECS.md
   // Issue 1) — passed down the same way `patch` already is, via node data.
   const openConfigPanel = useCallback((id: string) => setConfiguringNodeId(id), []);
+
+  // Wave 14 (docs/automation-hub/WAVE14_UNIFIED_BUILDER_SPEC.md §2/§3) — the
+  // Crystal trigger icon opens the existing global CrystalPanel, scoped to
+  // "we are operating on the Automation Hub builder" via the context wiring
+  // below. Mirrors WorkflowBuilderPage.tsx's wiring exactly.
+  const { openCrystal, setBuilderContext, setBuilderDraft, setBuilderDraftHydrator } = useCrystalPanel();
+
+  useEffect(() => {
+    setBuilderContext({ kind: 'workflow_builder' });
+    return () => {
+      setBuilderContext(null);
+      setBuilderDraft(null);
+      setBuilderDraftHydrator(null);
+    };
+  }, [setBuilderContext, setBuilderDraft, setBuilderDraftHydrator]);
+
+  // Every relevant state change — keep Crystal's view of the draft current.
+  // The canvas has no scope UI (see the canvas-switch warning in
+  // WorkflowBuilderPage.tsx), so scopeSelection is always org-wide here.
+  useEffect(() => {
+    const triggerType = triggerTypeOf(nodes as Node<CanvasNodeData>[]);
+    const actionNodes = (nodes as Node<CanvasNodeData>[]).filter((n) => n.data.kind === 'action');
+    setBuilderDraft({
+      mode: 'canvas',
+      triggerType,
+      scopeSelection: { scopeType: 'org' },
+      conditionClauses: (nodes as Node<CanvasNodeData>[])
+        .filter((n) => n.data.kind === 'condition')
+        .map((n) => ({ field: n.data.field ?? '', op: n.data.op ?? '', value: n.data.value ?? '' })),
+      actions: actionNodes.map((n) => ({
+        action: n.data.action ?? '',
+        label: actionDefs.find((a) => a.action === n.data.action)?.label ?? n.data.action ?? '',
+      })),
+      workflowName: name,
+      isEditMode,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, actionDefs, name, isEditMode, setBuilderDraft]);
+
+  // Wave 14 §4.3 — applies a Crystal `create_workflow` proposal to THIS page's
+  // own local state, reusing deserializeCanvas() (the exact same parser
+  // already used for this page's own edit-mode fetch and seed hydration) — no
+  // second graph-to-canvas converter. Returns `false` for any proposal shape
+  // this page doesn't recognize so CrystalPanel's executeAction can safely
+  // fall back to its existing persist path.
+  const hydrateFromProposal = useCallback((proposal: ActionProposal): boolean => {
+    const proposalNodes = proposal.params.nodes as EngineNode[] | undefined;
+    const proposalEdges = proposal.params.edges as EngineEdge[] | undefined;
+    if (!Array.isArray(proposalNodes) || !Array.isArray(proposalEdges)) return false;
+
+    const { nodes: rfNodes, edges: rfEdges } = deserializeCanvas(
+      proposalNodes, proposalEdges,
+      { triggers, actionDefs, operators, conditionFields, patch: patchNode, onConfigure: openConfigPanel },
+    );
+    setNodes(rfNodes);
+    setEdges(rfEdges);
+    if (!name.trim() && (proposal.params.name || proposal.title)) {
+      setName((proposal.params.name as string) || proposal.title);
+    }
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggers, actionDefs, operators, conditionFields, patchNode, openConfigPanel, name]);
+
+  // Register the hydration callback once it's stable.
+  useEffect(() => {
+    setBuilderDraftHydrator(hydrateFromProposal);
+    return () => setBuilderDraftHydrator(null);
+  }, [hydrateFromProposal, setBuilderDraftHydrator]);
 
   useEffect(() => {
     api.getWorkflowRegistry().then((r) => {
@@ -394,6 +464,11 @@ export function WorkflowCanvasPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §2.5) — the ReactFlow canvas
+          above is a 70vh bordered box inside this normal scrolling page, not
+          full-viewport, so this fixed FAB floats clear of it. */}
+      <AskCrystalFab onOpen={() => openCrystal()} />
     </div>
   );
 }
@@ -404,7 +479,7 @@ const SHELL = 'rounded-xl bg-white shadow-md border border-border px-3 py-2 text
 function TriggerNode({ id, data }: NodeProps<CanvasNodeData & { options?: Trigger[]; patch?: (id: string, p: Partial<CanvasNodeData>) => void }>) {
   const { t } = useTranslation();
   return (
-    <div className={SHELL} style={{ borderTop: '3px solid #2a4bd9' }}>
+    <div className={SHELL} style={{ borderTop: '3px solid var(--color-primary)' }}>
       <div className="flex items-center gap-1.5 mb-1 font-semibold text-on-surface"><Icon name="bolt" size={14} className="text-primary" />{t('workflows.canvas.trigger')}</div>
       <select className="w-full text-xs border border-border rounded px-1.5 py-1 bg-transparent" value={data.triggerType}
         onChange={(e) => data.patch?.(id, { triggerType: e.target.value })}>

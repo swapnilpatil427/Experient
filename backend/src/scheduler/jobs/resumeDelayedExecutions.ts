@@ -33,11 +33,51 @@ interface DueDelayRow {
   id: string;
 }
 
+// Bounded batch size per tick (Kenji, Wave 11 Phase 3 fault-tolerance gate).
+//
+// Neither this job nor its precedent (reNotifyStaleApprovals.ts) previously
+// capped how many rows a single tick could pull — confirmed by direct
+// comparison, this is genuinely unprecedented in this codebase's scheduler
+// (expireStaleBroadcasts.ts delegates to a single bulk SQL UPDATE, which is a
+// different risk profile: one round trip vs. this job's one full
+// resumeDelayedExecution() call per row, each of which can execute real
+// downstream actions — Slack/webhook/email network calls, DB writes — not just
+// flip a status column).
+//
+// Why this matters here specifically: if the scheduler is down (deploy,
+// crash, leader-election gap) for longer than several tick intervals while
+// delays keep expiring, the backlog is unbounded by the time it comes back.
+// Without a cap, one tick would try to resume the ENTIRE backlog synchronously
+// in a single `for` loop — a large backlog could make one job invocation run
+// for a very long wall-clock time with zero forward-progress visibility until
+// it finishes, and a single hung downstream action (e.g. a slow
+// notify.webhook fetch) stalls every row still queued behind it in that same
+// loop. This does not overlap with or block OTHER jobs (runner.ts's tick loop
+// fires jobs via `void runJob(job)`, not awaited), but it does mean this one
+// job's own progress is throttled to whatever fits per tick.
+//
+// Fix: cap each tick's SELECT with LIMIT, oldest-due-first (ORDER BY
+// resume_at ASC) so the longest-overdue executions are always resumed before
+// newer ones. A backlog larger than the cap is NOT dropped — leftover rows
+// simply remain `status='waiting'` and get picked up on the NEXT tick (60s
+// later by default), each tick chipping away at the backlog in bounded time
+// until it's fully drained. Overridable via env for ops tuning without a
+// redeploy, matching this file's existing `intSec`-style convention in
+// registry.ts.
+const DEFAULT_BATCH_SIZE = 200;
+function batchSize(): number {
+  const n = Number(process.env.WORKFLOW_RESUME_DELAYED_BATCH_SIZE);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : DEFAULT_BATCH_SIZE;
+}
+
 export async function resumeDelayedExecutions(): Promise<ResumeDelayedResult> {
   const { rows } = await query<DueDelayRow>(
     `SELECT id FROM workflow_executions
       WHERE status = 'waiting' AND wait_reason = 'flow.delay'
-        AND resume_at IS NOT NULL AND resume_at <= NOW()`
+        AND resume_at IS NOT NULL AND resume_at <= NOW()
+      ORDER BY resume_at ASC
+      LIMIT $1`,
+    [batchSize()]
   );
 
   let affected = 0;

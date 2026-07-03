@@ -90,6 +90,16 @@ class WorkflowNLDraft(BaseModel):
     warnings: list[str] = Field(default_factory=list, description="Any assumptions or ambiguities worth flagging to the user")
     unparseable: bool = Field(default=False, description="True if the description has no discernible trigger+action pattern at all")
     unparseable_reason: str | None = Field(default=None)
+    scope_hint: str | None = Field(
+        default=None,
+        description=(
+            "Best-guess free-text NAME of a specific survey or tag mentioned in the "
+            "description (e.g. 'for the Onboarding Survey' -> 'Onboarding Survey'), or "
+            "null if no specific survey/tag was named. The model proposes a NAME ONLY — "
+            "it does not know or guess whether it's a survey vs. a tag, and does not "
+            "invent an id; the caller resolves the name against the real org catalog."
+        ),
+    )
 
 
 # ── Fallback registry (legacy chat-tool path only) ────────────────────────────
@@ -149,7 +159,8 @@ Respond in JSON matching this shape exactly:
   "confidence": 0.0-1.0,
   "warnings": ["..."],
   "unparseable": false,
-  "unparseable_reason": null
+  "unparseable_reason": null,
+  "scope_hint": null
 }
 
 Rules:
@@ -162,7 +173,12 @@ top-level `warnings` list.
 trigger, or more than one action had to be assumed.
 - If the description does not describe any recognizable trigger+action automation at all (e.g. it's a \
 question, or unrelated to workflows), set `unparseable: true`, explain briefly in `unparseable_reason`, \
-and still fill `trigger`/`actions` with your best guess (they will be ignored)."""
+and still fill `trigger`/`actions` with your best guess (they will be ignored).
+- `scope_hint`: if the description names a SPECIFIC survey or tag (e.g. "for the Onboarding Survey", \
+"responses tagged VIP"), set `scope_hint` to that name exactly as written, as plain text — do not guess \
+whether it's a survey or a tag, and do not invent an id. If no specific survey/tag is named (the request \
+applies org-wide, e.g. "when any survey gets a low NPS score"), set `scope_hint: null`. When in doubt, \
+prefer `null` over guessing a name."""
 
 
 def _registry_lookup(registry: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
@@ -185,6 +201,88 @@ def _registry_lookup(registry: dict[str, Any]) -> tuple[set[str], set[str], set[
     return triggers, fields, actions
 
 
+def _scope_catalog_lookup(registry: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
+    """Extract {lowercased name: id} maps for the registry's `surveys`/`tags`
+    lists (Wave 12 scope addition — BUILDER_REDESIGN_V2_SCOPE.md). Shape:
+    {surveys: [{id, name}], tags: [{id, name}]}, mirroring
+    `backend/src/schemas/workflows.ts`'s `scopeSurveyId`/`scopeTagId` (both real
+    UUIDs, per `SurveyTag`/`Survey` types) — never plain-string tags.
+
+    Both lists are OPTIONAL on the registry payload (older callers / the legacy
+    chat-tool's FALLBACK_REGISTRY won't have them) — missing/malformed entries
+    are simply excluded rather than raising, so scope resolution degrades to
+    "no match" rather than crashing.
+    """
+    surveys = {
+        s["name"].strip().lower(): s["id"]
+        for s in (registry.get("surveys") or [])
+        if isinstance(s, dict) and s.get("id") and isinstance(s.get("name"), str) and s["name"].strip()
+    }
+    tags = {
+        t["name"].strip().lower(): t["id"]
+        for t in (registry.get("tags") or [])
+        if isinstance(t, dict) and t.get("id") and isinstance(t.get("name"), str) and t["name"].strip()
+    }
+    return surveys, tags
+
+
+def _resolve_scope_hint(
+    scope_hint: str | None,
+    surveys_by_name: dict[str, str],
+    tags_by_name: dict[str, str],
+) -> tuple[str, str | None, str | None, str | None]:
+    """Resolve a free-text `scope_hint` against the REAL org surveys/tags.
+
+    Returns (scope_type, scope_survey_id, scope_tag_id, drift_warning).
+    `drift_warning` is None unless the LLM proposed a hint that matched
+    nothing — that (and only that) is a genuine hallucination worth a warning
+    + confidence penalty, same severity class as a hallucinated trigger/action.
+
+    Matching is deliberately conservative — case-insensitive EXACT match first;
+    if no exact match, a substring match is allowed ONLY when it is unambiguous
+    (exactly one candidate contains the hint, or the hint contains exactly one
+    candidate's full name). Any ambiguity (multiple candidates could match, or
+    both a survey AND a tag match) is treated as NO match — under-matching to
+    org scope is always safer than guessing the wrong survey/tag, since scope
+    determines what real data a workflow acts on.
+
+    No hint given -> ('org', None, None, None) with NO warning: this is the
+    normal case (most workflows are org-wide), not a drift event, and is
+    byte-identical to pre-Wave-12 behavior.
+    """
+    if not scope_hint or not scope_hint.strip():
+        return "org", None, None, None
+
+    hint = scope_hint.strip().lower()
+
+    def _match(catalog: dict[str, str]) -> str | None:
+        if hint in catalog:
+            return catalog[hint]
+        candidates = {
+            name: cid for name, cid in catalog.items()
+            if hint in name or name in hint
+        }
+        if len(candidates) == 1:
+            return next(iter(candidates.values()))
+        return None
+
+    survey_match = _match(surveys_by_name)
+    tag_match = _match(tags_by_name)
+
+    # Both a survey and a tag matched -> genuinely ambiguous, refuse to guess.
+    if survey_match and tag_match:
+        survey_match = None
+        tag_match = None
+
+    if survey_match:
+        return "survey", survey_match, None, None
+    if tag_match:
+        return "tag", None, tag_match, None
+
+    # Proposed but unmatched -> hallucination, same class as a bad trigger/action.
+    return "org", None, None, f'"{scope_hint}" did not match any survey or tag — scope defaulted to org-wide.'
+
+
 def _slugify_name(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug or f"workflow-{uuid.uuid4().hex[:8]}"
@@ -201,13 +299,70 @@ def _coerce_value(v: str) -> Any:
         return v
 
 
-async def _call_llm(description: str) -> WorkflowNLDraft:
+def _format_catalog(registry: dict[str, Any]) -> str:
+    """Render the caller-supplied registry as a compact, LLM-readable catalog
+    block: one "type: label" line per trigger/field/action, using the EXACT
+    strings `_draft_to_engine_graph` validates against (`_registry_lookup`
+    pulls from this same registry). This is the fix for the bug where
+    `_SYSTEM_PROMPT` claimed the model would be "given the exact catalog" but
+    no catalog was ever actually included in any message — the model was
+    guessing generic/training-data identifiers (e.g. "schedule",
+    "email_report") instead of this project's real registry strings
+    (`time.schedule`, `notify.email`).
+
+    Format is deliberately a plain "type (label)" line per entry rather than
+    the raw registry JSON verbatim — cheaper (no repeated key names/braces per
+    entry) and at least as easy for the model to copy an exact string from.
+    The live catalog (`backend/src/lib/workflowRegistry.ts`) is small and
+    bounded (13 triggers, 8 condition fields, ~15 actions as of this writing)
+    so even with labels this adds well under 1KB to the prompt — not a
+    runaway cost.
+    """
+    triggers = registry.get("triggers") or []
+    fields = registry.get("conditionFields") or []
+    operators = registry.get("conditionOperators") or []
+    actions = registry.get("actions") or []
+
+    trigger_lines = "\n".join(
+        f'- {t.get("type")} ({t.get("label")})'
+        for t in triggers if isinstance(t, dict) and t.get("type")
+    ) or "(none available)"
+    field_lines = "\n".join(
+        f'- {f.get("field")} ({f.get("label")}, {f.get("kind")})'
+        for f in fields if isinstance(f, dict) and f.get("field")
+    ) or "(none available)"
+    operator_line = ", ".join(str(op) for op in operators) or "(none available)"
+    action_lines = "\n".join(
+        f'- {a.get("action")} ({a.get("label")})'
+        for a in actions if isinstance(a, dict) and a.get("action")
+    ) or "(none available)"
+
+    return (
+        "Valid trigger types (use the exact string before the parentheses):\n"
+        f"{trigger_lines}\n\n"
+        "Valid condition fields (use the exact string before the parentheses):\n"
+        f"{field_lines}\n\n"
+        f"Valid condition operators: {operator_line}\n\n"
+        "Valid actions (use the exact string before the parentheses):\n"
+        f"{action_lines}"
+    )
+
+
+async def _call_llm(description: str, registry: dict[str, Any]) -> WorkflowNLDraft:
     """Isolated so tests can mock exactly this seam without touching call_agent's
-    full retry/circuit-breaker machinery directly."""
+    full retry/circuit-breaker machinery directly.
+
+    `registry` is the SAME caller-supplied registry `parse_workflow_nl` validates
+    the draft against post-hoc (`_registry_lookup`) — it is rendered into the
+    `user` message here so the model actually sees the catalog `_SYSTEM_PROMPT`
+    already claims it will be given, instead of guessing plausible-sounding
+    identifiers from its own training data.
+    """
+    catalog = _format_catalog(registry)
     parsed, _entry = await call_agent(
         agent_name="crystal",
         system=_SYSTEM_PROMPT,
-        user=f"Workflow description: {description}",
+        user=f"Workflow description: {description}\n\n{catalog}",
         output_schema=WorkflowNLDraft,
     )
     return parsed
@@ -218,12 +373,21 @@ def _draft_to_engine_graph(
     valid_triggers: set[str],
     valid_fields: set[str],
     valid_actions: set[str],
-) -> tuple[dict, list[dict], list[dict], float, list[str]]:
+    surveys_by_name: dict[str, str] | None = None,
+    tags_by_name: dict[str, str] | None = None,
+) -> tuple[dict, list[dict], list[dict], float, list[str], dict[str, str | None]]:
     """Validate `draft` against the registry sets and build engine nodes/edges.
 
-    Returns (result_meta, nodes, edges, confidence, warnings). `result_meta` is
-    {"name":..., "description":...}. Confidence is `draft.confidence` reduced by
-    `_REGISTRY_DRIFT_PENALTY` per dropped trigger/action (multiplicative).
+    Returns (result_meta, nodes, edges, confidence, warnings, scope). `result_meta`
+    is {"name":..., "description":...}. `scope` is
+    {"scope_type": ..., "scope_survey_id": ..., "scope_tag_id": ...}. Confidence
+    is `draft.confidence` reduced by `_REGISTRY_DRIFT_PENALTY` per dropped
+    trigger/action/unmatched-scope-hint (multiplicative).
+
+    `surveys_by_name`/`tags_by_name` default to empty dicts (not None) so a
+    caller that never passes them (e.g. any future direct call site) gets
+    today's exact behavior — `scope_hint` (if present) simply never matches,
+    falling back to org scope, same as always.
     """
     warnings = list(draft.warnings)
     confidence = draft.confidence
@@ -285,6 +449,17 @@ def _draft_to_engine_graph(
         # so multiple actions run in order — matches serializeCanvas's linear chaining.
         prev_id = action_id
 
+    # Scope resolution (Wave 12 — BUILDER_REDESIGN_V2_SCOPE.md). Additive only:
+    # no hint -> org, no warning, no confidence change (today's exact behavior).
+    # A hint that resolves to nothing real is the one case that counts as
+    # registry drift, same severity class as a hallucinated trigger/action.
+    scope_type, scope_survey_id, scope_tag_id, scope_warning = _resolve_scope_hint(
+        draft.scope_hint, surveys_by_name or {}, tags_by_name or {},
+    )
+    if scope_warning:
+        drift_hits += 1
+        warnings.append(scope_warning)
+
     if drift_hits:
         confidence = confidence * (1 - _REGISTRY_DRIFT_PENALTY) ** drift_hits
 
@@ -294,7 +469,8 @@ def _draft_to_engine_graph(
         confidence = min(confidence, UNPARSEABLE_THRESHOLD - 0.01)
 
     meta = {"name": draft.name.strip()[:60] or "Untitled workflow", "description": draft.description.strip()}
-    return meta, nodes, edges, max(0.0, min(1.0, confidence)), warnings
+    scope = {"scope_type": scope_type, "scope_survey_id": scope_survey_id, "scope_tag_id": scope_tag_id}
+    return meta, nodes, edges, max(0.0, min(1.0, confidence)), warnings, scope
 
 
 class WorkflowNLResult(BaseModel):
@@ -312,6 +488,11 @@ class WorkflowNLResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     message: str = ""
     suggestions: list[str] = Field(default_factory=list)
+    # Scope (Wave 12 — BUILDER_REDESIGN_V2_SCOPE.md). Defaults are IDENTICAL to
+    # pre-Wave-12 implicit behavior (every NL workflow was silently org-wide).
+    scope_type: str = "org"
+    scope_survey_id: str | None = None
+    scope_tag_id: str | None = None
 
 
 def _example_suggestions(registry: dict[str, Any]) -> list[str]:
@@ -345,9 +526,10 @@ async def parse_workflow_nl(description: str, registry: dict[str, Any]) -> Workf
     "couldn't build that" proposal for the chat tool).
     """
     valid_triggers, valid_fields, valid_actions = _registry_lookup(registry)
+    surveys_by_name, tags_by_name = _scope_catalog_lookup(registry)
 
     try:
-        draft = await _call_llm(description)
+        draft = await _call_llm(description, registry)
     except (AgentOutputError, OpenRouterError, CircuitBreakerOpen) as exc:
         logger.warning("workflow_nl_parse_llm_failed", error=str(exc))
         return WorkflowNLResult(
@@ -370,11 +552,26 @@ async def parse_workflow_nl(description: str, registry: dict[str, Any]) -> Workf
             suggestions=_example_suggestions(registry),
         )
 
-    meta, nodes, edges, confidence, warnings = _draft_to_engine_graph(
-        draft, valid_triggers, valid_fields, valid_actions,
+    meta, nodes, edges, confidence, warnings, scope = _draft_to_engine_graph(
+        draft, valid_triggers, valid_fields, valid_actions, surveys_by_name, tags_by_name,
     )
 
     if confidence < UNPARSEABLE_THRESHOLD:
+        # Diagnostic-only (no prior log statement existed for this branch —
+        # a real gap, since without it a low-confidence/registry-drift outcome
+        # was completely invisible server-side, only ever surfaced to the user
+        # as the generic 422 message). Logs the LLM's raw proposal alongside
+        # the post-validation confidence so a "why did this fail" investigation
+        # doesn't require reproducing the exact same non-deterministic LLM call.
+        logger.warning(
+            "workflow_nl_parse_low_confidence",
+            raw_trigger_type=draft.trigger.trigger_type,
+            raw_actions=[a.action for a in draft.actions],
+            raw_confidence=draft.confidence,
+            post_validation_confidence=confidence,
+            warnings=warnings,
+            scope_hint=draft.scope_hint,
+        )
         return WorkflowNLResult(
             ok=False,
             message="Crystal wasn't able to match that to a valid trigger and action.",
@@ -391,4 +588,7 @@ async def parse_workflow_nl(description: str, registry: dict[str, Any]) -> Workf
         edges=edges,
         confidence=confidence,
         warnings=warnings,
+        scope_type=scope["scope_type"],
+        scope_survey_id=scope["scope_survey_id"],
+        scope_tag_id=scope["scope_tag_id"],
     )

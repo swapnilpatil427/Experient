@@ -294,6 +294,92 @@ describe('resumeDelayedExecutions job (Wave 11, DEEP_AUDIT_UX_FINDINGS.md W-1)',
     expect(sql).not.toContain('flow.approval');
     expect(sql).toContain('flow.delay');
   });
+
+  // ── Wave 11 Phase 3 (Kenji, fault-tolerance gate): crash-recovery / catch-up ──
+  //
+  // Scenario: the scheduler is down (deploy, crash, leader-election gap) for
+  // longer than several tick intervals while flow.delay waits keep expiring.
+  // Two distinct risks: (1) does the FIRST tick after recovery correctly find
+  // and resume ALL of the backlog, not just the most-recently-due row or a
+  // silently-truncated subset; (2) is there a bound on how much of that
+  // backlog one tick will attempt synchronously, so an unusually large
+  // backlog can't make a single tick run for an unbounded amount of time.
+  it('a query with no LIMIT would try to load the entire backlog — this job caps it and orders oldest-due-first', async () => {
+    dbQuery = vi.fn(async () => ({ rows: [] }));
+    const { resumeDelayedExecutions } = loadResumeDelayed();
+    await resumeDelayedExecutions();
+    const [sql, params] = dbQuery.mock.calls[0];
+    expect(sql).toMatch(/LIMIT \$1/);
+    expect(sql).toMatch(/ORDER BY resume_at ASC/);
+    expect(params).toEqual([200]); // DEFAULT batch size when unconfigured
+  });
+
+  it('the batch size is overridable via WORKFLOW_RESUME_DELAYED_BATCH_SIZE', async () => {
+    dbQuery = vi.fn(async () => ({ rows: [] }));
+    const prev = process.env.WORKFLOW_RESUME_DELAYED_BATCH_SIZE;
+    process.env.WORKFLOW_RESUME_DELAYED_BATCH_SIZE = '5';
+    try {
+      const { resumeDelayedExecutions } = loadResumeDelayed();
+      await resumeDelayedExecutions();
+      const [, params] = dbQuery.mock.calls[0];
+      expect(params).toEqual([5]);
+    } finally {
+      if (prev === undefined) delete process.env.WORKFLOW_RESUME_DELAYED_BATCH_SIZE;
+      else process.env.WORKFLOW_RESUME_DELAYED_BATCH_SIZE = prev;
+    }
+  });
+
+  it('MULTI-TICK BACKLOG: a backlog larger than one batch is fully, correctly drained across successive ticks — nothing dropped, nothing double-resumed', async () => {
+    // Simulate a scheduler outage: 5 executions' resume_at all passed while it
+    // was down, but the batch size (mocked to 2/tick) means one tick can only
+    // claim 2 of them. Oldest-due-first ordering (see the query's ORDER BY)
+    // means each tick drains from the front of the backlog.
+    process.env.WORKFLOW_RESUME_DELAYED_BATCH_SIZE = '2';
+    const backlog = ['exec-1', 'exec-2', 'exec-3', 'exec-4', 'exec-5']; // oldest-due-first order
+    const resumedOrder = [];
+    resumeDelayedExecutionMock = vi.fn(async (id) => {
+      resumedOrder.push(id);
+      return { status: 'completed' };
+    });
+    try {
+      dbQuery = vi.fn(async (text, params) => {
+        if (text.includes('FROM workflow_executions')) {
+          const limit = params[0];
+          // Models the real SQL: LIMIT caps how many of the remaining
+          // (still-waiting) backlog rows this tick's SELECT returns.
+          return { rows: backlog.slice(0, limit).map((id) => ({ id })) };
+        }
+        return { rows: [] };
+      });
+
+      // Tick 1: claims/resumes the first 2, "removing" them from the backlog
+      // (mirrors the real UPDATE...RETURNING claim flipping status away from
+      // 'waiting' so the next tick's SELECT no longer matches them).
+      const { resumeDelayedExecutions } = loadResumeDelayed();
+      const tick1 = await resumeDelayedExecutions();
+      expect(tick1).toEqual({ affected: 2 });
+      backlog.splice(0, 2);
+
+      // Tick 2: same job, backlog now has 3 left, still capped at 2/tick.
+      const tick2 = await resumeDelayedExecutions();
+      expect(tick2).toEqual({ affected: 2 });
+      backlog.splice(0, 2);
+
+      // Tick 3: final straggler, well under the batch cap.
+      const tick3 = await resumeDelayedExecutions();
+      expect(tick3).toEqual({ affected: 1 });
+      backlog.splice(0, 1);
+
+      // Backlog fully drained, every execution resumed exactly once, in the
+      // correct oldest-due-first order — no execution silently dropped, none
+      // double-resumed across tick boundaries.
+      expect(backlog).toHaveLength(0);
+      expect(resumedOrder).toEqual(['exec-1', 'exec-2', 'exec-3', 'exec-4', 'exec-5']);
+      expect(resumeDelayedExecutionMock).toHaveBeenCalledTimes(5);
+    } finally {
+      delete process.env.WORKFLOW_RESUME_DELAYED_BATCH_SIZE;
+    }
+  });
 });
 
 describe('leader election', () => {

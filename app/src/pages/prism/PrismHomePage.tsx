@@ -40,9 +40,9 @@ const GROUP_LABEL: Record<ConnectorGroup, string> = {
 
 function PrismOrb() {
   return (
-    <div style={{ width: 96, height: 96, position: 'relative', filter: 'drop-shadow(0 16px 36px rgba(42,75,217,0.4))' }} aria-hidden>
+    <div style={{ width: 96, height: 96, position: 'relative', filter: 'drop-shadow(0 16px 36px color-mix(in srgb, var(--color-primary) 40%, transparent))' }} aria-hidden>
       <div style={{ position: 'absolute', inset: 0, background: 'conic-gradient(from 0deg at 50% 50%, var(--color-primary), var(--color-tertiary), var(--color-secondary), var(--color-tertiary), var(--color-primary))', clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)', animation: 'exp-hub-spin 20s linear infinite', filter: 'blur(0.5px)' }} />
-      <div style={{ position: 'absolute', inset: '38%', background: 'radial-gradient(circle, #ffffff, var(--color-primary-container, #82deff))', borderRadius: '50%', filter: 'blur(4px)', animation: 'pulse-glow 2.5s ease-in-out infinite' }} />
+      <div style={{ position: 'absolute', inset: '38%', background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))', borderRadius: '50%', filter: 'blur(4px)', animation: 'pulse-glow 2.5s ease-in-out infinite' }} />
       <style>{`@keyframes exp-hub-spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}</style>
     </div>
   );

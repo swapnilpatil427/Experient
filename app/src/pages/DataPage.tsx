@@ -100,7 +100,7 @@ function TruncatedText({ text, maxLen = 80 }: { text: string; maxLen?: number })
 function ChoicePill({ label }: { label: string }) {
   return (
     <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold"
-      style={{ background: 'rgba(42,75,217,0.08)', color: '#2a4bd9' }}>
+      style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}>
       {label}
     </span>
   );
@@ -128,7 +128,7 @@ function renderAnswerValue(value: unknown, type: string | undefined): ReactNode 
     case 'rating':
     case 'slider': return (
       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold tabular-nums"
-        style={{ background: 'rgba(42,75,217,0.07)', color: '#2a4bd9' }}>
+        style={{ background: 'color-mix(in srgb, var(--color-primary) 7%, transparent)', color: 'var(--color-primary)' }}>
         {String(value)}
       </span>
     );
@@ -170,7 +170,7 @@ function renderEnrichmentCell(resp: SurveyResponse, colId: string): ReactNode {
     case 'ai_sentiment':      return <SentimentBadge value={resp.ai_sentiment} />;
     case 'ai_emotion':        return resp.ai_emotion
       ? <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold capitalize"
-          style={{ background: 'rgba(139,52,200,0.08)', color: '#8329c8' }}>{resp.ai_emotion}</span>
+          style={{ background: 'rgba(139,52,200,0.08)', color: 'var(--color-tertiary)' }}>{resp.ai_emotion}</span>
       : <span className="text-on-surface-variant/30">—</span>;
     case 'ai_topics':         return resp.ai_topics?.length
       ? <div className="flex flex-wrap gap-1">{resp.ai_topics.slice(0, 3).map((t, i) => (
@@ -436,7 +436,7 @@ export function DataPage() {
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
           className="flex flex-col items-center justify-center py-24 text-center">
           <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
-            style={{ background: 'rgba(42,75,217,0.06)' }}>
+            style={{ background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)' }}>
             <Icon name="dataset" size={28} className="text-primary" />
           </div>
           <h3 className="font-bold text-lg text-on-surface mb-2 font-headline">{t('data.emptyHeading')}</h3>
@@ -598,7 +598,7 @@ export function DataPage() {
                       <TableCell colSpan={visibleCols.length + 1}>
                         <div className="flex flex-col items-center justify-center py-16 text-center">
                           <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-3"
-                            style={{ background: 'rgba(42,75,217,0.06)' }}>
+                            style={{ background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)' }}>
                             <Icon name="search_off" size={22} className="text-primary" />
                           </div>
                           <p className="font-semibold text-sm text-on-surface mb-1">

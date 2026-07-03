@@ -18,19 +18,19 @@ export function LogoMark({ size = 40, className = '' }: LogoMarkProps) {
       <defs>
         <linearGradient id={`${id}-tr`} x1="50%" y1="8%" x2="92%" y2="50%">
           <stop offset="0%" stopColor="#a5b4fc" />
-          <stop offset="100%" stopColor="#2a4bd9" />
+          <stop offset="100%" stopColor="var(--color-primary)" />
         </linearGradient>
         <linearGradient id={`${id}-br`} x1="92%" y1="50%" x2="50%" y2="92%">
-          <stop offset="0%" stopColor="#2a4bd9" />
-          <stop offset="100%" stopColor="#173dcd" />
+          <stop offset="0%" stopColor="var(--color-primary)" />
+          <stop offset="100%" stopColor="var(--color-primary-dim)" />
         </linearGradient>
         <linearGradient id={`${id}-bl`} x1="50%" y1="92%" x2="8%" y2="50%">
           <stop offset="0%" stopColor="#7c3aed" />
-          <stop offset="100%" stopColor="#8329c8" />
+          <stop offset="100%" stopColor="var(--color-tertiary)" />
         </linearGradient>
         <linearGradient id={`${id}-tl`} x1="8%" y1="50%" x2="50%" y2="8%">
           <stop offset="0%" stopColor="#57d2f9" />
-          <stop offset="100%" stopColor="#879aff" />
+          <stop offset="100%" stopColor="var(--color-primary-container)" />
         </linearGradient>
         <filter id={`${id}-glow`} x="-20%" y="-20%" width="140%" height="140%">
           <feGaussianBlur stdDeviation="2" result="blur" />
@@ -78,7 +78,7 @@ export function LogoFull({ height = 32, className = '', showTagline = false }: L
             fontWeight: 800,
             fontSize,
             lineHeight: 1,
-            background: 'linear-gradient(135deg, #2a4bd9 0%, #8329c8 100%)',
+            background: 'linear-gradient(135deg, var(--color-primary) 0%, var(--color-tertiary) 100%)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
