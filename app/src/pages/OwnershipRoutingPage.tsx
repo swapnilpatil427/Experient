@@ -151,7 +151,7 @@ export function OwnershipRoutingPage() {
           <Button
             onClick={() => { setShowForm(true); setFormState(DEFAULT_FORM); }}
             className="font-bold text-sm text-white rounded-xl px-5 py-2.5"
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <Icon name="add" size={16} className="mr-1.5" />
             {t('ownership.addRule')}
@@ -170,13 +170,13 @@ export function OwnershipRoutingPage() {
             onClick={() => { setActiveDimension(dim); setShowForm(false); setTestResult(null); }}
             className="px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
             style={activeDimension === dim ? {
-              background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+              background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
               color: 'white',
-              boxShadow: '0 4px 14px rgba(42,75,217,0.35)',
+              boxShadow: '0 4px 14px color-mix(in srgb, var(--color-primary) 35%, transparent)',
               transform: 'translateY(-1px)',
             } : {
               background: 'rgba(255,255,255,0.7)',
-              border: '1px solid rgba(42,75,217,0.15)',
+              border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
               color: 'var(--color-on-surface-variant)',
               backdropFilter: 'blur(8px)',
             }}
@@ -197,13 +197,13 @@ export function OwnershipRoutingPage() {
           <div style={{
             background: 'rgba(255,255,255,0.85)',
             backdropFilter: 'blur(20px)',
-            border: '1px solid rgba(42,75,217,0.2)',
+            border: '1px solid color-mix(in srgb, var(--color-primary) 20%, transparent)',
             borderRadius: '1.25rem',
             padding: '1.5rem',
             boxShadow: '0 4px 24px rgba(0,0,0,0.06)',
           }}>
             <p className="label-caps mb-4" style={{
-              background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+              background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
               backgroundClip: 'text',
@@ -223,7 +223,7 @@ export function OwnershipRoutingPage() {
                   placeholder={t('ownership.form.matchValuePlaceholder')}
                   style={{
                     background: 'rgba(255,255,255,0.7)',
-                    border: '1px solid rgba(42,75,217,0.12)',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     borderRadius: '0.75rem',
                   }}
                 />
@@ -233,7 +233,7 @@ export function OwnershipRoutingPage() {
                 <Select value={formState.match_type} onValueChange={(v) => updateForm('match_type', v)}>
                   <SelectTrigger style={{
                     background: 'rgba(255,255,255,0.7)',
-                    border: '1px solid rgba(42,75,217,0.12)',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     borderRadius: '0.75rem',
                   }}>
                     <SelectValue />
@@ -254,7 +254,7 @@ export function OwnershipRoutingPage() {
                   className="font-mono text-sm"
                   style={{
                     background: 'rgba(255,255,255,0.7)',
-                    border: '1px solid rgba(42,75,217,0.12)',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     borderRadius: '0.75rem',
                   }}
                 />
@@ -267,7 +267,7 @@ export function OwnershipRoutingPage() {
                   placeholder={t('ownership.form.ownerLabelPlaceholder')}
                   style={{
                     background: 'rgba(255,255,255,0.7)',
-                    border: '1px solid rgba(42,75,217,0.12)',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     borderRadius: '0.75rem',
                   }}
                 />
@@ -281,7 +281,7 @@ export function OwnershipRoutingPage() {
                   className="font-mono text-sm"
                   style={{
                     background: 'rgba(255,255,255,0.7)',
-                    border: '1px solid rgba(42,75,217,0.12)',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     borderRadius: '0.75rem',
                   }}
                 />
@@ -294,7 +294,7 @@ export function OwnershipRoutingPage() {
                   placeholder={t('ownership.form.ownerLabelPlaceholder')}
                   style={{
                     background: 'rgba(255,255,255,0.7)',
-                    border: '1px solid rgba(42,75,217,0.12)',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     borderRadius: '0.75rem',
                   }}
                 />
@@ -308,7 +308,7 @@ export function OwnershipRoutingPage() {
                   className="w-28"
                   style={{
                     background: 'rgba(255,255,255,0.7)',
-                    border: '1px solid rgba(42,75,217,0.12)',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     borderRadius: '0.75rem',
                   }}
                 />
@@ -321,7 +321,7 @@ export function OwnershipRoutingPage() {
                   placeholder={t('ownership.form.roleLabelPlaceholder')}
                   style={{
                     background: 'rgba(255,255,255,0.7)',
-                    border: '1px solid rgba(42,75,217,0.12)',
+                    border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     borderRadius: '0.75rem',
                   }}
                 />
@@ -333,7 +333,7 @@ export function OwnershipRoutingPage() {
                 onClick={handleSaveRule}
                 disabled={!formState.match_value || !formState.owner_user_id || saving}
                 className="rounded-xl font-bold text-white"
-                style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               >
                 {saving ? <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin border-white" /> : t('ownership.saveRule')}
               </Button>
@@ -384,7 +384,7 @@ export function OwnershipRoutingPage() {
           }}>
             <table className="w-full text-sm">
               <thead>
-                <tr style={{ borderBottom: '1px solid rgba(42,75,217,0.08)' }}>
+                <tr style={{ borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 8%, transparent)' }}>
                   {(['columns.matchValue', 'columns.matchType', 'columns.owner', 'columns.escalation', 'columns.priority', 'columns.actions'] as const).map((key) => (
                     <th
                       key={key}
@@ -418,14 +418,14 @@ export function OwnershipRoutingPage() {
                       key={route.id}
                       variants={rise}
                       className="transition-colors"
-                      style={{ borderBottom: '1px solid rgba(42,75,217,0.05)' }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLTableRowElement).style.background = 'rgba(42,75,217,0.03)'; }}
+                      style={{ borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 5%, transparent)' }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLTableRowElement).style.background = 'color-mix(in srgb, var(--color-primary) 3%, transparent)'; }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLTableRowElement).style.background = 'transparent'; }}
                     >
                       {/* Match Value — code chip */}
                       <td className="px-5 py-3">
                         <span style={{
-                          background: 'rgba(42,75,217,0.06)',
+                          background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)',
                           color: 'var(--color-primary)',
                           fontFamily: 'monospace',
                           borderRadius: '0.5rem',
@@ -458,7 +458,7 @@ export function OwnershipRoutingPage() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                           <div style={{
                             width: 28, height: 28, borderRadius: '50%',
-                            background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+                            background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
                             color: 'white', fontSize: 10, fontWeight: 700,
                             display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                           }}>
@@ -481,7 +481,7 @@ export function OwnershipRoutingPage() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                             <div style={{
                               width: 24, height: 24, borderRadius: '50%',
-                              background: 'linear-gradient(135deg, #00647c, #059669)',
+                              background: 'linear-gradient(135deg, var(--color-secondary), #059669)',
                               color: 'white', fontSize: 9, fontWeight: 700,
                               display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                             }}>
@@ -546,21 +546,21 @@ export function OwnershipRoutingPage() {
         <div className="text-center py-16 mb-8">
           <div style={{
             width: 80, height: 80, borderRadius: '1.25rem', margin: '0 auto 1rem',
-            background: 'linear-gradient(135deg, rgba(42,75,217,0.1), rgba(131,41,200,0.1))',
+            background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 10%, transparent), color-mix(in srgb, var(--color-tertiary) 10%, transparent))',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <Icon name="route" size={36} style={{ color: 'var(--color-primary)' }} />
           </div>
           <h3 style={{
             fontSize: '1.125rem', fontWeight: 800, marginBottom: '0.5rem',
-            background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+            background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
             WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
           }}>
             {t('ownership.empty', { dimension: t(`ownership.dimensions.${activeDimension}`) })}
           </h3>
           <Button
             onClick={() => { setShowForm(true); setFormState(DEFAULT_FORM); }}
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)', color: 'white', borderRadius: '0.75rem', marginTop: '1rem' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: 'white', borderRadius: '0.75rem', marginTop: '1rem' }}
             className="font-bold px-6 py-2.5"
           >
             <Icon name="add" size={16} className="mr-1.5" />
@@ -581,7 +581,7 @@ export function OwnershipRoutingPage() {
         {/* Header with gradient label */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
           <span style={{
-            background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+            background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
@@ -604,7 +604,7 @@ export function OwnershipRoutingPage() {
             className="flex-1"
             style={{
               background: 'rgba(255,255,255,0.7)',
-              border: '1px solid rgba(42,75,217,0.12)',
+              border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
               borderRadius: '0.75rem',
             }}
             onKeyDown={(e) => e.key === 'Enter' && handleTestRoute()}
@@ -613,7 +613,7 @@ export function OwnershipRoutingPage() {
             onClick={handleTestRoute}
             disabled={!testValue.trim() || testing}
             className="rounded-xl font-bold text-white px-5"
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             {testing ? <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin border-white" /> : t('ownership.testButton')}
           </Button>

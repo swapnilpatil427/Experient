@@ -31,7 +31,7 @@ const glassCard: React.CSSProperties = {
 };
 
 const gradientTextStyle: React.CSSProperties = {
-  background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+  background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
   WebkitBackgroundClip: 'text',
   WebkitTextFillColor: 'transparent',
   backgroundClip: 'text',
@@ -127,7 +127,7 @@ function LogsSheet({ config, onClose }: LogsSheetProps) {
 
         {loading && (
           <div className="flex items-center justify-center py-12">
-            <div className="w-6 h-6 rounded-full border-2 animate-spin" style={{ borderColor: 'rgba(42,75,217,0.2)', borderTopColor: 'var(--color-primary)' }} />
+            <div className="w-6 h-6 rounded-full border-2 animate-spin" style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)', borderTopColor: 'var(--color-primary)' }} />
           </div>
         )}
 
@@ -261,7 +261,7 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
       >
         <div
           className="px-7 pt-7 pb-5"
-          style={{ background: 'linear-gradient(135deg, rgba(42,75,217,0.06), rgba(131,41,200,0.04))', borderBottom: '1px solid rgba(42,75,217,0.1)' }}
+          style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 6%, transparent), color-mix(in srgb, var(--color-tertiary) 4%, transparent))', borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
         >
           <DialogHeader>
             <DialogTitle className="text-xl font-extrabold font-headline" style={gradientTextStyle}>
@@ -281,7 +281,7 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
                   {step > i + 1 ? '✓' : i + 1}
                 </div>
                 <span className="text-[10px] text-on-surface-variant hidden sm:block">{label}</span>
-                {i < 3 && <div className="w-4 h-px mx-1" style={{ background: 'rgba(42,75,217,0.2)' }} />}
+                {i < 3 && <div className="w-4 h-px mx-1" style={{ background: 'color-mix(in srgb, var(--color-primary) 20%, transparent)' }} />}
               </div>
             ))}
           </div>
@@ -298,9 +298,9 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
                     onClick={() => setProvider(p)}
                     className="flex items-center gap-3 p-4 rounded-xl text-left transition-all"
                     style={{
-                      background: provider === p ? 'rgba(42,75,217,0.08)' : 'rgba(255,255,255,0.7)',
-                      border: provider === p ? '2px solid var(--color-primary)' : '1px solid rgba(42,75,217,0.12)',
-                      boxShadow: provider === p ? '0 4px 12px rgba(42,75,217,0.15)' : 'none',
+                      background: provider === p ? 'color-mix(in srgb, var(--color-primary) 8%, transparent)' : 'rgba(255,255,255,0.7)',
+                      border: provider === p ? '2px solid var(--color-primary)' : '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                      boxShadow: provider === p ? '0 4px 12px color-mix(in srgb, var(--color-primary) 15%, transparent)' : 'none',
                     }}
                   >
                     <div className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-black shrink-0" style={{ background: meta.bg, color: meta.text }}>
@@ -320,13 +320,13 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <Label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">{t('syncConnections.modal.configName')}</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('syncConnections.modal.configNamePlaceholder')} className="rounded-xl" style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }} />
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('syncConnections.modal.configNamePlaceholder')} className="rounded-xl" style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }} />
               </div>
 
               {provider === 'hubspot' && (
                 <div className="space-y-1.5">
                   <Label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">{t('syncConnections.modal.apiKey')}</Label>
-                  <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="rounded-xl" style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }} />
+                  <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="rounded-xl" style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }} />
                 </div>
               )}
 
@@ -334,11 +334,11 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
                 <>
                   <div className="space-y-1.5">
                     <Label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">{t('syncConnections.modal.instanceUrl')}</Label>
-                    <Input value={instanceUrl} onChange={(e) => setInstanceUrl(e.target.value)} placeholder="https://yourorg.salesforce.com" className="rounded-xl" style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }} />
+                    <Input value={instanceUrl} onChange={(e) => setInstanceUrl(e.target.value)} placeholder="https://yourorg.salesforce.com" className="rounded-xl" style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }} />
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">{t('syncConnections.modal.accessToken')}</Label>
-                    <Input type="password" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} className="rounded-xl" style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }} />
+                    <Input type="password" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} className="rounded-xl" style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }} />
                   </div>
                 </>
               )}
@@ -347,11 +347,11 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
                 <>
                   <div className="space-y-1.5">
                     <Label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">{t('syncConnections.modal.csvUrl')}</Label>
-                    <Input value={csvUrl} onChange={(e) => setCsvUrl(e.target.value)} placeholder="https://..." className="rounded-xl" style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }} />
+                    <Input value={csvUrl} onChange={(e) => setCsvUrl(e.target.value)} placeholder="https://..." className="rounded-xl" style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }} />
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">{t('syncConnections.modal.authHeader')}</Label>
-                    <Input value={authHeader} onChange={(e) => setAuthHeader(e.target.value)} placeholder="Bearer token..." className="rounded-xl" style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }} />
+                    <Input value={authHeader} onChange={(e) => setAuthHeader(e.target.value)} placeholder="Bearer token..." className="rounded-xl" style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }} />
                   </div>
                 </>
               )}
@@ -364,7 +364,7 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
                       readOnly
                       value={`${window.location.origin}/api/contacts/sync/webhook/new`}
                       className="flex-1 rounded-xl text-xs font-mono"
-                      style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }}
+                      style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
                     />
                     <Button variant="outline" size="sm" onClick={copyWebhookUrl} className="rounded-xl shrink-0">
                       <Icon name={copied ? 'check' : 'content_copy'} size={14} />
@@ -386,11 +386,11 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
                     onChange={(e) => updateMapping(idx, { source: e.target.value })}
                     placeholder={t('syncConnections.modal.sourceField')}
                     className="flex-1 text-xs rounded-lg h-8"
-                    style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid rgba(42,75,217,0.15)' }}
+                    style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
                   />
                   <Icon name="arrow_forward" size={14} className="text-on-surface-variant shrink-0" />
                   <Select value={m.dest} onValueChange={(v) => updateMapping(idx, { dest: v })}>
-                    <SelectTrigger className="flex-1 text-xs rounded-lg h-8" style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid rgba(42,75,217,0.15)' }}>
+                    <SelectTrigger className="flex-1 text-xs rounded-lg h-8" style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -409,7 +409,7 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
                 size="sm"
                 onClick={addMapping}
                 className="text-xs w-full rounded-lg"
-                style={{ border: '1px dashed rgba(42,75,217,0.3)', color: 'var(--color-primary)' }}
+                style={{ border: '1px dashed color-mix(in srgb, var(--color-primary) 30%, transparent)', color: 'var(--color-primary)' }}
               >
                 <Icon name="add" size={14} className="mr-1" />
                 {t('syncConnections.modal.addMapping')}
@@ -426,8 +426,8 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
                   onClick={() => setSchedule(opt)}
                   className="w-full flex items-center gap-3 p-3.5 rounded-xl text-left transition-all"
                   style={{
-                    background: schedule === opt ? 'rgba(42,75,217,0.08)' : 'rgba(255,255,255,0.7)',
-                    border: schedule === opt ? '2px solid var(--color-primary)' : '1px solid rgba(42,75,217,0.12)',
+                    background: schedule === opt ? 'color-mix(in srgb, var(--color-primary) 8%, transparent)' : 'rgba(255,255,255,0.7)',
+                    border: schedule === opt ? '2px solid var(--color-primary)' : '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                   }}
                 >
                   <div
@@ -454,7 +454,7 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
           {step < 4 ? (
             <Button
               className="rounded-xl font-bold text-white px-5"
-              style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               disabled={step === 1 && !provider}
               onClick={() => setStep((s) => s + 1)}
             >
@@ -464,7 +464,7 @@ function NewConnectionModal({ open, onClose, onSaved }: NewConnectionModalProps)
           ) : (
             <Button
               className="rounded-xl font-bold text-white px-5 flex items-center gap-2"
-              style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               disabled={!name.trim() || saving}
               onClick={handleSave}
             >
@@ -531,7 +531,7 @@ function ConfigCard({ config, onDeleted, onUpdated: _onUpdated, onViewLogs }: Co
                 <span className="font-bold text-on-surface text-sm">{config.name}</span>
                 <Badge
                   className="text-[10px] px-1.5 py-0.5 rounded-full font-medium capitalize"
-                  style={{ background: 'rgba(42,75,217,0.08)', color: 'var(--color-primary)' }}
+                  style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}
                 >
                   {t(`syncConnections.providers.${config.provider}`)}
                 </Badge>
@@ -550,7 +550,7 @@ function ConfigCard({ config, onDeleted, onUpdated: _onUpdated, onViewLogs }: Co
             <div className="flex items-center gap-1.5 shrink-0">
               <Button size="sm" variant="outline" className="text-xs rounded-lg h-7 px-2" onClick={handleSync} disabled={syncing}>
                 {syncing ? (
-                  <div className="w-3 h-3 rounded-full border-2 border-t-transparent animate-spin mr-1" style={{ borderColor: 'rgba(42,75,217,0.3)', borderTopColor: 'var(--color-primary)' }} />
+                  <div className="w-3 h-3 rounded-full border-2 border-t-transparent animate-spin mr-1" style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 30%, transparent)', borderTopColor: 'var(--color-primary)' }} />
                 ) : (
                   <Icon name="sync" size={12} className="mr-1" />
                 )}
@@ -630,7 +630,7 @@ export function SettingsConnectionsPage() {
           <Button
             onClick={() => setShowNewModal(true)}
             className="font-bold text-sm text-white rounded-xl px-5 py-2.5 active:scale-95"
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <Icon name="add" size={16} className="mr-1.5" />
             {t('syncConnections.newConnection')}
@@ -715,7 +715,7 @@ export function SettingsConnectionsPage() {
         >
           <div
             className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
-            style={{ background: 'linear-gradient(135deg, rgba(42,75,217,0.12), rgba(131,41,200,0.1))', border: '1px solid rgba(42,75,217,0.15)' }}
+            style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), color-mix(in srgb, var(--color-tertiary) 10%, transparent))', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
           >
             <Icon name="cable" size={28} style={{ color: 'var(--color-primary)' }} />
           </div>
@@ -724,7 +724,7 @@ export function SettingsConnectionsPage() {
           <Button
             onClick={() => setShowNewModal(true)}
             className="px-6 py-3 font-bold text-sm text-white rounded-xl active:scale-95"
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <Icon name="add" size={16} className="mr-1.5" />
             {t('syncConnections.newConnection')}

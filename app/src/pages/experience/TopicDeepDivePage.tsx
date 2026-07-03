@@ -236,7 +236,7 @@ export function TopicDeepDivePage() {
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all"
               style={item.active ? {
                 background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
-                color: 'white', boxShadow: '0 2px 8px rgba(42,75,217,0.30)',
+                color: 'white', boxShadow: '0 2px 8px color-mix(in srgb, var(--color-primary) 30%, transparent)',
               } : { background: 'var(--color-surface-container)', color: 'var(--color-on-surface-variant)' }}
             >
               <Icon name={item.icon} size={13} />{item.label}
@@ -245,7 +245,7 @@ export function TopicDeepDivePage() {
           <div className="flex-1" />
           <Button size="sm" onClick={askCrystal}
             className="text-xs font-bold text-white border-0"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
             <Icon name="psychology" size={13} /> {t('experience.topicDetail.ask')}
           </Button>
         </div>
@@ -345,7 +345,7 @@ export function TopicDeepDivePage() {
               <div className="mt-4 pt-4 border-t border-outline-variant/20 flex items-center gap-2">
                 <Button size="sm" onClick={askCrystal}
                   className="text-xs font-bold text-white border-0"
-                  style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                  style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                   <Icon name="psychology" size={13} /> {t('experience.topicDetail.ask')}
                 </Button>
                 <span className="text-[11px] text-on-surface-variant/60">
@@ -402,7 +402,7 @@ export function TopicDeepDivePage() {
                       <div className="flex justify-between items-center">
                         <span className="text-xs text-on-surface-variant">{t('experience.topicDetail.signals.driverScore')}</span>
                         <span className="text-sm font-black"
-                          style={{ color: Math.abs(topic.driver_score) > 0.3 ? '#2a4bd9' : '#94a3b8' }}>
+                          style={{ color: Math.abs(topic.driver_score) > 0.3 ? 'var(--color-primary)' : '#94a3b8' }}>
                           {topic.driver_score > 0 ? '+' : ''}{topic.driver_score.toFixed(2)}
                         </span>
                       </div>
@@ -654,8 +654,8 @@ export function TopicDeepDivePage() {
               >
                 <defs>
                   <linearGradient id="volGradTopic" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"  stopColor="#2a4bd9" stopOpacity={0.2} />
-                    <stop offset="100%" stopColor="#2a4bd9" stopOpacity={0} />
+                    <stop offset="0%"  stopColor="var(--color-primary)" stopOpacity={0.2} />
+                    <stop offset="100%" stopColor="var(--color-primary)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid stroke="rgba(0,0,0,0.04)" strokeDasharray="3 3" />
@@ -663,7 +663,7 @@ export function TopicDeepDivePage() {
                 <YAxis yAxisId="left"  tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={24} />
                 <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={28} />
                 <ReferenceLine yAxisId="right" y={0} stroke="rgba(0,0,0,0.12)" strokeDasharray="3 3" />
-                <Area yAxisId="left"  type="monotone" dataKey="vol" stroke="#2a4bd9" strokeWidth={2}
+                <Area yAxisId="left"  type="monotone" dataKey="vol" stroke="var(--color-primary)" strokeWidth={2}
                   fill="url(#volGradTopic)" dot={false} name={t('experience.topicDetail.signals.volumeLabel')} />
                 <Line yAxisId="right" type="monotone" dataKey="nps" stroke="#d97706" strokeWidth={2}
                   dot={false} strokeDasharray="4 3" name="NPS" />

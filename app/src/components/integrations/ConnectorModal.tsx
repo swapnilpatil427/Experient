@@ -214,7 +214,7 @@ export function ConnectorModal({
         >
           <div
             className="px-7 pt-7 pb-5 flex items-center gap-3"
-            style={{ background: 'linear-gradient(135deg, rgba(42,75,217,0.06), rgba(131,41,200,0.04))', borderBottom: '1px solid rgba(42,75,217,0.1)' }}
+            style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 6%, transparent), color-mix(in srgb, var(--color-tertiary) 4%, transparent))', borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
           >
             <ConnectorBadge connector={activeConnector} />
             <div>
@@ -252,7 +252,7 @@ export function ConnectorModal({
                           placeholder={field.placeholder}
                           disabled={testPhase === 'testing' || saving}
                           className="rounded-xl flex-1"
-                          style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }}
+                          style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
                           data-testid={`field-${field.key}`}
                         />
                         {field.secret && isConnected && replacing[field.key] && (
@@ -345,7 +345,7 @@ export function ConnectorModal({
             >
               {testPhase === 'testing' ? (
                 <span className="flex items-center gap-1.5">
-                  <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'rgba(42,75,217,0.3)', borderTopColor: 'var(--color-primary)' }} />
+                  <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 30%, transparent)', borderTopColor: 'var(--color-primary)' }} />
                   {t('integrationsSettings.actions.testing')}
                 </span>
               ) : testPhase === 'success' ? (
@@ -369,7 +369,7 @@ export function ConnectorModal({
             <Button
               type="button"
               className="rounded-xl font-bold text-white px-5 flex items-center gap-2"
-              style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               disabled={!formValid || saving}
               onClick={handleSave}
               data-testid="save-button"

@@ -135,7 +135,7 @@ export function CockpitView({ insights, scope, surveys }: ViewProps) {
             sample={`n=${nFmt(displayN)}`}
             trend={2}
             spark={[10, 14, 12, 18, 16, 22, 20]}
-            sparkColor="#2a4bd9"
+            sparkColor="var(--color-primary)"
             tooltip="Adjusted-Wald CI at 90% confidence"
           />
           <KpiCard
@@ -144,7 +144,7 @@ export function CockpitView({ insights, scope, surveys }: ViewProps) {
             unit="/ 5"
             sample={`n=${nFmt(displayN)}`}
             spark={[14, 12, 18, 16, 20, 18, 22]}
-            sparkColor="#00647c"
+            sparkColor="var(--color-secondary)"
           />
           <KpiCard
             label="CES"
@@ -196,7 +196,7 @@ export function CockpitView({ insights, scope, surveys }: ViewProps) {
             {/* Top action hero */}
             <Card
               className="border-0 shadow-primary overflow-hidden text-white relative"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
             >
               <div className="absolute inset-0 holographic opacity-50 pointer-events-none" />
               <CardContent className="p-5 relative z-10">
@@ -300,7 +300,7 @@ function KpiCard({
           <div className="mt-2 h-1 rounded-full bg-muted overflow-hidden">
             <div
               className="h-full"
-              style={{ width: `${progress}%`, background: 'linear-gradient(to right, #2a4bd9, #8329c8)' }}
+              style={{ width: `${progress}%`, background: 'linear-gradient(to right, var(--color-primary), var(--color-tertiary))' }}
             />
           </div>
         )}

@@ -162,7 +162,7 @@ export function PipelineStats({ stats }: PipelineStatsProps) {
                   width: '2rem',
                   height: '2rem',
                   borderRadius: '0.5rem',
-                  background: 'rgba(42,75,217,0.08)',
+                  background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',

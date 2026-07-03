@@ -30,7 +30,7 @@ const glassCard: React.CSSProperties = {
 };
 
 const gradientTextStyle: React.CSSProperties = {
-  background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+  background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
   WebkitBackgroundClip: 'text',
   WebkitTextFillColor: 'transparent',
   backgroundClip: 'text',
@@ -62,7 +62,7 @@ function LinkedByBadge({ linkedBy }: { linkedBy?: string }) {
   return (
     <span
       className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-      style={{ background: 'rgba(42,75,217,0.1)', color: 'var(--color-primary)' }}
+      style={{ background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', color: 'var(--color-primary)' }}
     >
       {label}
     </span>
@@ -121,7 +121,7 @@ function ActivityTab({ timeline }: { timeline: ActivityItem[] }) {
     >
       <div
         className="absolute left-2.5 top-2 bottom-2 w-px"
-        style={{ background: 'rgba(42,75,217,0.15)' }}
+        style={{ background: 'color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
       />
 
       {timeline.map((item) => (
@@ -136,7 +136,7 @@ function ActivityTab({ timeline }: { timeline: ActivityItem[] }) {
               <div
                 className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
                 style={{
-                  background: item.type === 'response' ? 'rgba(42,75,217,0.1)' : 'rgba(217,119,6,0.1)',
+                  background: item.type === 'response' ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'rgba(217,119,6,0.1)',
                 }}
               >
                 <Icon
@@ -235,7 +235,7 @@ function ResponsesTab({ timeline }: { timeline: ActivityItem[] }) {
             <div className="flex items-center gap-3">
               <div
                 className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-                style={{ background: 'rgba(42,75,217,0.1)' }}
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
               >
                 <Icon name="description" size={16} style={{ color: 'var(--color-primary)' }} />
               </div>
@@ -250,7 +250,7 @@ function ResponsesTab({ timeline }: { timeline: ActivityItem[] }) {
                 <Link
                   to={toPath(ROUTES.RESPONSE_DASHBOARD, { surveyId: item.survey_id })}
                   className="text-xs font-bold px-3 py-1.5 rounded-lg"
-                  style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)', color: '#fff' }}
+                  style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: '#fff' }}
                 >
                   {t('contactDetail.responses.viewResponse')}
                 </Link>
@@ -430,7 +430,7 @@ export function ContactDetailPage() {
           <div className="p-6 flex flex-col sm:flex-row items-start sm:items-center gap-5">
             <div
               className="w-16 h-16 rounded-2xl flex items-center justify-center shrink-0 font-black text-xl text-white shadow-lg"
-              style={{ background: isAnonymized ? 'rgba(100,116,139,0.3)' : 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+              style={{ background: isAnonymized ? 'rgba(100,116,139,0.3)' : 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
             >
               {avatarInitial}
             </div>
@@ -449,7 +449,7 @@ export function ContactDetailPage() {
               {contact.account_name && (
                 <span
                   className="inline-flex items-center gap-1 text-xs font-medium mt-2 px-2.5 py-1 rounded-full"
-                  style={{ background: 'rgba(0,100,124,0.1)', color: '#00647c' }}
+                  style={{ background: 'color-mix(in srgb, var(--color-secondary) 10%, transparent)', color: 'var(--color-secondary)' }}
                 >
                   <Icon name="business" size={11} className="inline shrink-0" />
                   {contact.account_name}
@@ -460,7 +460,7 @@ export function ContactDetailPage() {
             <div className="flex flex-col items-end gap-2 shrink-0">
               <Badge
                 className="text-xs px-2.5 py-1 rounded-full font-medium"
-                style={{ background: 'rgba(42,75,217,0.08)', color: 'var(--color-primary)' }}
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}
               >
                 <Icon name="public" size={11} className="inline mr-1" />
                 {contact.data_region}
@@ -492,7 +492,7 @@ export function ContactDetailPage() {
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList
             className="mb-6 p-1 rounded-xl"
-            style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(42,75,217,0.1)' }}
+            style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
           >
             <TabsTrigger value="activity">{t('contactDetail.tabs.activity')}</TabsTrigger>
             <TabsTrigger value="segments">{t('contactDetail.tabs.segments')}</TabsTrigger>

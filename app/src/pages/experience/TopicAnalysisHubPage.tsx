@@ -203,7 +203,7 @@ export function TopicAnalysisHubPage() {
             <Link key={item.label} to={item.path}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-bold transition-all"
               style={'active' in item && item.active
-                ? { background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color:'white', boxShadow:'0 2px 8px rgba(42,75,217,0.25)' }
+                ? { background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color:'white', boxShadow:'0 2px 8px color-mix(in srgb, var(--color-primary) 25%, transparent)' }
                 : { background:'var(--color-surface-container)', color:'var(--color-on-surface-variant)' }
               }>
               <Icon name={item.icon} size={12} />{item.label}
@@ -245,7 +245,7 @@ export function TopicAnalysisHubPage() {
         <Button size="sm"
           onClick={() => openCrystal(t('experience.topics.query.all'))}
           className="text-xs font-bold text-white border-0 flex-shrink-0"
-          style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+          style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
           <Icon name="psychology" size={13} /> {t('experience.topics.askAll')}
         </Button>
       </motion.div>
@@ -261,14 +261,14 @@ export function TopicAnalysisHubPage() {
               label:    t('experience.topics.summary.topicsDiscovered'),
               value:    String(rootTopics.length),
               icon:     'hub',
-              iconColor:'#2a4bd9',
+              iconColor:'var(--color-primary)',
               sub:      t('experience.topics.summary.topicsSubtitle', { n: String(rawTopics.length) }),
             },
             {
               label:    t('experience.topics.summary.totalMentions'),
               value:    totalMentions.toLocaleString(),
               icon:     'chat_bubble_outline',
-              iconColor:'#8329c8',
+              iconColor:'var(--color-tertiary)',
               sub:      t('experience.topics.summary.mentionsSubtitle', { n: survey?.response_count?.toLocaleString() ?? '—' }),
             },
             {
@@ -465,14 +465,14 @@ export function TopicAnalysisHubPage() {
       {!loading && rootTopics.length === 0 && (
         <GlassCard className="p-12 text-center">
           <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4"
-            style={{ background:'linear-gradient(135deg, rgba(42,75,217,0.12), rgba(131,41,200,0.12))' }}>
-            <Icon name="hub" size={28} style={{ color:'#2a4bd9' }} />
+            style={{ background:'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), color-mix(in srgb, var(--color-tertiary) 12%, transparent))' }}>
+            <Icon name="hub" size={28} style={{ color:'var(--color-primary)' }} />
           </div>
           <h3 className="text-lg font-black font-headline mb-2">{t('insights.topics.empty')}</h3>
           <p className="text-sm text-on-surface-variant mb-5 max-w-xs mx-auto">{t('experience.topics.empty.body')}</p>
           <Link to={toPath(ROUTES.EXPERIENCE_SURVEY, { surveyId })}>
             <Button className="font-bold text-white border-0"
-              style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+              style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
               <Icon name="auto_awesome" size={15} /> {t('experience.topics.empty.button')}
             </Button>
           </Link>
@@ -516,7 +516,7 @@ export function TopicAnalysisHubPage() {
                         {/* Trending */}
                         {topic.trending && topic.trending !== 'stable' && (
                           <span className="flex items-center gap-0.5 text-[10px] font-bold"
-                            style={{ color: topic.trending==='up'?'#d97706': topic.trending==='new'?'#2a4bd9':'#64748b' }}>
+                            style={{ color: topic.trending==='up'?'#d97706': topic.trending==='new'?'var(--color-primary)':'#64748b' }}>
                             <Icon name={topic.trending==='up'?'trending_up':topic.trending==='new'?'fiber_new':'trending_down'} size={12} />
                             {topic.trending}
                           </span>
@@ -767,7 +767,7 @@ export function TopicAnalysisHubPage() {
           <GlassCard className="p-4 holographic">
             <div className="flex items-center gap-3 relative z-10">
               <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                 <Icon name="psychology" size={18} style={{ color:'white' }} />
               </div>
               <div className="flex-1 min-w-0">
@@ -781,7 +781,7 @@ export function TopicAnalysisHubPage() {
               <Button size="sm"
                 onClick={() => openCrystal(t('experience.topics.query.all'))}
                 className="text-xs font-bold text-white border-0 flex-shrink-0"
-                style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                 {t('experience.topics.askAll')}
               </Button>
             </div>

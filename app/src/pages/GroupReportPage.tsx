@@ -35,23 +35,23 @@ const GAP_SEVERITY_COLOR: Record<string, string> = {
 // ── Crystal Orb (CSS only) ────────────────────────────────────────────────────
 function CrystalOrb({ size = 80 }: { size?: number }) {
   return (
-    <div style={{ width: size, height: size, position: 'relative', filter: 'drop-shadow(0 8px 20px rgba(42,75,217,0.4))' }}>
+    <div style={{ width: size, height: size, position: 'relative', filter: 'drop-shadow(0 8px 20px color-mix(in srgb, var(--color-primary) 40%, transparent))' }}>
       <div style={{
         position: 'absolute', inset: 0,
-        background: 'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)',
+        background: 'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)',
         clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
         animation: 'exp-hub-spin 20s linear infinite',
       }} />
       <div style={{
         position: 'absolute', inset: '18%',
-        background: 'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)',
+        background: 'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)',
         clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
         animation: 'exp-hub-spin 10s linear infinite reverse',
         opacity: 0.78,
       }} />
       <div style={{
         position: 'absolute', inset: '38%',
-        background: 'radial-gradient(circle, #ffffff, #82deff)',
+        background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))',
         borderRadius: '50%', filter: 'blur(4px)',
         animation: 'pulse-glow 2.5s ease-in-out infinite',
       }} />

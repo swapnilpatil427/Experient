@@ -164,7 +164,7 @@ export function PipelineEventFeed({ events, newSinceLastVisit }: PipelineEventFe
                   borderRadius: '50%',
                   background:
                     event.actorType === 'crystal' || event.actorType === 'system'
-                      ? 'rgba(42,75,217,0.1)'
+                      ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)'
                       : 'rgba(107,114,128,0.1)',
                   display: 'flex',
                   alignItems: 'center',

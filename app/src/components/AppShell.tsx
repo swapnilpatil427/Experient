@@ -142,8 +142,8 @@ function AppShellInner() {
               right: '1.5rem',
               width: 52,
               height: 52,
-              background: 'linear-gradient(135deg, #2a4bd9 0%, #8329c8 100%)',
-              boxShadow: '0 8px 24px rgba(42,75,217,0.40), 0 2px 8px rgba(0,0,0,0.12)',
+              background: 'linear-gradient(135deg, var(--color-primary) 0%, var(--color-tertiary) 100%)',
+              boxShadow: '0 8px 24px color-mix(in srgb, var(--color-primary) 40%, transparent), 0 2px 8px rgba(0,0,0,0.12)',
             }}
           >
             <Icon name="diamond" size={22} style={{ color: 'white' }} />

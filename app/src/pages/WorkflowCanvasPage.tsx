@@ -479,7 +479,7 @@ const SHELL = 'rounded-xl bg-white shadow-md border border-border px-3 py-2 text
 function TriggerNode({ id, data }: NodeProps<CanvasNodeData & { options?: Trigger[]; patch?: (id: string, p: Partial<CanvasNodeData>) => void }>) {
   const { t } = useTranslation();
   return (
-    <div className={SHELL} style={{ borderTop: '3px solid #2a4bd9' }}>
+    <div className={SHELL} style={{ borderTop: '3px solid var(--color-primary)' }}>
       <div className="flex items-center gap-1.5 mb-1 font-semibold text-on-surface"><Icon name="bolt" size={14} className="text-primary" />{t('workflows.canvas.trigger')}</div>
       <select className="w-full text-xs border border-border rounded px-1.5 py-1 bg-transparent" value={data.triggerType}
         onChange={(e) => data.patch?.(id, { triggerType: e.target.value })}>

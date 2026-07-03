@@ -32,10 +32,10 @@ export function DashboardScopeBar({ filters, surveys, tags, summary }: Dashboard
       className="mb-4 px-4 py-2.5 rounded-xl flex items-center gap-3 flex-wrap"
       style={{
         background: isAllSurveys
-          ? 'linear-gradient(90deg, rgba(42,75,217,0.05), rgba(131,41,200,0.03))'
+          ? 'linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 5%, transparent), color-mix(in srgb, var(--color-tertiary) 3%, transparent))'
           : 'linear-gradient(90deg, rgba(16,185,129,0.07), rgba(6,182,212,0.03))',
         border: isAllSurveys
-          ? '1px solid rgba(42,75,217,0.12)'
+          ? '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)'
           : '1px solid rgba(16,185,129,0.18)',
       }}
     >
@@ -43,7 +43,7 @@ export function DashboardScopeBar({ filters, surveys, tags, summary }: Dashboard
       <span
         className="text-sm w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
         style={{
-          background: isAllSurveys ? 'rgba(42,75,217,0.1)' : 'rgba(16,185,129,0.12)',
+          background: isAllSurveys ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'rgba(16,185,129,0.12)',
         }}
       >
         {isAllSurveys ? '📊' : '🎯'}

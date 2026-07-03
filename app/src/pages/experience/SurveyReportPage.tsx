@@ -191,8 +191,8 @@ function ThemeCard({ ins, onAskCrystal, surveyId }: {
           {/* Recommended action */}
           {ra && (
             <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl mt-2"
-              style={{ background: 'rgba(42,75,217,0.06)', border: '1px solid rgba(42,75,217,0.12)' }}>
-              <Icon name="lightbulb" size={14} style={{ color: '#2a4bd9', flexShrink: 0, marginTop: 1 }} />
+              style={{ background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)' }}>
+              <Icon name="lightbulb" size={14} style={{ color: 'var(--color-primary)', flexShrink: 0, marginTop: 1 }} />
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-on-surface">{ra.label}</p>
                 {ra.estimated_impact && (
@@ -200,7 +200,7 @@ function ThemeCard({ ins, onAskCrystal, surveyId }: {
                 )}
               </div>
               <span className="flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded"
-                style={{ background: '#eef2ff', color: '#2a4bd9' }}>
+                style={{ background: '#eef2ff', color: 'var(--color-primary)' }}>
                 {HORIZON_LABEL[ra.time_horizon ?? ''] ?? ra.time_horizon}
               </span>
             </div>
@@ -273,7 +273,7 @@ function ReportSubNav({ surveyId, onExport, exporting }: {
           <Link key={item.label} to={item.path}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-bold transition-all"
             style={'active' in item && item.active
-              ? { background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: 'white', boxShadow: '0 2px 8px rgba(42,75,217,0.25)' }
+              ? { background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: 'white', boxShadow: '0 2px 8px color-mix(in srgb, var(--color-primary) 25%, transparent)' }
               : { background: 'var(--color-surface-container)', color: 'var(--color-on-surface-variant)' }
             }>
             <Icon name={item.icon} size={12} />{item.label}
@@ -289,7 +289,7 @@ function ReportSubNav({ surveyId, onExport, exporting }: {
           disabled={exporting}
           onClick={() => setExportOpen(o => !o)}
           className="text-xs font-bold text-white border-0 flex items-center gap-1.5 flex-shrink-0"
-          style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+          style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
           <Icon name={exporting ? 'hourglass_empty' : 'download'} size={13} />
           {exporting ? t('experience.report.exporting') : t('experience.report.export')}
           {!exporting && <Icon name="expand_more" size={13} />}
@@ -445,10 +445,10 @@ export function SurveyReportPage() {
       {execSummary && (
         <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}>
-          <GlassCard className="p-6" style={{ border: '1px solid rgba(42,75,217,0.15)' }}>
+          <GlassCard className="p-6" style={{ border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}>
             <div className="flex items-center gap-2 mb-3">
               <span className="text-[10px] font-black uppercase tracking-widest"
-                style={{ color: '#2a4bd9' }}>
+                style={{ color: 'var(--color-primary)' }}>
                 Executive Summary
               </span>
               {execSummary.metric_json && (

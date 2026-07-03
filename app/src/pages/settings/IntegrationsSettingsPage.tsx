@@ -241,7 +241,7 @@ export function IntegrationsSettingsPage() {
       {!vaultUnconfigured && !loading && noneConnected && !bannerDismissed && (
         <div
           className="flex items-center gap-3 px-4 py-3 mb-6 rounded-xl text-sm"
-          style={{ background: 'rgba(42,75,217,0.06)', color: 'var(--color-primary)' }}
+          style={{ background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)', color: 'var(--color-primary)' }}
           data-testid="empty-state-banner"
         >
           <Icon name="info" size={16} className="shrink-0" />

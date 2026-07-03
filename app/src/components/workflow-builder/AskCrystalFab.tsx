@@ -61,11 +61,11 @@ export function AskCrystalFab({ onOpen }: AskCrystalFabProps) {
             transition={{ duration: 0.18 }}
             onClick={dismissLabel}
             className="cursor-pointer bg-white rounded-2xl px-3.5 py-2.5"
-            style={{ boxShadow: '0 4px 16px rgba(42,75,217,0.12)', border: '1px solid rgba(42,75,217,0.1)' }}
+            style={{ boxShadow: '0 4px 16px color-mix(in srgb, var(--color-primary) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
           >
             <span
               className="text-xs font-black"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}
             >
               {t('workflows.builder.askCrystal.label')}
             </span>
@@ -80,8 +80,8 @@ export function AskCrystalFab({ onOpen }: AskCrystalFabProps) {
         data-testid="ask-crystal-fab"
         className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg transition-transform hover:scale-105 active:scale-95"
         style={{
-          background: 'linear-gradient(135deg, #2a4bd9, #8329c8)',
-          boxShadow: '0 8px 24px rgba(42,75,217,0.35)',
+          background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
+          boxShadow: '0 8px 24px color-mix(in srgb, var(--color-primary) 35%, transparent)',
         }}
       >
         <Icon name="diamond" size={22} style={{ color: 'white' }} />

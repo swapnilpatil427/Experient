@@ -50,7 +50,7 @@ export function RolesPanel() {
       {loading && (
         <div className="flex justify-center py-8">
           <div className="w-6 h-6 rounded-full border-2 animate-spin"
-            style={{ borderColor: 'rgba(42,75,217,0.2)', borderTopColor: 'var(--color-primary)' }} />
+            style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)', borderTopColor: 'var(--color-primary)' }} />
         </div>
       )}
 

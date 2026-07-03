@@ -54,7 +54,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
           <button
             onClick={this.handleRetry}
             className="px-5 py-2 rounded-xl text-sm font-semibold text-white"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             Try again
           </button>

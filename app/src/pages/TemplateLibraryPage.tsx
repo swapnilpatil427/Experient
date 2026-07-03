@@ -109,7 +109,7 @@ function ModalShell({ onClose, children, maxWidth = 'max-w-md' }: ModalShellProp
     >
       <div
         className={`bg-white rounded-2xl shadow-2xl w-full ${maxWidth} overflow-hidden`}
-        style={{ boxShadow: '0 40px 80px -20px rgba(42,75,217,0.22)' }}
+        style={{ boxShadow: '0 40px 80px -20px color-mix(in srgb, var(--color-primary) 22%, transparent)' }}
       >
         {children}
       </div>
@@ -128,7 +128,7 @@ function TemplatePreview({ template, compact = false }: TemplatePreviewProps) {
     >
       <div
         className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: template.color || '#2a4bd9', color: '#fff' }}
+        style={{ background: template.color || 'var(--color-primary)', color: '#fff' }}
       >
         <Icon name={template.icon || 'quiz'} fill={1} size={22} />
       </div>
@@ -137,7 +137,7 @@ function TemplatePreview({ template, compact = false }: TemplatePreviewProps) {
           <span className="text-sm font-extrabold font-headline text-on-surface">{template.label}</span>
           <span
             className="text-[10px] font-black px-2 py-0.5 rounded-full"
-            style={{ background: (template.color || '#2a4bd9') + '22', color: template.color || '#2a4bd9' }}
+            style={{ background: `color-mix(in srgb, ${template.color || 'var(--color-primary)'} 13%, transparent)`, color: template.color || 'var(--color-primary)' }}
           >
             {template.shortLabel}
           </span>
@@ -221,10 +221,10 @@ function UseModal({ template, onClose }: UseModalProps) {
             onClick={goAI}
             className="w-full flex items-start gap-4 p-4 rounded-2xl text-left transition-all duration-150 active:scale-[0.98] group"
             style={{ background: '#f0f4ff', border: '1.5px solid #c7d2fe' }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#2a4bd9'; e.currentTarget.style.background = '#e0e7ff'; }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--color-primary)'; e.currentTarget.style.background = '#e0e7ff'; }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#c7d2fe'; e.currentTarget.style.background = '#f0f4ff'; }}
           >
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-[#2a4bd9] to-[#8329c8]">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-tertiary)]">
               <Icon name="auto_awesome" fill={1} size={20} className="text-white" />
             </div>
             <div className="flex-1 min-w-0">
@@ -362,7 +362,7 @@ function TagInput({ tags, onChange, placeholder, hasError }: TagInputProps) {
     >
       {tags.map((tag) => (
         <span key={tag} className="flex items-center gap-1 px-2.5 py-0.5 text-xs font-bold rounded-full"
-          style={{ background: '#e0e7ff', color: '#2a4bd9' }}>
+          style={{ background: '#e0e7ff', color: 'var(--color-primary)' }}>
           {tag}
           <button type="button" onClick={() => onChange(tags.filter((tg) => tg !== tag))}
             className="hover:opacity-60 leading-none text-sm">×</button>
@@ -452,14 +452,14 @@ function InfoModal({ template, onClose, onUseClick }: InfoModalProps) {
         </button>
         <div className="flex items-start gap-4">
           <div className="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0"
-            style={{ background: template.color || '#2a4bd9', boxShadow: `0 8px 24px ${template.color || '#2a4bd9'}44` }}>
+            style={{ background: template.color || 'var(--color-primary)', boxShadow: `0 8px 24px color-mix(in srgb, ${template.color || 'var(--color-primary)'} 27%, transparent)` }}>
             <Icon name={template.icon || 'quiz'} fill={1} size={26} className="text-white" />
           </div>
           <div className="flex-1 min-w-0 pr-8">
             <div className="flex items-center gap-2 flex-wrap mb-1">
               <h2 className="text-lg font-extrabold font-headline text-on-surface leading-tight">{template.label}</h2>
               <span className="text-[10px] font-black px-2 py-0.5 rounded-full"
-                style={{ background: (template.color || '#2a4bd9') + '22', color: template.color || '#2a4bd9' }}>
+                style={{ background: `color-mix(in srgb, ${template.color || 'var(--color-primary)'} 13%, transparent)`, color: template.color || 'var(--color-primary)' }}>
                 {template.shortLabel}
               </span>
               {cat && (
@@ -484,7 +484,7 @@ function InfoModal({ template, onClose, onUseClick }: InfoModalProps) {
                 <>
                   <span className="text-on-surface-variant opacity-30 text-xs">·</span>
                   <span className="flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full"
-                    style={{ background: (template.color || '#2a4bd9') + '18', color: template.color || '#2a4bd9' }}>
+                    style={{ background: `color-mix(in srgb, ${template.color || 'var(--color-primary)'} 9%, transparent)`, color: template.color || 'var(--color-primary)' }}>
                     <Icon name="analytics" size={11} />
                     {scoringLabel}
                   </span>
@@ -508,7 +508,7 @@ function InfoModal({ template, onClose, onUseClick }: InfoModalProps) {
             <div className="flex flex-wrap gap-1.5">
               {(template.metrics || []).map((m) => (
                 <span key={m} className="text-[10px] font-bold px-2.5 py-1 rounded-full"
-                  style={{ background: (template.color || '#2a4bd9') + '14', color: template.color || '#2a4bd9' }}>
+                  style={{ background: `color-mix(in srgb, ${template.color || 'var(--color-primary)'} 8%, transparent)`, color: template.color || 'var(--color-primary)' }}>
                   {m}
                 </span>
               ))}
@@ -530,7 +530,7 @@ function InfoModal({ template, onClose, onUseClick }: InfoModalProps) {
         {!!(intel.scoringNarrative || intel.audienceDescription || intel.customInstructions) && (
           <div className="rounded-xl p-4" style={{ background: '#f8f9ff', border: '1.5px solid #e0e7ff' }}>
             <h3 className="text-xs font-black uppercase tracking-widest mb-3 flex items-center gap-1.5"
-              style={{ color: '#2a4bd9' }}>
+              style={{ color: 'var(--color-primary)' }}>
               <Icon name="psychology" size={14} />
               {t('templates.infoModal.aiIntelligence')}
             </h3>
@@ -577,7 +577,7 @@ function InfoModal({ template, onClose, onUseClick }: InfoModalProps) {
                 <div key={q.id || i} className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl"
                   style={{ background: '#f5f6f7' }}>
                   <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black flex-shrink-0 mt-0.5"
-                    style={{ background: (template.color || '#2a4bd9') + '18', color: template.color || '#2a4bd9' }}>
+                    style={{ background: `color-mix(in srgb, ${template.color || 'var(--color-primary)'} 9%, transparent)`, color: template.color || 'var(--color-primary)' }}>
                     {i + 1}
                   </span>
                   <span className="text-xs text-on-surface leading-relaxed">{q.question}</span>
@@ -609,7 +609,7 @@ function InfoModal({ template, onClose, onUseClick }: InfoModalProps) {
         <Button size="sm"
           onClick={() => { onUseClick(template); onClose(); }}
           className="w-full rounded-xl font-bold text-sm text-white gap-2 py-2.5"
-          style={{ background: template.color || '#2a4bd9' }}>
+          style={{ background: template.color || 'var(--color-primary)' }}>
           <Icon name="arrow_forward" size={16} />
           {t('templates.infoModal.useButton')}
         </Button>
@@ -823,7 +823,7 @@ function TemplateModal({ template, categories, onSave, onClose }: TemplateModalP
             className="w-full flex items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[#f8f9ff]"
             style={{ background: aiOpen ? '#f8f9ff' : '#fafbff' }}
           >
-            <span className="flex items-center gap-2 text-xs font-bold" style={{ color: '#2a4bd9' }}>
+            <span className="flex items-center gap-2 text-xs font-bold" style={{ color: 'var(--color-primary)' }}>
               <Icon name="psychology" size={14} />
               {t('templates.modal.aiSettings.sectionLabel')}
             </span>
@@ -895,7 +895,7 @@ function TemplateModal({ template, categories, onSave, onClose }: TemplateModalP
           onClick={handleSave}
           disabled={saving}
           className="flex-1 rounded-xl font-bold text-sm text-white"
-          style={{ background: saving ? '#94a3b8' : '#2a4bd9' }}
+          style={{ background: saving ? '#94a3b8' : 'var(--color-primary)' }}
         >
           {saving ? (
             <span className="flex items-center justify-center gap-2">
@@ -932,7 +932,7 @@ function TemplateCard({ template, onUseClick, onEdit, onDelete, onInfoClick }: T
       <div className="absolute top-3 right-3">
         {template.isSystem ? (
           <Badge className="text-[10px] font-black uppercase tracking-widest border-0 px-2 py-0.5"
-            style={{ background: (template.color || '#2a4bd9') + '18', color: template.color || '#2a4bd9' }}>
+            style={{ background: `color-mix(in srgb, ${template.color || 'var(--color-primary)'} 9%, transparent)`, color: template.color || 'var(--color-primary)' }}>
             {t('templates.systemBadge')}
           </Badge>
         ) : template.clonedFromId ? (
@@ -950,7 +950,7 @@ function TemplateCard({ template, onUseClick, onEdit, onDelete, onInfoClick }: T
 
       {/* Icon */}
       <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-3 flex-shrink-0"
-        style={{ background: template.bg || '#e0e7ff', color: template.color || '#2a4bd9' }}>
+        style={{ background: template.bg || '#e0e7ff', color: template.color || 'var(--color-primary)' }}>
         <Icon name={template.icon || 'quiz'} fill={1} size={22} />
       </div>
 
@@ -960,7 +960,7 @@ function TemplateCard({ template, onUseClick, onEdit, onDelete, onInfoClick }: T
           {template.label}
         </span>
         <span className="text-[10px] font-black px-2 py-0.5 rounded-full flex-shrink-0"
-          style={{ background: (template.color || '#2a4bd9') + '1a', color: template.color || '#2a4bd9' }}>
+          style={{ background: `color-mix(in srgb, ${template.color || 'var(--color-primary)'} 10%, transparent)`, color: template.color || 'var(--color-primary)' }}>
           {template.shortLabel}
         </span>
       </div>
@@ -1017,7 +1017,7 @@ function TemplateCard({ template, onUseClick, onEdit, onDelete, onInfoClick }: T
           <Button size="sm"
             onClick={(e) => { e.stopPropagation(); onUseClick(template); }}
             className="text-xs font-bold rounded-full px-3 h-7 text-white gap-1"
-            style={{ background: template.color || '#2a4bd9' }}>
+            style={{ background: template.color || 'var(--color-primary)' }}>
             <Icon name="arrow_forward" size={12} />
             {t('templates.useButton')}
           </Button>
@@ -1133,7 +1133,7 @@ export function TemplateLibraryPage() {
               <Button
                 onClick={() => setEditModal({ isNew: true })}
                 className="flex items-center gap-2 font-bold text-sm text-white rounded-xl px-5 py-2.5"
-                style={{ background: '#2a4bd9' }}
+                style={{ background: 'var(--color-primary)' }}
               >
                 <Icon name="add" size={18} />
                 {t('templates.createButton')}
@@ -1233,7 +1233,7 @@ export function TemplateLibraryPage() {
           {loading ? (
             <div className="flex flex-col items-center justify-center py-24 gap-4">
               <div className="w-10 h-10 rounded-full border-2 animate-spin"
-                style={{ borderColor: 'rgba(42,75,217,0.15)', borderTopColor: '#2a4bd9' }} />
+                style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 15%, transparent)', borderTopColor: 'var(--color-primary)' }} />
               <p className="text-sm font-semibold text-on-surface-variant">{t('common.loading')}</p>
             </div>
           ) : !hasResults ? (
@@ -1244,7 +1244,7 @@ export function TemplateLibraryPage() {
               <p className="text-sm font-semibold text-on-surface-variant">{t('templates.noResults')}</p>
               <Button onClick={() => setSearch('')} variant="secondary" size="sm"
                 className="text-xs font-bold px-4 py-2 rounded-full"
-                style={{ background: '#e0e7ff', color: '#2a4bd9' }}>
+                style={{ background: '#e0e7ff', color: 'var(--color-primary)' }}>
                 {t('templates.clearSearch')}
               </Button>
             </div>

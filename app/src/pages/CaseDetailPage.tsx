@@ -145,7 +145,7 @@ function StatusStepper({ status }: { status: CaseStatus }) {
               <div
                 className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 transition-all duration-300"
                 style={{
-                  background: isDone ? '#059669' : isActive ? `linear-gradient(135deg, var(--color-primary), #8329c8)` : 'rgba(0,0,0,0.06)',
+                  background: isDone ? '#059669' : isActive ? `linear-gradient(135deg, var(--color-primary), var(--color-tertiary))` : 'rgba(0,0,0,0.06)',
                   boxShadow: isActive ? `0 0 0 3px ${st.bg}` : undefined,
                 }}
               >
@@ -169,7 +169,7 @@ function StatusStepper({ status }: { status: CaseStatus }) {
                   background: isDone
                     ? 'linear-gradient(90deg, #059669, #34d399)'
                     : isActive
-                    ? `linear-gradient(90deg, var(--color-primary), rgba(42,75,217,0.1))`
+                    ? `linear-gradient(90deg, var(--color-primary), color-mix(in srgb, var(--color-primary) 10%, transparent))`
                     : 'rgba(0,0,0,0.06)',
                 }}
               />
@@ -190,11 +190,11 @@ function OwnerCard({ ownerLabel }: { ownerLabel?: string | null }) {
   return (
     <div
       className="flex items-center gap-3 rounded-xl p-3"
-      style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.08)' }}
+      style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 8%, transparent)' }}
     >
       <div
         className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shrink-0 text-sm"
-        style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+        style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
       >
         {initials}
       </div>
@@ -235,7 +235,7 @@ function AuditTimeline({ entries }: { entries: CaseAuditEntry[] }) {
       {/* Vertical connector line — gradient */}
       <div
         className="absolute left-[9px] top-5 bottom-5 w-[2px]"
-        style={{ background: 'linear-gradient(to bottom, rgba(42,75,217,0.15), transparent)' }}
+        style={{ background: 'linear-gradient(to bottom, color-mix(in srgb, var(--color-primary) 15%, transparent), transparent)' }}
       />
       <AnimatePresence>
         {sorted.map((entry, i) => {
@@ -311,7 +311,7 @@ function AuditTimeline({ entries }: { entries: CaseAuditEntry[] }) {
                     className="mt-2 rounded-r-lg px-3 py-2"
                     style={{
                       borderLeft: '3px solid var(--color-primary)',
-                      background: 'rgba(42,75,217,0.04)',
+                      background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)',
                     }}
                   >
                     <p className="text-sm text-on-surface-variant italic leading-relaxed">{entry.note}</p>
@@ -559,7 +559,7 @@ export function CaseDetailPage() {
           {transitions.length > 0 && (
             <div style={{ ...glassmorphism, padding: '1.25rem' }}>
               <p className="label-caps mb-3">
-                <span style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+                <span style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
                   {t('cases.detail.statusTransition')}
                 </span>
               </p>
@@ -610,7 +610,7 @@ export function CaseDetailPage() {
                 onClick={handleOwnerChange}
                 disabled={!newOwner.trim() || savingOwner}
                 className="rounded-xl font-bold text-white shrink-0"
-                style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               >
                 <Icon name="check" size={15} />
               </Button>
@@ -656,7 +656,7 @@ export function CaseDetailPage() {
               disabled={!note.trim() || savingNote}
               size="sm"
               className="w-full rounded-xl font-bold text-white"
-              style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
             >
               {savingNote ? (
                 <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin border-white" />
@@ -684,7 +684,7 @@ export function CaseDetailPage() {
               <div className="flex items-center gap-3 mb-3">
                 <div
                   className="w-11 h-11 rounded-full flex items-center justify-center font-bold text-white shrink-0"
-                  style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+                  style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
                 >
                   {cxCase.contact.name ? cxCase.contact.name.charAt(0).toUpperCase() : '?'}
                 </div>
@@ -707,7 +707,7 @@ export function CaseDetailPage() {
                   to={toPath(ROUTES.CONTACT_DETAIL, { contactId: cxCase.contact_id })}
                   className="mt-1 text-xs font-semibold block"
                   style={{
-                    background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+                    background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
                     backgroundClip: 'text',
@@ -722,8 +722,8 @@ export function CaseDetailPage() {
           {/* Crystal suggested actions — holographic shimmer */}
           <div
             style={{
-              background: 'linear-gradient(135deg, rgba(42,75,217,0.06) 0%, rgba(131,41,200,0.08) 50%, rgba(0,100,124,0.05) 100%)',
-              border: '1px solid rgba(131,41,200,0.2)',
+              background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 6%, transparent) 0%, color-mix(in srgb, var(--color-tertiary) 8%, transparent) 50%, color-mix(in srgb, var(--color-secondary) 5%, transparent) 100%)',
+              border: '1px solid color-mix(in srgb, var(--color-tertiary) 20%, transparent)',
               borderRadius: '1rem',
               padding: '1.25rem',
               position: 'relative',
@@ -745,7 +745,7 @@ export function CaseDetailPage() {
                 <span
                   className="material-symbols-outlined text-[18px]"
                   style={{
-                    background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+                    background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
                     backgroundClip: 'text',

@@ -418,11 +418,11 @@ export function InsightsDashboardPage() {
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.25 }}
             className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm"
-            style={{ background: '#eff2ff', border: '1px solid rgba(42,75,217,0.25)', color: '#1e40af' }}
+            style={{ background: '#eff2ff', border: '1px solid color-mix(in srgb, var(--color-primary) 25%, transparent)', color: '#1e40af' }}
           >
             <span
               className="w-2 h-2 rounded-full flex-shrink-0"
-              style={{ background: '#2a4bd9', animation: 'pulse-glow 2s ease-in-out infinite' }}
+              style={{ background: 'var(--color-primary)', animation: 'pulse-glow 2s ease-in-out infinite' }}
             />
             <span className="flex-1 font-medium">{t('insights.generate.backgroundBanner')}</span>
             <span className="text-xs opacity-60">{t('insights.generate.readyToastBody')}</span>

@@ -1083,3 +1083,31 @@ describe('classifyAsSupport — Wave 18 reference/enumeration keyword gap', () =
     expect(classifyAsSupport('Which survey has highest churn risk?')).toBe(false);
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — Wave 19a brand-token rendering (header/avatar gradient)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('renders the header gem icon gradient using brand-reactive CSS vars, not literal hex', () => {
+    const { container } = renderPanel();
+
+    // The Crystal gem icon in the panel header — style={{ background:
+    // 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
+    // (previously hardcoded '#2a4bd9'/'#8329c8' — see WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md).
+    const gemIcon = container.querySelector('.w-8.h-8.rounded-xl');
+    expect(gemIcon).toBeTruthy();
+    const style = (gemIcon as HTMLElement).getAttribute('style') ?? '';
+    expect(style).toContain('var(--color-primary)');
+    expect(style).toContain('var(--color-tertiary)');
+    expect(style).not.toMatch(/#2a4bd9|#8329c8/);
+  });
+
+  it('the "Xperiq Copilot" badge next to the Crystal title uses --color-primary, not a literal hex', () => {
+    renderPanel();
+
+    const badge = screen.getByText('Xperiq Copilot');
+    const style = badge.getAttribute('style') ?? '';
+    expect(style).toContain('var(--color-primary)');
+    expect(style).not.toMatch(/#2a4bd9/);
+  });
+});

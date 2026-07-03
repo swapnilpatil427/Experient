@@ -105,4 +105,16 @@ describe('AskCrystalFab', () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem('askCrystalFabSeen')).toBe('true');
   }, 8000);
+
+  // Wave 19a (WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md) — the FAB's gradient was
+  // hardcoded '#2a4bd9'/'#8329c8'; it must now reference the brand-reactive
+  // semantic aliases so a custom org brand actually reaches the FAB.
+  it('renders the FAB button gradient using --color-primary/--color-tertiary, not literal hex', () => {
+    render(<AskCrystalFab onOpen={() => {}} />);
+    const button = screen.getByTestId('ask-crystal-fab');
+    const style = button.getAttribute('style') ?? '';
+    expect(style).toContain('var(--color-primary)');
+    expect(style).toContain('var(--color-tertiary)');
+    expect(style).not.toMatch(/#2a4bd9|#8329c8/);
+  });
 });

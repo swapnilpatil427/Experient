@@ -72,7 +72,7 @@ function CountSelector({ value, onChange }: CountSelectorProps) {
           className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${
             value === n
               ? 'bg-primary text-white shadow-sm'
-              : 'bg-surface-container text-on-surface-variant hover:bg-[rgba(42,75,217,0.06)] border border-[#dfe3e6]'
+              : 'bg-surface-container text-on-surface-variant hover:bg-[color-mix(in_srgb,var(--color-primary)_6%,transparent)] border border-[#dfe3e6]'
           }`}
         >
           {n}
@@ -167,8 +167,8 @@ function GeneratingPanel({ count, elapsed, estSeconds, t }: GeneratingPanelProps
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="rounded-2xl p-6 flex flex-col gap-5"
       style={{
-        background: 'linear-gradient(135deg,rgba(42,75,217,0.06),rgba(131,41,200,0.04))',
-        border: '1px solid rgba(42,75,217,0.15)',
+        background: 'linear-gradient(135deg,color-mix(in srgb, var(--color-primary) 6%, transparent),color-mix(in srgb, var(--color-tertiary) 4%, transparent))',
+        border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
       }}
     >
       {/* Header row */}
@@ -176,7 +176,7 @@ function GeneratingPanel({ count, elapsed, estSeconds, t }: GeneratingPanelProps
         <div className="relative w-12 h-12 shrink-0">
           <motion.div
             className="absolute inset-0 rounded-full"
-            style={{ background: 'linear-gradient(135deg,#2a4bd9,#8329c8)' }}
+            style={{ background: 'linear-gradient(135deg,var(--color-primary),var(--color-tertiary))' }}
             animate={{ scale: [1, 1.1, 1], opacity: [0.75, 1, 0.75] }}
             transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
           />
@@ -202,8 +202,8 @@ function GeneratingPanel({ count, elapsed, estSeconds, t }: GeneratingPanelProps
             <div key={step.key} className="flex items-center gap-2.5">
               <div className="w-5 h-5 rounded-full shrink-0 flex items-center justify-center border-2 transition-all"
                 style={{
-                  borderColor: step.done ? '#059669' : isActive ? '#2a4bd9' : 'rgba(171,173,175,0.4)',
-                  background:  step.done ? '#059669' : isActive ? 'rgba(42,75,217,0.1)' : 'transparent',
+                  borderColor: step.done ? '#059669' : isActive ? 'var(--color-primary)' : 'rgba(171,173,175,0.4)',
+                  background:  step.done ? '#059669' : isActive ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'transparent',
                 }}
               >
                 {step.done
@@ -211,7 +211,7 @@ function GeneratingPanel({ count, elapsed, estSeconds, t }: GeneratingPanelProps
                   : isActive
                     ? <motion.div
                         className="w-2 h-2 rounded-full"
-                        style={{ background: '#2a4bd9' }}
+                        style={{ background: 'var(--color-primary)' }}
                         animate={{ scale: [1, 1.4, 1] }}
                         transition={{ duration: 0.9, repeat: Infinity }}
                       />
@@ -239,10 +239,10 @@ function GeneratingPanel({ count, elapsed, estSeconds, t }: GeneratingPanelProps
           <span>{t('sampleResponses.genProgress', { done: String(doneResponses), total: String(count) })}</span>
           <span>{t('sampleResponses.genElapsed', { elapsed: String(elapsed), remaining: String(remaining) })}</span>
         </div>
-        <div className="w-full h-2 rounded-full bg-[rgba(42,75,217,0.1)] overflow-hidden">
+        <div className="w-full h-2 rounded-full bg-[color-mix(in_srgb,var(--color-primary)_10%,transparent)] overflow-hidden">
           <motion.div
             className="h-full rounded-full"
-            style={{ background: 'linear-gradient(90deg,#2a4bd9,#8329c8)', width: `${progressPct * 100}%` }}
+            style={{ background: 'linear-gradient(90deg,var(--color-primary),var(--color-tertiary))', width: `${progressPct * 100}%` }}
             transition={{ duration: 0.5, ease: 'easeOut' }}
             animate={{ width: `${progressPct * 100}%` }}
           />

@@ -50,7 +50,7 @@ function ClerkOnboarding() {
     return (
       <div className="flex items-center justify-center min-h-screen bg-surface">
         <div className="w-8 h-8 rounded-full border-2 animate-spin"
-          style={{ borderColor: 'rgba(42,75,217,0.2)', borderTopColor: '#2a4bd9' }} />
+          style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)', borderTopColor: 'var(--color-primary)' }} />
       </div>
     );
   }
@@ -82,10 +82,10 @@ function ClerkOnboarding() {
         <div className="mesh-grid absolute inset-0 opacity-40" />
         <div className="absolute rounded-full"
           style={{ top: '-10%', left: '-10%', width: '40%', height: '40%',
-            background: 'rgba(42,75,217,0.1)', filter: 'blur(120px)' }} />
+            background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', filter: 'blur(120px)' }} />
         <div className="absolute rounded-full"
           style={{ bottom: '-10%', right: '-10%', width: '50%', height: '50%',
-            background: 'rgba(131,41,200,0.1)', filter: 'blur(150px)' }} />
+            background: 'color-mix(in srgb, var(--color-tertiary) 10%, transparent)', filter: 'blur(150px)' }} />
       </div>
 
       {/* CreateOrganization modal */}
@@ -114,7 +114,7 @@ function ClerkOnboarding() {
         <div
           className="glass-card p-8 md:p-12 overflow-hidden relative"
           style={{ borderRadius: '1rem', border: '1px solid rgba(217,221,224,0.3)',
-            boxShadow: '0 40px 100px -20px rgba(42,75,217,0.12)' }}
+            boxShadow: '0 40px 100px -20px color-mix(in srgb, var(--color-primary) 12%, transparent)' }}
         >
           {/* Brand header */}
           <div className="flex flex-col items-center mb-10 text-center">
@@ -141,7 +141,7 @@ function ClerkOnboarding() {
             {!orgsLoaded && (
               <div className="flex justify-center py-8">
                 <div className="w-6 h-6 rounded-full border-2 animate-spin"
-                  style={{ borderColor: 'rgba(42,75,217,0.2)', borderTopColor: '#2a4bd9' }} />
+                  style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)', borderTopColor: 'var(--color-primary)' }} />
               </div>
             )}
 
@@ -162,7 +162,7 @@ function ClerkOnboarding() {
                         boxShadow: '0 10px 30px -5px rgba(0,0,0,0.05)' }}
                       onMouseEnter={(e) => {
                         e.currentTarget.style.transform = 'translateY(-6px)';
-                        e.currentTarget.style.boxShadow = '0 25px 50px -12px rgba(42,75,217,0.15)';
+                        e.currentTarget.style.boxShadow = '0 25px 50px -12px color-mix(in srgb, var(--color-primary) 15%, transparent)';
                       }}
                       onMouseLeave={(e) => {
                         e.currentTarget.style.transform = 'translateY(0)';
@@ -211,11 +211,11 @@ function ClerkOnboarding() {
             {orgsLoaded && orgs.length === 0 && (
               <div
                 className="text-center py-10 rounded-2xl"
-                style={{ border: '2px dashed rgba(42,75,217,0.15)', background: 'rgba(42,75,217,0.02)' }}
+                style={{ border: '2px dashed color-mix(in srgb, var(--color-primary) 15%, transparent)', background: 'color-mix(in srgb, var(--color-primary) 2%, transparent)' }}
               >
                 <div
                   className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4"
-                  style={{ background: 'rgba(42,75,217,0.08)' }}
+                  style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)' }}
                 >
                   <Icon name="business" size={28} className="text-primary" />
                 </div>
@@ -234,7 +234,7 @@ function ClerkOnboarding() {
                 className="w-full md:w-auto px-10 font-bold flex items-center justify-center gap-3 active:scale-95 font-headline text-white rounded-xl"
                 style={{
                   background: GRADIENTS.primaryDim,
-                  boxShadow: '0 20px 40px -10px rgba(42,75,217,0.2)',
+                  boxShadow: '0 20px 40px -10px color-mix(in srgb, var(--color-primary) 20%, transparent)',
                 }}
               >
                 <Icon name="add_circle" size={22} />
@@ -282,12 +282,12 @@ const DEMO_WORKSPACES = [
     name: 'Acme Corp',
     stats: '12 Active Surveys • 4.2k Responses',
     icon: 'business',
-    iconBg: 'rgba(130,222,255,0.2)',
-    iconColor: '#00647c',
-    hoverGlow: 'rgba(42,75,217,0.15)',
+    iconBg: 'color-mix(in srgb, var(--color-secondary-container) 20%, transparent)',
+    iconColor: 'var(--color-secondary)',
+    hoverGlow: 'color-mix(in srgb, var(--color-primary) 15%, transparent)',
     members: [
-      { bg: '#879aff', text: 'A' },
-      { bg: '#d299ff', text: 'B' },
+      { bg: 'var(--color-primary-container)', text: 'A' },
+      { bg: 'var(--color-tertiary-container)', text: 'B' },
     ],
     extra: '+5',
   },
@@ -296,10 +296,10 @@ const DEMO_WORKSPACES = [
     name: 'TechFlow',
     stats: '3 Active Surveys • 850 Responses',
     icon: 'account_tree',
-    iconBg: 'rgba(210,153,255,0.2)',
-    iconColor: '#8329c8',
-    hoverGlow: 'rgba(131,41,200,0.15)',
-    members: [{ bg: '#879aff', text: 'T' }],
+    iconBg: 'color-mix(in srgb, var(--color-tertiary-container) 20%, transparent)',
+    iconColor: 'var(--color-tertiary)',
+    hoverGlow: 'color-mix(in srgb, var(--color-tertiary) 15%, transparent)',
+    members: [{ bg: 'var(--color-primary-container)', text: 'T' }],
     extra: '+2',
   },
 ];
@@ -320,17 +320,17 @@ function DemoOnboarding() {
         <div className="mesh-grid absolute inset-0 opacity-40" />
         <div className="absolute rounded-full"
           style={{ top: '-10%', left: '-10%', width: '40%', height: '40%',
-            background: 'rgba(42,75,217,0.1)', filter: 'blur(120px)' }} />
+            background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', filter: 'blur(120px)' }} />
         <div className="absolute rounded-full"
           style={{ bottom: '-10%', right: '-10%', width: '50%', height: '50%',
-            background: 'rgba(131,41,200,0.1)', filter: 'blur(150px)' }} />
+            background: 'color-mix(in srgb, var(--color-tertiary) 10%, transparent)', filter: 'blur(150px)' }} />
       </div>
 
       <main className="relative z-10 w-full max-w-4xl px-6 py-12">
         <div
           className="glass-card p-8 md:p-12 overflow-hidden relative"
           style={{ borderRadius: '1rem', border: '1px solid rgba(217,221,224,0.3)',
-            boxShadow: '0 40px 100px -20px rgba(42,75,217,0.12)' }}
+            boxShadow: '0 40px 100px -20px color-mix(in srgb, var(--color-primary) 12%, transparent)' }}
         >
           <div className="flex flex-col items-center mb-12 text-center">
             <div
@@ -417,7 +417,7 @@ function DemoOnboarding() {
                 className="cta-glow group w-full md:w-auto px-10 text-lg font-bold flex items-center justify-center gap-3 active:scale-95 font-headline text-white rounded-xl"
                 style={{
                   background: GRADIENTS.primaryDim,
-                  boxShadow: '0 20px 40px -10px rgba(42,75,217,0.2)',
+                  boxShadow: '0 20px 40px -10px color-mix(in srgb, var(--color-primary) 20%, transparent)',
                 }}
               >
                 <Icon name="add_circle" size={22} />

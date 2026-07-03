@@ -141,7 +141,7 @@ export function DocPipelinePage() {
               <div
                 className="w-8 h-8 rounded-full border-2 animate-spin"
                 style={{
-                  borderColor: 'rgba(42,75,217,0.2)',
+                  borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)',
                   borderTopColor: 'var(--color-primary)',
                 }}
               />

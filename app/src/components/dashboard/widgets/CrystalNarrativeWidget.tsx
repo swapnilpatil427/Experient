@@ -41,7 +41,7 @@ export function CrystalNarrativeWidget({ summary }: CrystalNarrativeWidgetProps)
           className="w-11 h-11 rounded-xl flex items-center justify-center text-white text-base flex-shrink-0"
           style={{
             background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
-            boxShadow: '0 4px 16px rgba(42,75,217,0.35)',
+            boxShadow: '0 4px 16px color-mix(in srgb, var(--color-primary) 35%, transparent)',
           }}
         >
           ◆

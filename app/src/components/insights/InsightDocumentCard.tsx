@@ -62,18 +62,18 @@ export function InsightDocumentCard({ doc }: { doc: InsightDocument }) {
   return (
     <div
       className="rounded-2xl overflow-hidden border"
-      style={{ borderColor: 'rgba(42,75,217,0.18)', background: 'var(--color-surface-container, rgba(42,75,217,0.03))' }}
+      style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 18%, transparent)', background: 'var(--color-surface-container, color-mix(in srgb, var(--color-primary) 3%, transparent))' }}
     >
       {/* Header */}
       <div
         className="px-4 py-2.5 flex items-center gap-2"
-        style={{ background: 'rgba(42,75,217,0.07)', borderBottom: '1px solid rgba(42,75,217,0.12)' }}
+        style={{ background: 'color-mix(in srgb, var(--color-primary) 7%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)' }}
       >
         <Icon name="description" size={16} style={{ color: 'var(--color-primary)' }} />
         <span className="text-[12px] font-bold text-on-surface truncate">{title}</span>
         <span
           className="ml-auto text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full flex-shrink-0"
-          style={{ background: 'rgba(42,75,217,0.10)', color: 'var(--color-primary)' }}
+          style={{ background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', color: 'var(--color-primary)' }}
         >
           {laneLabel}
         </span>

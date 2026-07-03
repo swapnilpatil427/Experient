@@ -56,13 +56,13 @@ function triggerLabel(wf: Workflow, triggers: RegistryTrigger[]): string | null 
 const WORKFLOW_VISUALS = {
   w1: {
     badgeBg: 'rgba(180,19,64,0.1)',  badgeColor: '#b41340',
-    iconGradient: GRADIENTS.primaryLight, iconBg: 'rgba(42,75,217,0.08)',
-    conditionColor: '#b41340', actionColor: '#00647c',
+    iconGradient: GRADIENTS.primaryLight, iconBg: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
+    conditionColor: '#b41340', actionColor: 'var(--color-secondary)',
   },
   w2: {
-    badgeBg: 'rgba(131,41,200,0.1)', badgeColor: '#8329c8',
-    iconGradient: GRADIENTS.purple,  iconBg: 'rgba(131,41,200,0.08)',
-    conditionColor: '#8329c8',       actionColor: '#2a4bd9',
+    badgeBg: 'color-mix(in srgb, var(--color-tertiary) 10%, transparent)', badgeColor: 'var(--color-tertiary)',
+    iconGradient: GRADIENTS.purple,  iconBg: 'color-mix(in srgb, var(--color-tertiary) 8%, transparent)',
+    conditionColor: 'var(--color-tertiary)',       actionColor: 'var(--color-primary)',
   },
   w3: {
     badgeBg: 'rgba(217,119,6,0.1)',  badgeColor: '#d97706',
@@ -72,9 +72,9 @@ const WORKFLOW_VISUALS = {
 };
 
 const DEFAULT_VISUALS = {
-  badgeBg: 'rgba(42,75,217,0.1)', badgeColor: '#2a4bd9',
-  iconGradient: GRADIENTS.primaryLight, iconBg: 'rgba(42,75,217,0.08)',
-  conditionColor: '#2a4bd9',      actionColor: '#8329c8',
+  badgeBg: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', badgeColor: 'var(--color-primary)',
+  iconGradient: GRADIENTS.primaryLight, iconBg: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
+  conditionColor: 'var(--color-primary)',      actionColor: 'var(--color-tertiary)',
 };
 
 function getVisuals(wf: Workflow) {
@@ -180,7 +180,7 @@ export function WorkflowsPage() {
                   variant="outline"
                   onClick={() => navigate(ROUTES.SETTINGS_INTEGRATIONS)}
                   className="rounded-xl"
-                  style={{ background: 'rgba(42,75,217,0.08)', color: 'var(--color-primary)', border: 'none' }}
+                  style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)', border: 'none' }}
                 >
                   <Icon name="cable" size={16} className="mr-1.5" />
                   {t('integrationsSettings.entryPointLabel')}
@@ -210,7 +210,7 @@ export function WorkflowsPage() {
           <div className="grid grid-cols-3 gap-4 mb-8">
             {[
               { labelKey: 'workflows.stats.active',        value: workflows.filter((w) => w.status === 'active').length, color: '#059669', bg: '#d1fae5' },
-              { labelKey: 'workflows.stats.triggersToday', value: workflows.reduce((a, w) => a + (w.trigger_count || 0), 0), color: '#2a4bd9', bg: '#e0e7ff' },
+              { labelKey: 'workflows.stats.triggersToday', value: workflows.reduce((a, w) => a + (w.trigger_count || 0), 0), color: 'var(--color-primary)', bg: '#e0e7ff' },
               { labelKey: 'workflows.stats.paused',        value: workflows.filter((w) => w.status === 'paused').length, color: '#d97706', bg: '#fef3c7' },
             ].map((stat) => (
               <Card key={stat.labelKey} className="p-4 rounded-2xl bg-white border-0"

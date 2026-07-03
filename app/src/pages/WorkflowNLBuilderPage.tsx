@@ -332,17 +332,17 @@ function ThinkingCrystalAccent() {
 // Crystal Alternative" section. No new fallback designed.
 function CssCrystalFallback() {
   return (
-    <div data-testid="nl-thinking-crystal-css" style={{ width: 96, height: 96, position: 'relative', filter: 'drop-shadow(0 10px 22px rgba(42,75,217,0.45))' }}>
+    <div data-testid="nl-thinking-crystal-css" style={{ width: 96, height: 96, position: 'relative', filter: 'drop-shadow(0 10px 22px color-mix(in srgb, var(--color-primary) 45%, transparent))' }}>
       <div style={{ position: 'absolute', inset: 0,
-        background: 'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)',
+        background: 'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)',
         clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
         animation: 'exp-hub-spin 20s linear infinite', filter: 'blur(0.5px)' }} />
       <div style={{ position: 'absolute', inset: '18%',
-        background: 'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)',
+        background: 'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)',
         clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
         animation: 'exp-hub-spin 10s linear infinite reverse', opacity: 0.78 }} />
       <div style={{ position: 'absolute', inset: '38%',
-        background: 'radial-gradient(circle, #ffffff, #82deff)',
+        background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))',
         borderRadius: '50%', filter: 'blur(5px)', animation: 'pulse-glow 2.5s ease-in-out infinite' }} />
       <style>{`@keyframes exp-hub-spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
     </div>
@@ -378,7 +378,7 @@ function actionLabelFor(action: string, actionDefs: ActionDef[]): string {
 function TriggerSummaryRow({ triggerType, triggers, variants }: { triggerType: string; triggers: Trigger[]; variants: Variants }) {
   return (
     <motion.div variants={variants} className="flex items-center gap-2 py-1.5">
-      <span className="w-6 h-6 rounded-md flex items-center justify-center text-white flex-shrink-0" style={{ background: '#2a4bd9' }}>
+      <span className="w-6 h-6 rounded-md flex items-center justify-center text-white flex-shrink-0" style={{ background: 'var(--color-primary)' }}>
         <Icon name="bolt" size={13} />
       </span>
       <span className="text-xs font-bold text-on-surface-variant uppercase">WHEN</span>

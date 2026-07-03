@@ -343,11 +343,11 @@ function QuestionCard({ q, index, selected, onSelect, onUpdate, onDelete, onDupl
       className="relative rounded-2xl cursor-pointer transition-all"
       style={{
         background:  'white',
-        border:      selected ? '2px solid #2a4bd9' : isDragOver ? '2px dashed #2a4bd9' : '1px solid rgba(171,173,175,0.15)',
+        border:      selected ? '2px solid var(--color-primary)' : isDragOver ? '2px dashed var(--color-primary)' : '1px solid rgba(171,173,175,0.15)',
         opacity:     isDragging ? 0.4 : 1,
         transform:   hovered && !selected ? 'perspective(1200px) rotateX(-0.5deg) translateY(-2px)' : 'none',
         boxShadow:   selected
-          ? '0 0 0 4px rgba(42,75,217,0.08), 0 16px 40px rgba(42,75,217,0.12)'
+          ? '0 0 0 4px color-mix(in srgb, var(--color-primary) 8%, transparent), 0 16px 40px color-mix(in srgb, var(--color-primary) 12%, transparent)'
           : hovered
             ? '0 16px 48px rgba(0,0,0,0.1)'
             : '0 4px 16px rgba(0,0,0,0.04)',
@@ -378,7 +378,7 @@ function QuestionCard({ q, index, selected, onSelect, onUpdate, onDelete, onDupl
               <span className="text-[10px] font-bold text-error uppercase tracking-wider">Required</span>
             )}
             {hasSkipLogic && (
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 bg-[rgba(42,75,217,0.08)] text-[var(--color-primary)]">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] text-[var(--color-primary)]">
                 <Icon name="schema" size={10} />skip
               </span>
             )}
@@ -421,7 +421,7 @@ function QuestionCard({ q, index, selected, onSelect, onUpdate, onDelete, onDupl
             title="Click to edit question text"
             className={cn(
               'cursor-text rounded-lg transition-all',
-              !editingText && 'hover:bg-[rgba(42,75,217,0.04)] hover:ring-1 hover:ring-[rgba(42,75,217,0.15)]',
+              !editingText && 'hover:bg-[color-mix(in_srgb,var(--color-primary)_4%,transparent)] hover:ring-1 hover:ring-[color-mix(in_srgb,var(--color-primary)_15%,transparent)]',
             )}
           >
             {editingText ? (
@@ -431,7 +431,7 @@ function QuestionCard({ q, index, selected, onSelect, onUpdate, onDelete, onDupl
                 onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onUpdate(q.id, { question: e.target.value } as Partial<Question>)}
                 onBlur={() => setEditingText(false)}
                 rows={2}
-                className="w-full resize-none text-base font-semibold rounded-lg px-3 py-2 font-headline text-foreground border border-[rgba(42,75,217,0.3)] focus-visible:ring-1 focus-visible:ring-[rgba(42,75,217,0.4)] bg-white"
+                className="w-full resize-none text-base font-semibold rounded-lg px-3 py-2 font-headline text-foreground border border-[color-mix(in_srgb,var(--color-primary)_30%,transparent)] focus-visible:ring-1 focus-visible:ring-[color-mix(in_srgb,var(--color-primary)_40%,transparent)] bg-white"
               />
             ) : (
               <div className="group px-3 py-2 flex items-start gap-2 min-h-[40px]">
@@ -649,7 +649,7 @@ function SkipLogicEditor({ q, allQuestions, onChange }: SkipLogicEditorProps) {
       {rules.map((rule) => {
         const needsValue = !noValueNeeded(rule.condition.operator);
         return (
-          <div key={rule.id} className="rounded-xl p-3 space-y-2 bg-[rgba(42,75,217,0.04)] border border-[rgba(42,75,217,0.12)]">
+          <div key={rule.id} className="rounded-xl p-3 space-y-2 bg-[color-mix(in_srgb,var(--color-primary)_4%,transparent)] border border-[color-mix(in_srgb,var(--color-primary)_12%,transparent)]">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-black uppercase tracking-widest text-[var(--color-primary)]">If answer…</span>
               <Button variant="ghost" size="icon" onClick={() => removeRule(rule.id)} className="h-6 w-6 rounded">
@@ -722,7 +722,7 @@ function SkipLogicEditor({ q, allQuestions, onChange }: SkipLogicEditorProps) {
       <Button
         variant="outline"
         onClick={addRule}
-        className="w-full text-xs font-bold h-8 rounded-xl bg-[rgba(42,75,217,0.05)] text-[var(--color-primary)] border-dashed border-[rgba(42,75,217,0.2)] hover:bg-[rgba(42,75,217,0.08)]"
+        className="w-full text-xs font-bold h-8 rounded-xl bg-[color-mix(in_srgb,var(--color-primary)_5%,transparent)] text-[var(--color-primary)] border-dashed border-[color-mix(in_srgb,var(--color-primary)_20%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)]"
       >
         <Icon name="add" size={14} /> Add skip rule
       </Button>
@@ -1183,7 +1183,7 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
                   className="flex flex-col items-center gap-1.5 p-3 rounded-2xl transition-all active:scale-95"
                   style={{
                     background: v === i + 1 ? '#e0e7ff' : '#f5f7f9',
-                    border: v === i + 1 ? '2px solid #2a4bd9' : '2px solid transparent',
+                    border: v === i + 1 ? '2px solid var(--color-primary)' : '2px solid transparent',
                   }}>
                   <span className="text-3xl">{emoji}</span>
                   <span className="text-[10px] font-bold text-muted-foreground">{label}</span>
@@ -1211,9 +1211,9 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
               <button key={i + 1} onClick={() => ch(i + 1)}
                 className="flex-1 py-4 rounded-xl font-black text-xl transition-all active:scale-95"
                 style={{
-                  background: (v as number) >= i + 1 ? '#2a4bd9' : '#eef1f3',
+                  background: (v as number) >= i + 1 ? 'var(--color-primary)' : '#eef1f3',
                   color: (v as number) >= i + 1 ? '#fff' : '#c4c4c4',
-                  boxShadow: (v as number) >= i + 1 ? '0 8px 20px rgba(42,75,217,0.2)' : 'none',
+                  boxShadow: (v as number) >= i + 1 ? '0 8px 20px color-mix(in srgb, var(--color-primary) 20%, transparent)' : 'none',
                 }}>
                 {(qAny.ratingStyle as string) === 'numbers' ? i + 1 : '★'}
               </button>
@@ -1228,11 +1228,11 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
                 className="flex items-center gap-3 px-5 py-4 rounded-xl text-left transition-all active:scale-95"
                 style={{
                   background: v === opt ? '#e0e7ff' : '#eef1f3',
-                  border: v === opt ? '2px solid #2a4bd9' : '2px solid transparent',
-                  color: v === opt ? '#2a4bd9' : '#2c2f31',
+                  border: v === opt ? '2px solid var(--color-primary)' : '2px solid transparent',
+                  color: v === opt ? 'var(--color-primary)' : '#2c2f31',
                 }}>
                 <div className="w-5 h-5 rounded-full flex-shrink-0 flex items-center justify-center"
-                  style={{ border: v === opt ? '2px solid #2a4bd9' : '2px solid #d0d5d8', background: v === opt ? '#2a4bd9' : 'transparent' }}>
+                  style={{ border: v === opt ? '2px solid var(--color-primary)' : '2px solid #d0d5d8', background: v === opt ? 'var(--color-primary)' : 'transparent' }}>
                   {v === opt && <div className="w-2 h-2 rounded-full bg-white" />}
                 </div>
                 <span className="font-semibold text-sm">{opt}</span>
@@ -1256,13 +1256,13 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
                 className="flex items-center gap-3 px-5 py-4 rounded-xl text-left transition-all active:scale-95"
                 style={{
                   background: arrVal.includes(opt) ? '#e0e7ff' : '#eef1f3',
-                  border: arrVal.includes(opt) ? '2px solid #2a4bd9' : '2px solid transparent',
+                  border: arrVal.includes(opt) ? '2px solid var(--color-primary)' : '2px solid transparent',
                 }}>
                 <div className="w-5 h-5 rounded flex-shrink-0 flex items-center justify-center"
-                  style={{ border: arrVal.includes(opt) ? '2px solid #2a4bd9' : '2px solid #d0d5d8', background: arrVal.includes(opt) ? '#2a4bd9' : 'transparent' }}>
+                  style={{ border: arrVal.includes(opt) ? '2px solid var(--color-primary)' : '2px solid #d0d5d8', background: arrVal.includes(opt) ? 'var(--color-primary)' : 'transparent' }}>
                   {arrVal.includes(opt) && <Icon name="check" size={12} style={{ color: '#fff' }} />}
                 </div>
-                <span className="font-semibold text-sm" style={{ color: arrVal.includes(opt) ? '#2a4bd9' : '#2c2f31' }}>{opt}</span>
+                <span className="font-semibold text-sm" style={{ color: arrVal.includes(opt) ? 'var(--color-primary)' : '#2c2f31' }}>{opt}</span>
               </button>
             ))}
           </div>
@@ -1271,7 +1271,7 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
       case 'dropdown':
         return (
           <select value={(v as string) || ''} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => ch(e.target.value)}
-            className="w-full mt-5 px-4 py-3 rounded-[10px] text-sm font-semibold bg-[#f5f7f9] border border-[#dfe3e6] text-foreground appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#2a4bd9]">
+            className="w-full mt-5 px-4 py-3 rounded-[10px] text-sm font-semibold bg-[#f5f7f9] border border-[#dfe3e6] text-foreground appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]">
             <option value="">{(qAny.placeholder as string) || 'Choose an option…'}</option>
             {((qAny.options as string[]) || []).map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
           </select>
@@ -1281,13 +1281,13 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
           <textarea value={(v as string) || ''} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => ch(e.target.value)}
             placeholder={(qAny.placeholder as string) || t('fill.textareaPlaceholder')}
             rows={4}
-            className="w-full mt-5 resize-none text-sm px-4 py-3 rounded-[10px] bg-[#f5f7f9] border border-[#dfe3e6] text-foreground focus:outline-none focus:ring-2 focus:ring-[#2a4bd9] placeholder:text-[#abadaf]" />
+            className="w-full mt-5 resize-none text-sm px-4 py-3 rounded-[10px] bg-[#f5f7f9] border border-[#dfe3e6] text-foreground focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] placeholder:text-[#abadaf]" />
         );
       case 'short_text':
         return (
           <input type="text" value={(v as string) || ''} onChange={(e: React.ChangeEvent<HTMLInputElement>) => ch(e.target.value)}
             placeholder={(qAny.placeholder as string) || 'Type your answer…'}
-            className="w-full mt-5 px-4 py-3 rounded-[10px] text-sm font-medium bg-[#f5f7f9] border border-[#dfe3e6] text-foreground focus:outline-none focus:ring-2 focus:ring-[#2a4bd9]" />
+            className="w-full mt-5 px-4 py-3 rounded-[10px] text-sm font-medium bg-[#f5f7f9] border border-[#dfe3e6] text-foreground focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]" />
         );
       case 'slider': {
         const min = (qAny.min as number) ?? 0;
@@ -1303,7 +1303,7 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
             </div>
             <input type="range" min={min} max={max} step={step} value={cur}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => ch(Number(e.target.value))}
-              className="w-full accent-[#2a4bd9]" />
+              className="w-full accent-[var(--color-primary)]" />
           </div>
         );
       }
@@ -1311,7 +1311,7 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
         const inputType = (qAny.dateType as string) === 'time' ? 'time' : (qAny.dateType as string) === 'datetime' ? 'datetime-local' : 'date';
         return (
           <input type={inputType} value={(v as string) || ''} onChange={(e: React.ChangeEvent<HTMLInputElement>) => ch(e.target.value)}
-            className="w-full mt-5 px-4 py-3 rounded-[10px] text-sm font-medium bg-[#f5f7f9] border border-[#dfe3e6] text-foreground focus:outline-none focus:ring-2 focus:ring-[#2a4bd9]" />
+            className="w-full mt-5 px-4 py-3 rounded-[10px] text-sm font-medium bg-[#f5f7f9] border border-[#dfe3e6] text-foreground focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]" />
         );
       }
       case 'matrix': {
@@ -1345,7 +1345,7 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
                       <td key={col} className="py-3 px-2 text-center">
                         <button onClick={() => toggle(row, col)}
                           className={`w-5 h-5 mx-auto flex items-center justify-center ${multi ? 'rounded' : 'rounded-full'}`}
-                          style={{ border: isSel(row, col) ? '2px solid #2a4bd9' : '2px solid #d0d5d8', background: isSel(row, col) ? '#2a4bd9' : 'transparent' }}>
+                          style={{ border: isSel(row, col) ? '2px solid var(--color-primary)' : '2px solid #d0d5d8', background: isSel(row, col) ? 'var(--color-primary)' : 'transparent' }}>
                           {isSel(row, col) && <Icon name="check" size={11} style={{ color: '#fff' }} />}
                         </button>
                       </td>
@@ -1370,7 +1370,7 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
           <div className="mt-5 space-y-2">
             {ranked.map((opt: string, i: number) => (
               <div key={opt} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#f5f7f9] border border-[#dfe3e6]">
-                <span className="w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black bg-[#e0e7ff] text-[#2a4bd9] flex-shrink-0">{i + 1}</span>
+                <span className="w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black bg-[#e0e7ff] text-[var(--color-primary)] flex-shrink-0">{i + 1}</span>
                 <span className="flex-1 text-sm font-semibold text-foreground">{opt}</span>
                 <div className="flex flex-col gap-0.5">
                   <button onClick={() => { if (i > 0) move(i, i - 1); }} disabled={i === 0}
@@ -1414,7 +1414,7 @@ function PreviewMode({ questions, title, thankYouMessage, settings, onClose }: P
               className={cn(
                 'rounded-full gap-1.5 h-auto py-1.5 px-3 text-xs font-bold',
                 settingsOpen
-                  ? 'bg-[rgba(42,75,217,0.08)] text-[var(--color-primary)]'
+                  ? 'bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] text-[var(--color-primary)]'
                   : 'text-muted-foreground hover:bg-[#eef1f3]'
               )}
             >
@@ -1665,7 +1665,7 @@ function SurveySettingsPanel({ surveyId, initialTags, onTagsChange, settings, on
     <div className="h-full flex flex-col overflow-y-auto bg-[#fafbfc]">
       <div className="flex items-center justify-between px-5 py-4 sticky top-0 z-10 bg-[#fafbfc] border-b border-[rgba(171,173,175,0.1)]">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-[rgba(42,75,217,0.08)]">
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)]">
             <Icon name="settings" size={15} style={{ color: 'var(--color-primary)' }} />
           </div>
           <span className="text-sm font-extrabold font-headline text-foreground">{t('builder.settings.heading')}</span>
@@ -1680,7 +1680,7 @@ function SurveySettingsPanel({ surveyId, initialTags, onTagsChange, settings, on
         {/* Template info — read-only, sourced from template record */}
         {fromTemplate && (
           <div className="rounded-xl p-3.5 space-y-2.5"
-            style={{ background: 'rgba(131,41,200,0.05)', border: '1px solid rgba(131,41,200,0.12)' }}>
+            style={{ background: 'color-mix(in srgb, var(--color-tertiary) 5%, transparent)', border: '1px solid color-mix(in srgb, var(--color-tertiary) 12%, transparent)' }}>
             <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'var(--color-tertiary)' }}>
               {t('builder.settings.templateLabel')}
             </p>
@@ -1693,7 +1693,7 @@ function SurveySettingsPanel({ surveyId, initialTags, onTagsChange, settings, on
             </div>
             {fromTemplate.category && (
               <span className="inline-block text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full"
-                style={{ background: 'rgba(131,41,200,0.1)', color: 'var(--color-tertiary)' }}>
+                style={{ background: 'color-mix(in srgb, var(--color-tertiary) 10%, transparent)', color: 'var(--color-tertiary)' }}>
                 {fromTemplate.category}
               </span>
             )}
@@ -1701,7 +1701,7 @@ function SurveySettingsPanel({ surveyId, initialTags, onTagsChange, settings, on
               <div className="flex flex-wrap gap-1 mt-1">
                 {fromTemplate.tags.slice(0, 6).map((tag: string) => (
                   <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                    style={{ background: 'rgba(131,41,200,0.08)', color: 'var(--color-tertiary)' }}>
+                    style={{ background: 'color-mix(in srgb, var(--color-tertiary) 8%, transparent)', color: 'var(--color-tertiary)' }}>
                     {tag}
                   </span>
                 ))}
@@ -2214,7 +2214,7 @@ export function SurveyBuilderPage() {
                     className={cn(
                       'rounded-full gap-1.5',
                       settingsOpen
-                        ? 'bg-[rgba(42,75,217,0.08)] text-[var(--color-primary)] border-[rgba(42,75,217,0.2)] hover:bg-[rgba(42,75,217,0.12)]'
+                        ? 'bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] text-[var(--color-primary)] border-[color-mix(in_srgb,var(--color-primary)_20%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-primary)_12%,transparent)]'
                         : 'bg-[#f5f7f9] text-[#595c5e] border-[#dfe3e6] hover:bg-[#eef1f3]'
                     )}
                   >
@@ -2284,7 +2284,7 @@ export function SurveyBuilderPage() {
             {/* Template intelligence banner */}
             {fromTemplate?.intelligence && (
               <div className="rounded-2xl p-4 flex items-start gap-3"
-                style={{ background: 'rgba(131,41,200,0.05)', border: '1px solid rgba(131,41,200,0.12)' }}>
+                style={{ background: 'color-mix(in srgb, var(--color-tertiary) 5%, transparent)', border: '1px solid color-mix(in srgb, var(--color-tertiary) 12%, transparent)' }}>
                 <Icon name="auto_awesome" size={16} style={{ color: 'var(--color-tertiary)', marginTop: 2 }} />
                 <div>
                   <p className="text-xs font-bold mb-0.5" style={{ color: 'var(--color-tertiary)' }}>
@@ -2307,7 +2307,7 @@ export function SurveyBuilderPage() {
                   const qAny = q as unknown as Record<string, unknown>;
                   return Array.isArray(qAny.skipLogic) && (qAny.skipLogic as unknown[]).length > 0;
                 }) && (
-                  <span className="text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1 bg-[rgba(42,75,217,0.08)] text-[var(--color-primary)]">
+                  <span className="text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1 bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] text-[var(--color-primary)]">
                     <Icon name="schema" size={11} />Skip logic active
                   </span>
                 )}
@@ -2360,11 +2360,11 @@ export function SurveyBuilderPage() {
               }}
               className={cn(
                 'w-full h-auto py-5 rounded-2xl border-2 border-dashed flex items-center justify-center gap-3 transition-all group',
-                'border-[#dfe3e6] hover:border-[var(--color-primary)] hover:bg-[rgba(42,75,217,0.03)] bg-transparent',
-                dragOver === questions.length && 'border-[var(--color-primary)] bg-[rgba(42,75,217,0.04)]'
+                'border-[#dfe3e6] hover:border-[var(--color-primary)] hover:bg-[color-mix(in_srgb,var(--color-primary)_3%,transparent)] bg-transparent',
+                dragOver === questions.length && 'border-[var(--color-primary)] bg-[color-mix(in_srgb,var(--color-primary)_4%,transparent)]'
               )}
             >
-              <div className="w-10 h-10 rounded-full flex items-center justify-center transition-all group-hover:scale-110 bg-[rgba(42,75,217,0.08)]">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center transition-all group-hover:scale-110 bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)]">
                 <Icon name="add" size={22} className="text-[var(--color-primary)]" />
               </div>
               <span className="text-sm font-bold text-[var(--color-primary)]">Add Question</span>
