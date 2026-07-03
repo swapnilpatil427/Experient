@@ -67,8 +67,23 @@ export function DisclosureBanner({ poolSize, examinedCount, includedCount, backf
                   {included.map((s) => (
                     <li key={s.id} className="flex items-center justify-between gap-2 text-sm">
                       <span className="truncate text-on-surface">{s.survey_title ?? s.survey_id}</span>
-                      <span className="text-xs text-on-surface-variant shrink-0">
-                        {t('tagReport.disclosure.responseCount', { count: s.response_count_at_generation })}
+                      <span className="flex items-center gap-1.5 shrink-0">
+                        {/* R-T1: a below-floor survey is still included (raw numbers
+                            shown), but must be visually distinguished from a
+                            trend-eligible one everywhere it appears — this list was
+                            previously the one place that rendered every included
+                            survey identically. */}
+                        {!s.trend_eligible && (
+                          <span
+                            className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
+                            style={{ background: '#fef3c7', color: '#d97706' }}
+                          >
+                            {t('tagReport.disclosure.belowStatFloor')}
+                          </span>
+                        )}
+                        <span className="text-xs text-on-surface-variant">
+                          {t('tagReport.disclosure.responseCount', { count: s.response_count_at_generation })}
+                        </span>
                       </span>
                     </li>
                   ))}

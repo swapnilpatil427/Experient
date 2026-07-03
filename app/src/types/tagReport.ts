@@ -298,6 +298,7 @@ export interface TagReportRunResponse {
   backfill_occurred: boolean;
 }
 
+/** A row from `GET /api/survey-tags/:id/tag-report-history` — powers the Trail page's Run History list. */
 export interface TagReportTrailEntry {
   run_id: string;
   run_mode: TagReportRunMode;
@@ -306,12 +307,30 @@ export interface TagReportTrailEntry {
   metric_tracks_narrated: number;
 }
 
-/** `GET /api/survey-groups/insights/tag-report/:runId/trail` */
+interface TagReportLineageEntry {
+  id: string;
+  run_mode: TagReportRunMode;
+  trigger: TagReportTrigger;
+  status: string;
+  parent_run_id: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/**
+ * `GET /api/group-insights/tag-report/:runId/trail` — provenance + the
+ * bounded parent_run_id lineage walk for ONE run (not a tag's full history;
+ * that's `tag-report-history` above). Fixed 2026-07-03 (customer-journey
+ * review finding, severe): this previously declared `tag_id`/`tag_name`/`runs`,
+ * none of which the real endpoint returns — a hard shape mismatch that meant
+ * `runs.map(...)` in TagReportTrailPage threw on every real visit.
+ */
 export interface TagReportTrailResponse {
-  tag_id: string;
-  tag_name: string;
-  runs: TagReportTrailEntry[];
+  run_id: string;
+  lineage: TagReportLineageEntry[];
   sources: TagReportRunSource[];
+  /** True if the parent_run_id chain is longer than the ~10-hop walk cap. */
+  truncated: boolean;
 }
 
 export interface TagReportsIndexItem {

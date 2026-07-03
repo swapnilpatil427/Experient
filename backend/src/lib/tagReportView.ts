@@ -207,7 +207,17 @@ export function buildMetricTracks(
       }
 
       if (isCustomRange) {
-        result.survey_breakdown = eligibleSurveyIds
+        // R-C1 (post-QA AC): a same-checkpoint survey must show as a flat "no
+        // comparison available" snapshot, never be silently dropped. CrystalOS
+        // deliberately keeps these OUT of eligibleSurveyIds (they can't vote on
+        // a trend, and eligible_survey_count above must stay strictly
+        // trend-eligible) but now carries them separately in metric_json for
+        // display-only purposes — union them in here, nowhere else.
+        const noComparisonSurveyIds = Array.isArray(metricJson.no_comparison_survey_ids)
+          ? (metricJson.no_comparison_survey_ids as string[])
+          : [];
+        const breakdownSurveyIds = [...eligibleSurveyIds, ...noComparisonSurveyIds];
+        result.survey_breakdown = breakdownSurveyIds
           .map((sid) => {
             const source = sourcesBySurveyId.get(sid);
             const deltaEvent = bracketDeltaEvents.find((e) => e.survey_id === sid);

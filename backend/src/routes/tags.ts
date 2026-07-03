@@ -353,20 +353,32 @@ router.get('/:id/tag-report-history', requireAuth, async (req: Request, res: Res
     let cursorClause = '';
     if (cursor) {
       params.push(cursor);
-      cursorClause = `AND created_at < (SELECT created_at FROM group_insight_runs WHERE id = $${params.length} AND org_id = $1)`;
+      cursorClause = `AND r.created_at < (SELECT created_at FROM group_insight_runs WHERE id = $${params.length} AND org_id = $1)`;
     }
     params.push(limit);
 
+    // Fixed 2026-07-03 (customer-journey review finding, severe): this row
+    // shape previously used `id` and never included `metric_tracks_narrated` —
+    // a hard mismatch against the frontend's TagReportTrailEntry contract
+    // (`run_id` + `metric_tracks_narrated`), which crashed the Trail page's
+    // run-history list on every visit. Aliased to match, and the metric count
+    // is a real per-run aggregate off `group_insights` (one row per published
+    // metric track), not a placeholder.
     const { rows } = await query(
-      `SELECT id, run_mode, trigger, status, window_start, window_end, parent_run_id, created_at, completed_at
-       FROM group_insight_runs
-       WHERE org_id = $1 AND tag_ids @> ARRAY[$2]::uuid[] ${cursorClause}
-       ORDER BY created_at DESC
+      `SELECT r.id AS run_id, r.run_mode, r.trigger, r.status, r.window_start, r.window_end,
+              r.parent_run_id, r.created_at, r.completed_at,
+              COALESCE(gi.metric_tracks_narrated, 0)::int AS metric_tracks_narrated
+       FROM group_insight_runs r
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) AS metric_tracks_narrated FROM group_insights WHERE run_id = r.id
+       ) gi ON true
+       WHERE r.org_id = $1 AND r.tag_ids @> ARRAY[$2]::uuid[] ${cursorClause}
+       ORDER BY r.created_at DESC
        LIMIT $${params.length}`,
       params,
     );
 
-    const nextCursor = rows.length === limit ? (rows[rows.length - 1] as { id: string }).id : null;
+    const nextCursor = rows.length === limit ? (rows[rows.length - 1] as { run_id: string }).run_id : null;
     res.json({ runs: rows, next_cursor: nextCursor });
   } catch (err: unknown) {
     logger.error({ err: (err as Error).message, orgId: req.orgId, tagId: req.params.id }, 'tags:tag_report_history:error');

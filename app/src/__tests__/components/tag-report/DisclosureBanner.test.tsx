@@ -98,4 +98,28 @@ describe('DisclosureBanner', () => {
     await user.click(screen.getByRole('button', { expanded: false }));
     expect(screen.getByText('tagReport.disclosure.noExclusions')).toBeInTheDocument();
   });
+
+  it('flags an included-but-below-statistical-floor survey distinctly from a trend-eligible one (R-T1, regression test 2026-07-03)', async () => {
+    // Regression test: this list previously rendered every included survey
+    // identically regardless of trend_eligible, even though the raw field was
+    // already available — a below-floor survey's numbers were shown, but with
+    // no visual/textual distinction from a trend-eligible survey's.
+    const user = userEvent.setup();
+    render(
+      <DisclosureBanner
+        poolSize={2} examinedCount={2} includedCount={2} backfillOccurred={false}
+        sources={[
+          makeSource({ id: 'src-1', survey_title: 'Reliable Survey', trend_eligible: true }),
+          makeSource({ id: 'src-2', survey_title: 'Thin Sample Survey', trend_eligible: false, response_count_at_generation: 4 }),
+        ]}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { expanded: false }));
+
+    const reliableRow = screen.getByText('Reliable Survey').closest('li')!;
+    const thinRow = screen.getByText('Thin Sample Survey').closest('li')!;
+    expect(reliableRow.textContent).not.toMatch(/belowStatFloor/);
+    expect(thinRow.textContent).toMatch(/tagReport\.disclosure\.belowStatFloor/);
+  });
 });

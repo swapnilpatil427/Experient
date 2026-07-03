@@ -800,6 +800,12 @@ async def node_apply_trend_eligibility_gate(state: TagReportState) -> dict:
     for metric_key in METRIC_KEYS:
         eligible_ids: list[str] = []
         excluded_ids: list[str] = []
+        # R-C1 (post-QA AC): a same-checkpoint survey must still surface as a
+        # flat "no comparison available" snapshot, never be silently dropped —
+        # tracked separately from excluded_ids (which covers surveys that
+        # genuinely lack the metric or fail the stat/temporal-offset floor and
+        # are correctly absent from the per-survey breakdown).
+        no_comparison_ids: list[str] = []
         for survey in included:
             sid = survey["survey_id"]
             ckpts = boundary_checkpoints.get(sid) or {}
@@ -810,6 +816,8 @@ async def node_apply_trend_eligibility_gate(state: TagReportState) -> dict:
                 continue
             if not survey.get("trend_eligible"):
                 excluded_ids.append(sid)
+                if report_mode == "custom_range" and ckpts.get("same_checkpoint"):
+                    no_comparison_ids.append(sid)
                 continue
             eligible_ids.append(sid)
 
@@ -817,10 +825,12 @@ async def node_apply_trend_eligibility_gate(state: TagReportState) -> dict:
             "eligible": bool(eligible_ids),
             "eligible_survey_ids": eligible_ids,
             "excluded_survey_ids": excluded_ids,
+            "no_comparison_survey_ids": no_comparison_ids,
             "trend_gate_passed": len(eligible_ids) >= 1,
         }
         events.append(_event(run_id, "metric_track_gated", metric_key=metric_key,
-                              eligible_survey_ids=eligible_ids, excluded_survey_ids=excluded_ids))
+                              eligible_survey_ids=eligible_ids, excluded_survey_ids=excluded_ids,
+                              no_comparison_survey_ids=no_comparison_ids))
 
     return {"metric_tracks": metric_tracks, "stream_events": events}
 
@@ -1269,6 +1279,18 @@ async def node_publish(state: TagReportState) -> dict:
                                 # require had no way to reach the frontend at all,
                                 # regardless of the merge-logic fix above.
                                 "single_survey_id": track.get("single_survey_id"),
+                                # Fixed 2026-07-03 (customer-journey review finding):
+                                # same-checkpoint surveys were dropped from
+                                # eligible_survey_ids entirely (correctly — they can't
+                                # vote on a trend) but that meant they never reached
+                                # group_insights.survey_ids either, so the Custom Range
+                                # comparison card silently omitted them instead of
+                                # showing R-C1's required "no comparison available"
+                                # snapshot. Kept out of survey_ids/eligible_ids (which
+                                # drive citations + the "N trend-eligible surveys"
+                                # count and must stay strictly trend-eligible) and
+                                # carried here instead, purely for display.
+                                "no_comparison_survey_ids": track.get("no_comparison_survey_ids") or [],
                             }),
                             json.dumps(citations_for_track),
                             70 if track.get("confidence_tier") != "insufficient" else 40,

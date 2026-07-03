@@ -658,9 +658,9 @@ describe('PATCH /api/tags/:id/report-config', () => {
 describe('GET /api/tags/:id/tag-report-history', () => {
   it('returns the run history across all three modes, newest first', async () => {
     const fakeRuns = [
-      { id: 'run-3', run_mode: 'custom_range', trigger: 'manual', status: 'completed', created_at: 't3' },
-      { id: 'run-2', run_mode: 'automated', trigger: 'scheduled', status: 'completed', created_at: 't2' },
-      { id: 'run-1', run_mode: 'manual', trigger: 'manual', status: 'completed', created_at: 't1' },
+      { run_id: 'run-3', run_mode: 'custom_range', trigger: 'manual', status: 'completed', created_at: 't3', metric_tracks_narrated: 2 },
+      { run_id: 'run-2', run_mode: 'automated', trigger: 'scheduled', status: 'completed', created_at: 't2', metric_tracks_narrated: 3 },
+      { run_id: 'run-1', run_mode: 'manual', trigger: 'manual', status: 'completed', created_at: 't1', metric_tracks_narrated: 1 },
     ];
     dbQuery = vi.fn(async (text) => {
       if (text.includes('SELECT id FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
@@ -670,7 +670,7 @@ describe('GET /api/tags/:id/tag-report-history', () => {
     const { status, body } = await api(buildApp(), 'GET', '/api/tags/tag-1/tag-report-history');
     expect(status).toBe(200);
     expect(body.runs).toHaveLength(3);
-    expect(body.runs[0]).toMatchObject({ id: 'run-3' });
+    expect(body.runs[0]).toMatchObject({ run_id: 'run-3' });
   });
 
   it('returns 404 when the tag does not exist', async () => {
@@ -684,7 +684,7 @@ describe('GET /api/tags/:id/tag-report-history', () => {
   });
 
   it('paginates via next_cursor when a full page is returned', async () => {
-    const fullPage = Array.from({ length: 20 }, (_, i) => ({ id: `run-${i}`, created_at: `t${i}` }));
+    const fullPage = Array.from({ length: 20 }, (_, i) => ({ run_id: `run-${i}`, created_at: `t${i}`, metric_tracks_narrated: 1 }));
     dbQuery = vi.fn(async (text) => {
       if (text.includes('SELECT id FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
       if (text.includes('FROM group_insight_runs')) return { rows: fullPage };
@@ -698,11 +698,29 @@ describe('GET /api/tags/:id/tag-report-history', () => {
   it('returns next_cursor: null when fewer than a full page is returned', async () => {
     dbQuery = vi.fn(async (text) => {
       if (text.includes('SELECT id FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
-      if (text.includes('FROM group_insight_runs')) return { rows: [{ id: 'run-1', created_at: 't1' }] };
+      if (text.includes('FROM group_insight_runs')) return { rows: [{ run_id: 'run-1', created_at: 't1', metric_tracks_narrated: 1 }] };
       return { rows: [] };
     });
     const { status, body } = await api(buildApp(), 'GET', '/api/tags/tag-1/tag-report-history');
     expect(status).toBe(200);
     expect(body.next_cursor).toBeNull();
+  });
+
+  it('includes metric_tracks_narrated as a real per-run count, matching the frontend TagReportTrailEntry contract (regression test 2026-07-03 — this field was previously entirely absent, a hard shape mismatch that crashed the Trail page)', async () => {
+    let capturedSql = null;
+    dbQuery = vi.fn(async (text) => {
+      capturedSql = text;
+      if (text.includes('SELECT id FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
+      if (text.includes('FROM group_insight_runs')) {
+        return { rows: [{ run_id: 'run-1', run_mode: 'manual', trigger: 'manual', created_at: 't1', metric_tracks_narrated: 3 }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/tags/tag-1/tag-report-history');
+    expect(status).toBe(200);
+    expect(body.runs[0].run_id).toBe('run-1');
+    expect(body.runs[0].metric_tracks_narrated).toBe(3);
+    expect(capturedSql).toContain('AS run_id');
+    expect(capturedSql).toContain('metric_tracks_narrated');
   });
 });

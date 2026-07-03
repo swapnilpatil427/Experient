@@ -161,36 +161,50 @@ export function useTagReport(tagId: string | undefined, runId: string | undefine
   };
 }
 
-/** Powers the Tag Report Trail page — full provenance + run-history lineage. */
-export function useTagReportTrail(runId: string | undefined) {
+/**
+ * Powers the Tag Report Trail page — the tag's full run history (Run History
+ * section) plus one run's provenance (Sources section).
+ *
+ * Fixed 2026-07-03 (customer-journey review finding, severe): this previously
+ * sourced BOTH `runs` and `sources` from `getTagReportTrail(runId)` alone,
+ * reading `data.runs`/`data.tag_id`/`data.tag_name` — fields that endpoint has
+ * never returned (it returns `{run_id, lineage, sources, truncated}`, scoped
+ * to ONE run's provenance, not a tag's history). `runs` was therefore always
+ * `undefined`, and `runs.map(...)` in TagReportTrailPage threw on every real
+ * visit. `getTagReportHistory` (paginated, all 3 modes) is CrystalOS/backend's
+ * actual intended source for Run History — its own code comment in `api.ts`
+ * already said so; this hook just wasn't calling it for that purpose.
+ */
+export function useTagReportTrail(tagId: string | undefined, runId: string | undefined) {
   const api = useApi();
-  const [tagId, setTagId] = useState<string | null>(null);
-  const [tagName, setTagName] = useState<string | null>(null);
   const [runs, setRuns] = useState<TagReportTrailEntry[]>([]);
   const [sources, setSources] = useState<TagReportRunSource[]>([]);
+  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!runId) return;
+    if (!tagId || !runId) return;
     setLoading(true);
     try {
-      const data = await api.getTagReportTrail(runId);
-      setTagId(data.tag_id);
-      setTagName(data.tag_name);
-      setRuns(data.runs);
-      setSources(data.sources);
+      const [history, trail] = await Promise.all([
+        api.getTagReportHistory(tagId, { limit: 20 }),
+        api.getTagReportTrail(runId),
+      ]);
+      setRuns(history.runs);
+      setSources(trail.sources);
+      setTruncated(trail.truncated);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [runId, api]);
+  }, [tagId, runId, api]);
 
   useEffect(() => { load(); }, [load]);
 
-  return { tagId, tagName, runs, sources, loading, error, reload: load };
+  return { runs, sources, truncated, loading, error, reload: load };
 }
 
 /** Powers the Reports Index page (`TAG_REPORTS_INDEX`, TRACKER.md Part C). */

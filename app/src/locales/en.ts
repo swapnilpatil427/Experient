@@ -5115,6 +5115,7 @@ const en = {
       excludedHeading: 'Excluded',
       noExclusions: 'No surveys were excluded.',
       responseCount: '{count} responses',
+      belowStatFloor: 'Below reliability threshold',
     },
     metricCard: {
       trendEligibleSurveys: '{count} trend-eligible surveys',
@@ -5166,6 +5167,8 @@ const en = {
       runHistoryHeading: 'Run History',
       sourcesHeading: 'Sources',
       viewResponse: 'View cited response',
+      viewRun: 'View report ({count} metrics)',
+      lineageTruncated: 'Only the most recent runs in this chain are shown.',
       noRuns: 'No runs found for this tag.',
     },
     index: {

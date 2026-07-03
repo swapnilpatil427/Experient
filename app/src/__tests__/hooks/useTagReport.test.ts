@@ -282,29 +282,51 @@ describe('useTagReport', () => {
 });
 
 describe('useTagReportTrail', () => {
-  it('loads trail data for a run', async () => {
+  // Regression tests (2026-07-03, customer-journey review finding, severe):
+  // this hook previously read `data.runs`/`data.tag_id`/`data.tag_name` off
+  // getTagReportTrail's response alone — fields that endpoint has never
+  // returned (it's scoped to one run's provenance: {run_id, lineage, sources,
+  // truncated}). `runs` was always undefined, and TagReportTrailPage's
+  // `runs.map(...)` threw on every real visit. Run History now correctly
+  // comes from getTagReportHistory (paginated, all 3 modes); tagName is no
+  // longer this hook's concern (the page fetches it separately, like
+  // TagReportPage.tsx does).
+  it('loads run history from getTagReportHistory and sources/truncated from getTagReportTrail', async () => {
+    mockGetTagReportHistory.mockResolvedValue({
+      runs: [{ run_id: 'run-1', run_mode: 'manual', trigger: 'manual', created_at: '2026-07-01', metric_tracks_narrated: 2 }],
+      next_cursor: null,
+    });
     mockGetTagReportTrail.mockResolvedValue({
-      tag_id: 'tag-1', tag_name: 'Onboarding',
-      runs: [{ run_id: 'run-1', run_mode: 'manual', trigger: 'manual', created_at: '2026-07-01', metric_tracks_narrated: 1 }],
-      sources: [],
+      run_id: 'run-1', lineage: [], sources: [{ id: 's1' }], truncated: true,
     });
 
-    const { result } = renderHook(() => useTagReportTrail('run-1'));
+    const { result } = renderHook(() => useTagReportTrail('tag-1', 'run-1'));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.tagName).toBe('Onboarding');
+    expect(mockGetTagReportHistory).toHaveBeenCalledWith('tag-1', { limit: 20 });
+    expect(mockGetTagReportTrail).toHaveBeenCalledWith('run-1');
     expect(result.current.runs).toHaveLength(1);
+    expect(result.current.sources).toHaveLength(1);
+    expect(result.current.truncated).toBe(true);
   });
 
   it('sets error on failure', async () => {
+    mockGetTagReportHistory.mockResolvedValue({ runs: [], next_cursor: null });
     mockGetTagReportTrail.mockRejectedValue(new Error('not found'));
-    const { result } = renderHook(() => useTagReportTrail('run-1'));
+    const { result } = renderHook(() => useTagReportTrail('tag-1', 'run-1'));
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBe('not found');
   });
 
+  it('does nothing when tagId is undefined', async () => {
+    const { result } = renderHook(() => useTagReportTrail(undefined, 'run-1'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockGetTagReportTrail).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(true);
+  });
+
   it('does nothing when runId is undefined', async () => {
-    const { result } = renderHook(() => useTagReportTrail(undefined));
+    const { result } = renderHook(() => useTagReportTrail('tag-1', undefined));
     await new Promise((r) => setTimeout(r, 0));
     expect(mockGetTagReportTrail).not.toHaveBeenCalled();
     expect(result.current.loading).toBe(true);

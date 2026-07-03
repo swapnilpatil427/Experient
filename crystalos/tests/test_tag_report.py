@@ -523,6 +523,39 @@ class TestNodeApplyTrendEligibilityGate:
         assert result["metric_tracks"]["nps"]["eligible_survey_ids"] == []
         assert "s1" in result["metric_tracks"]["nps"]["excluded_survey_ids"]
 
+    @pytest.mark.asyncio
+    async def test_custom_range_same_checkpoint_survey_tracked_for_no_comparison_display(self):
+        """R-C1 (post-QA AC): a same-checkpoint survey must surface as a 'no
+        comparison available' snapshot, not vanish silently. Regression test for
+        the 2026-07-03 customer-journey finding — it was correctly excluded from
+        eligible_survey_ids (can't vote on a trend) but that also meant it never
+        reached group_insights.survey_ids at publish time, so the Custom Range
+        comparison card omitted it entirely instead of disclosing it."""
+        ckpt = _checkpoint_row(nps=40.0)
+        state = _base_state(
+            report_mode="custom_range",
+            included_surveys=[{"survey_id": "s1", "trend_eligible": False, "response_count": 100}],
+            boundary_checkpoints={"s1": {"start": ckpt, "end": ckpt, "same_checkpoint": True}},
+        )
+        result = await node_apply_trend_eligibility_gate(state)
+        track = result["metric_tracks"]["nps"]
+        assert track["eligible_survey_ids"] == []
+        assert "s1" in track["excluded_survey_ids"]
+        assert track["no_comparison_survey_ids"] == ["s1"]
+
+    @pytest.mark.asyncio
+    async def test_manual_mode_never_populates_no_comparison_survey_ids(self):
+        """no_comparison_survey_ids is a Custom Range-only concept — Manual
+        mode's rolling-window resolution has no 'same checkpoint' bracket."""
+        ckpt = _checkpoint_row(nps=40.0)
+        state = _base_state(
+            report_mode="manual",
+            included_surveys=[{"survey_id": "s1", "trend_eligible": False, "response_count": 5}],
+            boundary_checkpoints={"s1": {"single": ckpt}},
+        )
+        result = await node_apply_trend_eligibility_gate(state)
+        assert result["metric_tracks"]["nps"]["no_comparison_survey_ids"] == []
+
 
 # ── node_merge_metric_tracks — 0/1/2/N agreement ──────────────────────────────
 
@@ -1150,6 +1183,44 @@ class TestNodePublish:
         metric_json_arg = insert_call.args[1][9]  # positional params tuple, metric_json is the 10th value
         import json as _json
         assert _json.loads(metric_json_arg)["single_survey_id"] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_persists_no_comparison_survey_ids_into_metric_json_without_polluting_survey_ids(self):
+        """Regression test (2026-07-03 customer-journey finding): a same-checkpoint
+        survey is correctly kept out of eligible_survey_ids/survey_ids (it can't
+        vote on a trend, and eligible_survey_count must stay strictly
+        trend-eligible) but must still be carried through for display so the
+        Custom Range comparison card can show it as 'no comparison available'
+        instead of silently omitting it."""
+        pool, cur, conn = _make_pool()
+        state = _base_state(
+            report_mode="custom_range",
+            narrated_tracks={"nps": {"headline": "H", "narrative": "N"}},
+            metric_tracks={"nps": {"eligible_survey_ids": ["s1"], "merged_delta": 4.0,
+                                    "direction": "up", "agreement_count": 1, "confidence_tier": "insufficient",
+                                    "single_survey_id": "s1", "no_comparison_survey_ids": ["s2"]}},
+            included_surveys=[
+                {"survey_id": "s1", "trend_eligible": True, "response_count": 100},
+                {"survey_id": "s2", "trend_eligible": False, "response_count": 100},
+            ],
+            boundary_checkpoints={
+                "s1": {"start": _checkpoint_row(id="c1a", survey_id="s1"), "end": _checkpoint_row(id="c1b", survey_id="s1")},
+                "s2": {"start": _checkpoint_row(id="c2", survey_id="s2"), "end": _checkpoint_row(id="c2", survey_id="s2"), "same_checkpoint": True},
+            },
+        )
+        with patch("crystalos.graphs.tag_report.db._pool_conn", return_value=pool):
+            await node_publish(state)
+
+        insert_call = next(
+            c for c in cur.execute.await_args_list
+            if c.args and "INSERT INTO group_insights" in c.args[0]
+        )
+        params = insert_call.args[1]
+        survey_ids_arg = params[4]  # positional params tuple, survey_ids is the 5th value
+        assert survey_ids_arg == ["s1"]  # s2 (same-checkpoint) stays out of survey_ids
+        import json as _json
+        metric_json_arg = params[9]
+        assert _json.loads(metric_json_arg)["no_comparison_survey_ids"] == ["s2"]
 
     @pytest.mark.asyncio
     async def test_run_complete_computes_duration_ms_from_run_started_event(self):

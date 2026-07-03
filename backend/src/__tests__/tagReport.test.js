@@ -417,6 +417,54 @@ describe('GET /api/group-insights/tag-report/:runId', () => {
     expect(body.metric_tracks[0].warnings[0].warning_type).toBe('temporal_offset');
   });
 
+  it('includes a same-checkpoint survey in survey_breakdown as "no comparison available", not silently omitted (R-C1, regression test 2026-07-03)', async () => {
+    // Regression test for a customer-journey finding: CrystalOS correctly keeps a
+    // same-checkpoint survey out of eligible_survey_ids/survey_ids (it can't vote
+    // on a trend), but that meant it never reached the per-survey breakdown at all
+    // in Custom Range mode — it just vanished instead of showing R-C1's required
+    // "no comparison available" snapshot. CrystalOS now also persists it separately
+    // as metric_json.no_comparison_survey_ids; this asserts the backend unions it
+    // into survey_breakdown (without inflating eligible_survey_count, which must
+    // stay strictly trend-eligible).
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM group_insight_runs')) {
+        return {
+          rows: [{
+            id: 'run-1', tag_ids: ['tag-1'], run_mode: 'custom_range', status: 'completed',
+            stream_events: [],
+          }],
+        };
+      }
+      if (sql.includes('FROM group_insight_run_sources')) {
+        return {
+          rows: [
+            { survey_id: 's1', survey_title: 'Onboarding NPS', checkpoint_id: 'ckpt-1', response_count_at_generation: 120 },
+            { survey_id: 's2', survey_title: 'Quarterly Pulse', checkpoint_id: 'ckpt-2', response_count_at_generation: 40 },
+          ],
+        };
+      }
+      if (sql.includes('FROM group_insights')) {
+        return {
+          rows: [{
+            metric_key: 'nps', headline: 'H', narrative: 'N', trust_score: 70,
+            survey_ids: ['s1'], // s2 (same-checkpoint) deliberately absent from survey_ids
+            metric_json: { merged_delta: 4.0, direction: 'up', no_comparison_survey_ids: ['s2'] },
+            citations_json: [],
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+    const { body } = await api(buildApp(), 'GET', '/api/group-insights/tag-report/run-1');
+    const track = body.metric_tracks[0];
+    expect(track.eligible_survey_count).toBe(1); // strictly trend-eligible — s2 excluded from this count
+    expect(track.survey_breakdown).toHaveLength(2);
+    const s2Breakdown = track.survey_breakdown.find((s) => s.survey_id === 's2');
+    expect(s2Breakdown.survey_title).toBe('Quarterly Pulse');
+    expect(s2Breakdown.no_comparison_available).toBe(true);
+    expect(s2Breakdown.delta).toBeNull();
+  });
+
   it('computes disclosure fields (pool_size, examined_count, included_count, backfill_occurred) from stream_events + sources', async () => {
     dbQuery = vi.fn(async (sql) => {
       if (sql.includes('FROM group_insight_runs')) {

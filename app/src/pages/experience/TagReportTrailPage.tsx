@@ -23,6 +23,7 @@ export function TagReportTrailPage() {
   const api = useApi();
   const { setCrystalCtx } = useCrystalPanel();
   const [latestRunId, setLatestRunId] = useState<string | null | undefined>(undefined);
+  const [tagName, setTagName] = useState<string | null>(null);
 
   useEffect(() => {
     if (!tagId) return;
@@ -31,7 +32,14 @@ export function TagReportTrailPage() {
       .catch(() => setLatestRunId(null));
   }, [tagId, api]);
 
-  const { tagName, runs, sources, loading, error } = useTagReportTrail(latestRunId ?? undefined);
+  // Neither getTagReportHistory nor getTagReportTrail returns the tag's own
+  // name — mirrors TagReportPage.tsx's identical pattern.
+  useEffect(() => {
+    if (!tagId) return;
+    api.getTagSurveys(tagId).then((res) => setTagName(res.tag.name)).catch(() => {});
+  }, [tagId, api]);
+
+  const { runs, sources, truncated, loading, error } = useTagReportTrail(tagId, latestRunId ?? undefined);
 
   // Auto-scope Crystal to this tag via the additive crystalCtx bag (never via
   // `scope`/`setScope` — a tag_id is not a survey_id). Mirrors TagReportPage.tsx.
@@ -106,7 +114,7 @@ export function TagReportTrailPage() {
                   className="text-xs font-semibold hover:underline shrink-0"
                   style={{ color: 'var(--color-primary)' }}
                 >
-                  {t('common.back')} → {r.metric_tracks_narrated}
+                  {t('tagReport.trailPage.viewRun', { count: r.metric_tracks_narrated })}
                 </button>
               </GlassCard>
             ))}
@@ -118,6 +126,9 @@ export function TagReportTrailPage() {
 
         <section>
           <h2 className="text-sm font-bold font-headline text-on-surface mb-3">{t('tagReport.trailPage.sourcesHeading')}</h2>
+          {truncated && (
+            <p className="text-xs text-on-surface-variant mb-3">{t('tagReport.trailPage.lineageTruncated')}</p>
+          )}
           <div className="space-y-2">
             {sources.map((s) => (
               <GlassCard key={s.id} className="p-3 flex items-center justify-between gap-3">
