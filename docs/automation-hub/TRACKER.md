@@ -1,5 +1,109 @@
 # Xperiq Actions (Workflow Automation) — Implementation Tracker
 
+## Wave 19 — App-wide Crystal visual identity consistency (2026-07-03, COMPLETE)
+
+**Scope note**: unlike every prior wave, this one is APP-WIDE, not automation-hub
+-scoped — tracked here anyway for process continuity (same team, same dispatch
+pattern). Per user's explicit decisions:
+1. Existing session work committed first (commit `926ca16`, 46 files).
+2. Fix scope: the ENTIRE app, not just Automation Hub.
+3. Problem: INCONSISTENCY, not absence — Crystal's gradient identity
+   (`#2a4bd9` → `#8329c8`, confirmed hardcoded as raw hex in 20+ files via
+   grep, not a shared token) already exists everywhere but isn't tokenized,
+   which both risks drift and (per root CLAUDE.md's Brand Theme System)
+   breaks for any org with a customized brand primary color.
+4. **"Use org setting and use it everywhere"** — Crystal's visual identity
+   should be driven by the existing `--brand-*`/`--color-*` org-customizable
+   token cascade, not fixed hex values, applied consistently across every
+   surface that currently hardcodes it.
+5. **"Be very very careful and accurate"** — full inventory before any
+   change, staged rollout, full regression gate.
+
+**Team dispatch, sequential (spec → build → verify):**
+- **Rohan** (UX) — full inventory of every hardcoded Crystal-identity value
+  (colors, gradients, fonts) across the whole app; design exactly how
+  Crystal's 2-color gradient maps onto the existing `--brand-primary`/
+  `--brand-accent`/`--brand-secondary` token system (a single brand color
+  doesn't obviously map to a 2-stop gradient — this needs a real decision,
+  not a guess); produce an implementation-ready token spec.
+- **Elias** (frontend) — build from Rohan's spec, systematically, file by
+  file, across the full inventory.
+- **Kenji** (QA) — full regression + visual-consistency verification, confirm
+  zero remaining hardcoded instances, confirm brand customization actually
+  takes effect on Crystal-branded elements now.
+
+**Note on dispatch mechanics**: this wave was run with a lower agent-concurrency
+cap than earlier waves (2 background agents at a time, no `isolation: "worktree"`)
+after a prior session hit an `E2BIG` shell failure caused by git-worktree buildup
+from many concurrent worktree-isolated agents. All Wave 19 work happened directly
+in the main checkout — no worktrees created. This is the dispatch pattern to keep
+using going forward for large fan-out waves.
+
+**Rohan — spec complete.** Full spec at `docs/automation-hub/WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md`:
+68-file inventory (3 categories: Crystal-identity core, generic-brand-reuse long
+tail, incidental/unrelated-do-not-touch), the `--color-accent` vs `--color-tertiary`
+trap (a real pre-existing bug found in `workflowScopeDisplay.ts`), the JS-resolution
+wrinkle for Three.js/third-party-SDK color props, and a 3-stage rollout plan.
+
+**Elias — build complete, in 4 passes:**
+1. **19a (Crystal-identity core)**: `CrystalPanel.tsx`, `AskCrystalFab.tsx`,
+   `NLThinkingCrystal.tsx`, `CrystalNarrativeWidget.tsx`, `ExperienceHubPage.tsx`,
+   `SurveyIntelligencePage.tsx`, `GeneratingOverlay.tsx`, `SupportCommandPalette.tsx`.
+2. **19b (generic-brand-reuse long tail)**: ~50 files across `components/*`,
+   top-level `pages/*`, `pages/insights/*`, `pages/experience/*`, dispatched as 3
+   background batches (2 concurrent at a time, disjoint file sets, no worktrees).
+3. **19c**: `workflowScopeDisplay.ts`'s `--color-accent` → `--color-tertiary` bug fix.
+4. **Gap-fill pass** (post-batch audit, done directly rather than via another
+   agent — small and well-understood): a repo-wide grep after all 3 batches found
+   ~15 more files with genuine brand-reuse hex that weren't in Rohan's original
+   68-file inventory (the spec itself flagged its file lists as "not exhaustive,
+   grep-and-fix systematically") — `PipelineEventFeed.tsx`, `PipelineStats.tsx`,
+   `DashboardFilterBar.tsx`, `DashboardScopeBar.tsx`, `InsightDocumentCard.tsx`,
+   `RolesPanel.tsx`, `TeamPanel.tsx`, `DocEditorPage.tsx`, `DocGapsPage.tsx`,
+   `DocPipelinePage.tsx`, `DocReviewPage.tsx`, `PipelineStatsPage.tsx`,
+   `IntegrationsSettingsPage.tsx`, `SignInPage.tsx`, `ContactsPage.tsx`,
+   `ContactDetailPage.tsx`. Also found and fixed: **`ExperienceHubPage.tsx` and
+   `SurveyIntelligencePage.tsx` — spec's own named Wave-19a core-scope files —
+   were only partially tokenized** (the dark-hero radial gradients, KPI icon
+   colors, sparkline/progress-bar colors, "Ask Crystal" bar, and perspective-grid
+   floor dots still had literal hex); the static-hex regression test only covers
+   3 of the 8 Wave-19a files, so it didn't catch this. Fully swept both files,
+   correctly preserving the `LAYER_BORDER`/`getCapabilityLayers` insight-layer
+   taxonomy restatements (category c) that intentionally keep fixed hex.
+   Also fixed several `${color}NN` hex-alpha-suffix string patterns (invalid CSS
+   once `color` becomes a `var(...)` string) with `color-mix(in srgb, ...)` —
+   same technique across `LoadingStates.tsx`, `SurveyActionModal.tsx`,
+   `ExperienceHubPage.tsx`'s survey-status pill, `SurveyIntelligencePage.tsx`'s
+   tier banner, `BrandSettingsPage.tsx`'s team-status badge. One incidental bug
+   found+fixed: `PrismHomePage.tsx` had a mismatched `var(--color-primary-container,
+   #82deff)` fallback (wrong hex for that token) — corrected to `--color-secondary-container`.
+   Two new JS-resolution hooks added (`HeroCanvas.tsx`, `TopicDetailPanel.tsx`),
+   following the `NLThinkingCrystal.tsx` `resolveCssVarColor` pattern (not
+   cross-imported — each file has its own small local copy).
+
+**Kenji — verification complete:**
+- Zero remaining hardcoded Crystal-brand hex/rgba anywhere in `app/src` outside
+  verified category-(c) exclusions (insight-layer taxonomy, question/survey-type
+  enums, plan-tier badges, priority/status/channel/dimension enums, demo-data
+  avatar palettes, token *definitions* in `theme.css`/`brandTheme.ts`, and dead
+  code `IrisChat.tsx`/`AiChatPanel.tsx`) — confirmed by repo-wide grep covering
+  all 7 mapped hex values + all their rgba-decimal forms (primary, tertiary,
+  secondary, primary-dim, primary-container, tertiary-container, secondary-container).
+- Zero-visual-diff for default-brand orgs holds by construction (token defaults
+  are byte-identical to the replaced hex, per spec §4.2) — every replacement in
+  this wave preserved this property.
+- Brand-override reaches Crystal now via the same already-proven CSS-var cascade
+  (`applyBrandTheme()` → `--brand-*` → `--color-*`) the rest of the app already
+  uses successfully — this is the actual bug fix this wave exists to deliver.
+- **Full suite: 90 files / 1036 tests, 1036 passing.** `npx tsc --noEmit`: 0
+  errors. `npm run lint`: 0 errors/warnings. (Two intermittent failures surfaced
+  mid-wave — `scheduleConfig.test.ts` cron timeouts and
+  `NotifyTargetPicker.test.tsx`'s aria-activedescendant test — both in files
+  untouched by this wave, both confirmed flaky by re-running in isolation
+  multiple times with 100% pass rate; not Wave 19 regressions.)
+
+---
+
 ## Wave 18c — Full org registry for the message-content force route (2026-07-03, COMPLETE)
 
 Closes the one gap Amara explicitly flagged (not hid) in Wave 18a: her new
