@@ -202,7 +202,10 @@ surveys scanned regardless of overrides), `TAG_REPORT_BATCH_SIZE` (default `3` �
 for trend eligibility), `TAG_REPORT_MIN_TRUST_SCORE` (default `40` — per-survey trust-score floor for trend
 eligibility), `TAG_REPORT_AGREEMENT_FLOOR` (default `2` — minimum agreeing trend-eligible surveys before a metric's
 `confidence_tier` can be `"confirmed"` rather than `"insufficient"`, DESIGN.md R-T2), `TAG_REPORT_STALENESS_THRESHOLD_DAYS`
-(default `21` — checkpoint-age divergence across contributing surveys that triggers a staleness warning, DESIGN.md R-A2).
+(default `21` — checkpoint-age divergence across contributing surveys that triggers a staleness warning, DESIGN.md R-A2),
+`TAG_REPORT_CADENCE_MISMATCH_RATIO` (default `2.0` — a survey's checkpoint cadence vs. the tag's median cadence ratio
+that triggers R-T3's `cadence_mismatch` comparability warning), `TAG_REPORT_CITATIONS_PER_SURVEY` (default `3` — max
+real per-response citations resolved per contributing survey when merging the report's citation manifest).
 All have safe defaults — only set to tune; they don't belong in `.env.example`.
 
 ---
