@@ -221,7 +221,14 @@ router.get('/tag-reports', requireAuth, async (req: Request, res: Response): Pro
            WHERE girs.run_id = lr.id AND girs.checkpoint_id IS NOT NULL) AS latest_run_included_count,
          (SELECT COUNT(*)::int FROM group_insight_run_sources girs
            WHERE girs.run_id = lr.id
-             AND (girs.exclusion_reason IS NOT NULL OR girs.trend_eligible = FALSE)) AS latest_run_warning_count
+             AND (girs.exclusion_reason IS NOT NULL OR girs.trend_eligible = FALSE)) AS latest_run_warning_count,
+         -- Fixed 2026-07-03 (customer-journey review finding): the Reports
+         -- index page's Automated-schedules-active stat read automated_enabled
+         -- off this response, but this field was never selected here -- the
+         -- tile was permanently stuck at 0. Reads the same program_config
+         -- JSONB path the due-tags sweep (tagReportScheduler.ts) already uses
+         -- as the source of truth for whether Automated mode is on for a tag.
+         COALESCE((t.program_config -> 'tag_report_automated' ->> 'enabled')::boolean, FALSE) AS automated_enabled
        FROM survey_tags t
        JOIN LATERAL (
          SELECT id, run_mode, created_at FROM group_insight_runs gir
@@ -231,7 +238,7 @@ router.get('/tag-reports', requireAuth, async (req: Request, res: Response): Pro
        ) lr ON true
        LEFT JOIN survey_tag_mappings m ON m.tag_id = t.id AND m.org_id = t.org_id
        WHERE t.org_id = $1 ${searchClause}
-       GROUP BY t.id, lr.id, lr.run_mode, lr.created_at
+       GROUP BY t.id, t.program_config, lr.id, lr.run_mode, lr.created_at
        ORDER BY ${orderBy}`,
       params,
     );
@@ -249,6 +256,7 @@ router.get('/tag-reports', requireAuth, async (req: Request, res: Response): Pro
         tag_name:   row.tag_name,
         tag_color:  row.tag_color,
         survey_count: row.survey_count,
+        automated_enabled: Boolean(row.automated_enabled),
         latest_run: {
           run_id:     row.latest_run_id,
           mode:       row.latest_run_mode,

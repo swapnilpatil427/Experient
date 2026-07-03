@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useTranslation } from '../../lib/i18n';
 import { useApi } from '../../hooks/useApi';
-import { useTagReport } from '../../hooks/useTagReport';
+import { useTagReport, type InFlightNotice } from '../../hooks/useTagReport';
 import { useSetPageTitle } from '../../contexts/pageTitle';
 import { useCrystalPanel } from '../../contexts/crystalPanel';
 import { Icon } from '../../components/Icon';
@@ -32,21 +32,41 @@ export function TagReportPage() {
   const { t } = useTranslation();
   const { tagId, runId } = useParams<{ tagId: string; runId?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const api = useApi();
-  const { setScope } = useCrystalPanel();
+  const { setCrystalCtx } = useCrystalPanel();
   const [tagName, setTagName] = useState<string | null>(null);
 
   const {
     run, metricTracks, sources, poolSize, examinedCount, includedCount, backfillOccurred,
-    loading, error, inFlightNotice, dismissInFlightNotice,
+    loading, error, inFlightNotice: hookInFlightNotice, dismissInFlightNotice: dismissHookNotice,
   } = useTagReport(tagId, runId);
 
-  useSetPageTitle(tagName ? t('groups.groupReportTitle', { name: tagName }) : t('tagReport.new.title'));
+  // Fixed 2026-07-03 (customer-journey review finding: "InFlightRunBanner
+  // unreachable"). This page mounts a FRESH useTagReport instance that never
+  // calls generate() — its own inFlightNotice can never be set. The instance
+  // that DID call generate() (TagReportNewPage) forwards its result through
+  // router navigation state, since that hook instance is discarded the moment
+  // navigation happens. Local state here seeds from that forwarded value once,
+  // on the initial mount from a fresh generation — a normal page visit (no
+  // navigation state) or a page refresh correctly shows nothing.
+  const [navInFlightNotice, setNavInFlightNotice] = useState<InFlightNotice | null>(
+    () => (location.state as { inFlightNotice?: InFlightNotice | null } | null)?.inFlightNotice ?? null,
+  );
+  const inFlightNotice = navInFlightNotice ?? hookInFlightNotice;
+  const dismissInFlightNotice = () => { setNavInFlightNotice(null); dismissHookNotice(); };
 
+  useSetPageTitle(tagName ? t('tagReport.page.title', { name: tagName }) : t('tagReport.new.title'));
+
+  // Auto-scope Crystal to this tag via the additive crystalCtx bag — never via
+  // `scope`/`setScope`, since a tag_id is not a survey_id and SurveyScope must
+  // stay 'all' | survey_id (see CrystalPanel.tsx's streamScope derivation,
+  // which treats an explicit tag focus as taking priority over scope).
   useEffect(() => {
-    if (tagId) setScope(tagId);
-    return () => { setScope('all'); };
-  }, [tagId, setScope]);
+    if (!tagId) return;
+    setCrystalCtx({ focused_tag_id: tagId, focused_tag_name: tagName ?? undefined });
+    return () => setCrystalCtx({});
+  }, [tagId, tagName, setCrystalCtx]);
 
   useEffect(() => {
     if (!tagId) return;
@@ -113,7 +133,7 @@ export function TagReportPage() {
     <div className="max-w-7xl mx-auto w-full">
       <PageHeader
         crumbs={crumbs}
-        title={tagName ? t('groups.groupReportTitle', { name: tagName }) : t('tagReport.new.title')}
+        title={tagName ? t('tagReport.page.title', { name: tagName }) : t('tagReport.new.title')}
       />
 
       {inFlightNotice && <InFlightRunBanner notice={inFlightNotice} onDismiss={dismissInFlightNotice} />}

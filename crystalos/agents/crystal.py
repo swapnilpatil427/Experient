@@ -122,6 +122,7 @@ class CrystalInput(BaseModel):
     scope: str = "survey"
     has_open_text: bool = True
     tag_ids: list[str] | None = None       # group scope: tag UUIDs
+    tag_id: str | None = None              # tag scope: single tag UUID (backend sends this, singular)
     user_role: str = "viewer"              # viewer | editor | admin | brand_admin
     brand_id: str | None = None            # enterprise brand override (None = first-party)
 
@@ -856,13 +857,22 @@ def _build_ctx(inp: CrystalInput):
         )
     role = inp.user_role if inp.user_role else "viewer"
     effective_perms = _resolve_permissions(brand, role)
+    # tag_ids: prefer the explicit list (group-scope callers); fall back to the
+    # singular tag_id (what the backend's scope='tag' request body actually
+    # sends — see backend/src/routes/experience.ts) wrapped in a 1-tuple.
+    if inp.tag_ids:
+        resolved_tag_ids = tuple(inp.tag_ids)
+    elif inp.tag_id:
+        resolved_tag_ids = (inp.tag_id,)
+    else:
+        resolved_tag_ids = None
     return CrystalContext(
         org_id=inp.org_id,
         user_id=inp.user_id or 'unknown',
         survey_id=inp.survey_id,
         scope=inp.scope,
         has_open_text=inp.has_open_text,
-        tag_ids=tuple(inp.tag_ids) if inp.tag_ids else None,
+        tag_ids=resolved_tag_ids,
         brand=brand,
         user_role=role,
         effective_perms=effective_perms,
@@ -903,6 +913,12 @@ _PROPOSAL_TYPE_ALIASES = {
     "manual_insight_run":          "trigger_manual_insight_run",
     "view_report":                 "view_report",
     "generate_intelligence_report": "generate_intelligence_report",
+    # Tag Report proposals → frontend handler names (docs/tag-report). Identity
+    # mappings (proposal_type already equals the frontend handler name) — listed
+    # explicitly, same convention as view_report/generate_intelligence_report above,
+    # so the contract is documented rather than incidental.
+    "view_tag_report":             "view_tag_report",
+    "generate_tag_report":         "generate_tag_report",
 }
 
 
@@ -1071,18 +1087,33 @@ async def _run_react_loop(inp: CrystalInput, db_pool=None) -> CrystalOutput:
 
 # ── Skill-first synthesis helpers ─────────────────────────────────────────────
 
+def _routing_hint_for_scope(ctx) -> str:
+    """Extra text appended to the semantic-routing query so skill routing has a
+    scope-aware signal. ``skill_registry.find`` only takes free text (no explicit
+    scope/tag_ids parameter), so a plain user message about a tagged survey
+    group ("how's onboarding doing across our surveys") could route to either
+    tag-analyst, gap-analyst, or crystal-analyst on pure embedding similarity
+    alone. This nudges tag-scoped queries toward tag-analyst without requiring
+    changes to the registry's find() signature."""
+    if ctx is not None and getattr(ctx, "scope", None) == "tag" and getattr(ctx, "tag_ids", None):
+        return " (cross-survey Tag Report question, scoped to one tag/survey group)"
+    return ""
+
+
 async def _resolve_crystal_skill_match(
     registry,
     message: str,
     *,
     top_k: int = 5,
+    ctx=None,
 ) -> tuple[dict | None, float | None]:
     """Return the best skill for Crystal chat, skipping pipeline-only sub-specialists."""
     from crystalos.lib.constants import CRYSTAL_ROUTING_EXCLUDED_SKILLS
 
-    matches = await registry.find(message, top_k=top_k)
+    routing_query = message + _routing_hint_for_scope(ctx)
+    matches = await registry.find(routing_query, top_k=top_k)
     if not matches:
-        name = registry.find_sync(message)
+        name = registry.find_sync(routing_query)
         if name and name not in CRYSTAL_ROUTING_EXCLUDED_SKILLS:
             meta = registry._skills.get(name)
             if meta:
@@ -1192,7 +1223,9 @@ async def _skill_synthesis(
 
         # Reuse the caller's already-resolved skill when provided; otherwise route.
         if skill_meta is None:
-            skill_meta, score = await _resolve_crystal_skill_match(registry, inp.message)
+            skill_meta, score = await _resolve_crystal_skill_match(
+                registry, inp.message, ctx=_build_ctx(inp)
+            )
             if skill_meta is None:
                 return None
         elif skill_meta.get("name") in CRYSTAL_ROUTING_EXCLUDED_SKILLS:
@@ -1457,6 +1490,30 @@ async def _fetch_skill_context(
     """
     from crystalos.crystal.tools import dispatch_tool
 
+    allowed: set[str] = set(skill_meta.get("allowed_tools", []))
+    tool_results: list[dict] = []
+
+    if getattr(ctx, "scope", None) == "tag" and getattr(ctx, "tag_ids", None):
+        # Tag scope: prefetch tag-analyst's tools with tag_id/tag_ids args instead
+        # of the survey-scoped PRIORITY list below (this skill has no survey_id).
+        tag_id = ctx.tag_ids[0]
+        TAG_PRIORITY: list[str] = [
+            "get_tag_report", "get_group_topics", "get_group_metrics", "get_tag_report_trail",
+        ]
+        candidates = [t for t in TAG_PRIORITY if t in allowed][:3]
+        for tool_name in candidates:
+            args: dict = (
+                {"tag_id": tag_id} if tool_name in ("get_tag_report", "get_tag_report_trail")
+                else {"tag_ids": list(ctx.tag_ids)}
+            )
+            try:
+                result = await dispatch_tool(tool_name, ctx, args)
+                if isinstance(result, dict) and "error" not in result:
+                    tool_results.append({"tool": tool_name, "args": args, "result": result})
+            except Exception as exc:
+                logger.debug("skill_context_tool_failed", tool=tool_name, error=str(exc))
+        return tool_results
+
     # Tools to call in priority order — lightweight first
     PRIORITY: list[str] = [
         "get_survey_overview",
@@ -1467,10 +1524,8 @@ async def _fetch_skill_context(
         "get_verbatims",
     ]
 
-    allowed: set[str] = set(skill_meta.get("allowed_tools", []))
     candidates = [t for t in PRIORITY if t in allowed][:3]
 
-    tool_results: list[dict] = []
     for tool_name in candidates:
         args: dict = {"survey_id": inp.survey_id}
         # get_topic_details needs a topic name — pick the top one
@@ -1508,7 +1563,7 @@ async def _run_skill_loop(inp: CrystalInput) -> CrystalOutput:
         registry = get_registry()
         if not registry._initialized:
             await registry.initialize()
-        matches = await _resolve_crystal_skill_match(registry, inp.message)
+        matches = await _resolve_crystal_skill_match(registry, inp.message, ctx=ctx)
         if matches[0] is not None:
             skill_meta_hint, skill_route_score = matches
             tool_results = await _fetch_skill_context(inp, skill_meta_hint, ctx)
@@ -1620,9 +1675,10 @@ async def _run_skill_stream(
         if not registry._initialized:
             await registry.initialize()
 
-        matches = await registry.find(inp.message, top_k=1)
+        routing_query = inp.message + _routing_hint_for_scope(ctx)
+        matches = await registry.find(routing_query, top_k=1)
         if not matches:
-            name = registry.find_sync(inp.message)
+            name = registry.find_sync(routing_query)
             if name:
                 meta = registry._skills.get(name)
                 if meta:
@@ -1640,9 +1696,13 @@ async def _run_skill_stream(
 
             # Fetch targeted tool context — emit thinking/observation events
             from crystalos.crystal.tools import dispatch_tool
-            PRIORITY = ["get_survey_overview", "get_insights_list", "get_topic_details",
-                        "get_metric_history", "get_driver_analysis", "get_verbatims"]
             allowed: set[str] = set(skill_meta_hint.get("allowed_tools", []))
+            is_tag_scope = ctx.scope == "tag" and ctx.tag_ids
+            if is_tag_scope:
+                PRIORITY = ["get_tag_report", "get_group_topics", "get_group_metrics", "get_tag_report_trail"]
+            else:
+                PRIORITY = ["get_survey_overview", "get_insights_list", "get_topic_details",
+                            "get_metric_history", "get_driver_analysis", "get_verbatims"]
             candidates = [t for t in PRIORITY if t in allowed][:3]
 
             for tool_name in candidates:
@@ -1653,9 +1713,16 @@ async def _run_skill_stream(
                     except Exception:
                         pass
 
-                args: dict = {"survey_id": inp.survey_id}
-                if tool_name == "get_topic_details" and inp.topics:
-                    args["topic"] = inp.topics[0].get("name", "")
+                if is_tag_scope:
+                    tag_id = ctx.tag_ids[0]
+                    args: dict = (
+                        {"tag_id": tag_id} if tool_name in ("get_tag_report", "get_tag_report_trail")
+                        else {"tag_ids": list(ctx.tag_ids)}
+                    )
+                else:
+                    args = {"survey_id": inp.survey_id}
+                    if tool_name == "get_topic_details" and inp.topics:
+                        args["topic"] = inp.topics[0].get("name", "")
 
                 yield _json.dumps({
                     "type": "thinking",

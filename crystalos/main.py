@@ -1715,6 +1715,8 @@ async def crystal_stream_endpoint(
         user_id=body.get("user_id", ""),
         scope=body.get("scope", "survey"),
         has_open_text=body.get("has_open_text", True),
+        tag_ids=body.get("tag_ids"),
+        tag_id=body.get("tag_id"),
         user_role=user_role,
         brand_id=body.get("brand_id"),
     )

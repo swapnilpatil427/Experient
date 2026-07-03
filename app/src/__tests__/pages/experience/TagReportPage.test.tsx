@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../../../lib/i18n', () => ({
@@ -26,7 +26,8 @@ vi.mock('../../../hooks/useApi', () => ({
 }));
 
 vi.mock('../../../contexts/pageTitle', () => ({ useSetPageTitle: vi.fn() }));
-vi.mock('../../../contexts/crystalPanel', () => ({ useCrystalPanel: () => ({ setScope: vi.fn() }) }));
+const mockSetCrystalCtx = vi.fn();
+vi.mock('../../../contexts/crystalPanel', () => ({ useCrystalPanel: () => ({ setCrystalCtx: mockSetCrystalCtx }) }));
 
 vi.mock('../../../components/tag-report/PipelineVisualization', () => ({
   PipelineVisualization: ({ collapsed }: { collapsed?: boolean }) => <div data-testid="viz" data-collapsed={String(collapsed)} />,
@@ -76,10 +77,22 @@ function baseHookState(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   mockNavigate.mockReset();
   mockRunIdParam.value = 'run-1';
+  mockSetCrystalCtx.mockReset();
 });
 
 function renderPage() {
   return render(<MemoryRouter><TagReportPage /></MemoryRouter>);
+}
+
+/** Renders with an initial router entry carrying navigation `state` — mirrors
+ * how TagReportNewPage forwards inFlightNotice via `navigate(path, {state})`
+ * after a fresh generate() call (fixed 2026-07-03). */
+function renderPageWithLocationState(state: unknown) {
+  return render(
+    <MemoryRouter initialEntries={[{ pathname: '/app/experience/tags/tag-1/report/run-1', state }]}>
+      <TagReportPage />
+    </MemoryRouter>,
+  );
 }
 
 describe('TagReportPage', () => {
@@ -135,6 +148,23 @@ describe('TagReportPage', () => {
     expect(screen.queryByTestId('comparison-nps')).not.toBeInTheDocument();
   });
 
+  it('sets the page title/H1 to the Tag Report string, not the borrowed Group Report one (regression test, 2026-07-03)', async () => {
+    const { useSetPageTitle } = await import('../../../contexts/pageTitle');
+    mockUseTagReport.mockReturnValue(baseHookState({
+      run: { id: 'run-1', status: 'completed', run_mode: 'manual', stream_events: [], trigger: 'manual', created_at: 't' },
+      metricTracks: [{ metric_key: 'nps', single_survey_sourced: false }],
+    }));
+    renderPage();
+    await waitFor(() => {
+      expect(useSetPageTitle).toHaveBeenCalledWith('tagReport.page.title:{"name":"Onboarding"}');
+    });
+    expect(useSetPageTitle).not.toHaveBeenCalledWith(expect.stringContaining('groups.groupReportTitle'));
+    await waitFor(() => {
+      expect(screen.getByText('tagReport.page.title:{"name":"Onboarding"}')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/groups\.groupReportTitle/)).not.toBeInTheDocument();
+  });
+
   it('renders comparison cards only for custom_range mode', () => {
     mockUseTagReport.mockReturnValue(baseHookState({
       run: { id: 'run-1', status: 'completed', run_mode: 'custom_range', stream_events: [], trigger: 'manual', created_at: 't' },
@@ -166,6 +196,24 @@ describe('TagReportPage', () => {
     expect(screen.getByTestId('inflight-banner')).toBeInTheDocument();
   });
 
+  it('shows the in-flight banner from router navigation state even when the hook itself reports none (regression test, 2026-07-03 — fixes "InFlightRunBanner unreachable": TagReportNewPage\'s hook instance is discarded on navigation, so this page must be able to learn about an in-flight run purely from the navigation state TagReportNewPage forwarded)', () => {
+    mockUseTagReport.mockReturnValue(baseHookState({
+      run: { id: 'run-1', status: 'completed', run_mode: 'manual', stream_events: [], trigger: 'manual', created_at: 't' },
+      inFlightNotice: null, // this page's OWN hook instance never called generate() — always null
+    }));
+    renderPageWithLocationState({ inFlightNotice: { startedAt: '2026-07-03T00:00:00Z', trigger: 'manual' } });
+    expect(screen.getByTestId('inflight-banner')).toBeInTheDocument();
+  });
+
+  it('shows no in-flight banner on a normal page visit with no navigation state (not every visit should show a stale banner)', () => {
+    mockUseTagReport.mockReturnValue(baseHookState({
+      run: { id: 'run-1', status: 'completed', run_mode: 'manual', stream_events: [], trigger: 'manual', created_at: 't' },
+      inFlightNotice: null,
+    }));
+    renderPage(); // no location state at all
+    expect(screen.queryByTestId('inflight-banner')).not.toBeInTheDocument();
+  });
+
   it('shows a failure banner and suppresses report content when the run failed', () => {
     mockUseTagReport.mockReturnValue(baseHookState({
       run: {
@@ -185,5 +233,33 @@ describe('TagReportPage', () => {
     }));
     renderPage();
     expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-1/report/run-resolved', { replace: true });
+  });
+
+  describe('Crystal auto-scoping', () => {
+    it('scopes Crystal to this tag via setCrystalCtx (not setScope) on mount, then again once the tag name resolves', async () => {
+      mockUseTagReport.mockReturnValue(baseHookState({ run: null }));
+      renderPage();
+
+      // Fires immediately with the tag id (name not yet resolved).
+      expect(mockSetCrystalCtx).toHaveBeenCalledWith({ focused_tag_id: 'tag-1', focused_tag_name: undefined });
+
+      // Fires again once getTagSurveys resolves the tag's display name.
+      await waitFor(() => {
+        expect(mockSetCrystalCtx).toHaveBeenCalledWith({ focused_tag_id: 'tag-1', focused_tag_name: 'Onboarding' });
+      });
+    });
+
+    it('clears crystalCtx on unmount so leaving the tag page drops Crystal focus', async () => {
+      mockUseTagReport.mockReturnValue(baseHookState({ run: null }));
+      const { unmount } = renderPage();
+
+      await waitFor(() => {
+        expect(mockSetCrystalCtx).toHaveBeenCalledWith({ focused_tag_id: 'tag-1', focused_tag_name: 'Onboarding' });
+      });
+
+      mockSetCrystalCtx.mockClear();
+      unmount();
+      expect(mockSetCrystalCtx).toHaveBeenCalledWith({});
+    });
   });
 });

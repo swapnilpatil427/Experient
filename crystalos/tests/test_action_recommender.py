@@ -64,7 +64,10 @@ def test_action_tools_have_correct_schema():
             assert "description" in tool
             assert "scope" in tool
             assert "input_schema" in tool
-            assert tool["scope"] in ("survey", "org", "both")
+            # 'tag' added for the Tag Report action proposals (propose_view_tag_report /
+            # propose_generate_tag_report — docs/tag-report/DESIGN.md), the first
+            # action tools scoped to a tag/survey-group rather than a single survey or org.
+            assert tool["scope"] in ("survey", "org", "both", "tag")
 
 
 def test_survey_scope_includes_action_tools():

@@ -796,7 +796,10 @@ export type ActionProposalType =
   // Insight Pipeline v2 — Phase 6 (report-related proposals)
   | 'view_report'
   | 'trigger_manual_insight_run'
-  | 'generate_intelligence_report';
+  | 'generate_intelligence_report'
+  // Tag Report — cross-survey AI insight rollups
+  | 'view_tag_report'
+  | 'generate_tag_report';
 
 export interface ActionProposal {
   id:                    string;               // kebab-case unique ID

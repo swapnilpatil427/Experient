@@ -282,7 +282,29 @@ export function SurveysListPage() {
     try { await api.deleteSurvey(id); } catch { fetchSurveys(1, false); }
   }, [api, fetchSurveys]);
 
+  // Fixed 2026-07-03 (customer-journey review finding): this toolbar button
+  // previously always called the OLDER "Group Insights" flow (real, paid,
+  // fresh-LLM generation, `GROUP_REPORT` route) regardless of how many tags
+  // were selected — presenting near-identical copy/icon to Tag Report's own
+  // entry points elsewhere on this same page (the per-survey TagBadge chips),
+  // which is the zero-fresh-AI-generation rollup. A customer filtering to a
+  // single tag and clicking this got silently charged for fresh AI generation
+  // instead of the free, trust-weighted Tag Report they likely meant.
+  //
+  // Fix: when exactly one tag is selected (the common case, and the only case
+  // Tag Report actually supports — it is always scoped to a single tag by
+  // design), route to Tag Report instead. Group Insights' multi-tag blended
+  // query is a genuinely different capability Tag Report cannot replicate
+  // (Tag Report never spans more than one tag per run), so it's preserved,
+  // unchanged, for the >1-tag case — but relabeled (see the JSX below) so its
+  // identity and cost are never confused with the free Tag Report flow.
+  const isSingleTagSelection = tagFilter.length === 1;
+
   const handleGenerateGroupReport = useCallback(async () => {
+    if (isSingleTagSelection) {
+      navigate(toPath(ROUTES.TAG_REPORT_NEW, { tagId: tagFilter[0] }));
+      return;
+    }
     setGeneratingReport(true);
     try {
       const { run_id } = await api.generateGroupInsights({ tag_ids: tagFilter });
@@ -290,7 +312,7 @@ export function SurveysListPage() {
     } catch {
       setGeneratingReport(false);
     }
-  }, [api, tagFilter, navigate]);
+  }, [api, tagFilter, navigate, isSingleTagSelection]);
 
   // ── derived KPI values (from server stats when available, fallback to loaded data)
   const kpiTotalSurveys  = stats?.total_surveys  ?? surveys.length;
@@ -328,6 +350,12 @@ export function SurveysListPage() {
                   <Icon name="library_books" size={16} />{t('nav.templates')}
                 </Button>
                 {tagFilter.length > 0 && (
+                  // Fixed 2026-07-03: single-tag selection routes to the free
+                  // Tag Report flow with Tag Report's own icon/copy/title
+                  // attribute; multi-tag selection keeps the legacy paid Group
+                  // Insights flow, relabeled so it's never mistaken for the
+                  // free one (distinct icon, "Group Insights" wording, and a
+                  // title attribute stating it runs fresh AI generation).
                   <Button
                     variant="default"
                     size="sm"
@@ -335,11 +363,12 @@ export function SurveysListPage() {
                     disabled={generatingReport}
                     className="rounded-xl font-headline gap-1.5"
                     style={{ background: 'var(--color-primary)' }}
+                    title={isSingleTagSelection ? t('tagReport.toolbarCta.tooltip') : t('groups.generateReportTooltip')}
                   >
-                    <Icon name="auto_awesome" size={16} />
+                    <Icon name={isSingleTagSelection ? 'summarize' : 'auto_awesome'} size={16} />
                     {generatingReport
                       ? t('groups.generatingReport', { count: surveys.length })
-                      : t('groups.generateReport')}
+                      : (isSingleTagSelection ? t('tagReport.new.title') : t('groups.generateGroupInsightsCta'))}
                   </Button>
                 )}
                 {isAnalyst && (

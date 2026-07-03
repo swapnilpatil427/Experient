@@ -50,18 +50,51 @@ describe('TagReportNewPage', () => {
 
   it('triggers a manual run and navigates to the resulting report on success', async () => {
     const user = userEvent.setup();
-    mockGenerate.mockResolvedValue('run-42');
+    mockGenerate.mockResolvedValue({ runId: 'run-42', error: null, inFlightNotice: null });
     renderPage();
 
     await user.click(screen.getByText('tagReport.new.manualCta'));
 
     expect(mockGenerate).toHaveBeenCalledWith({ mode: 'manual' });
-    expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-1/report/run-42');
+    expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-1/report/run-42', { state: { inFlightNotice: null } });
   });
 
-  it('shows a generic error when the manual generate call fails (returns null)', async () => {
+  it('forwards a non-null inFlightNotice through navigation state (regression test, 2026-07-03 — fixes "InFlightRunBanner unreachable": this page\'s own hook instance is discarded on navigation, so TagReportPage can only learn about an in-flight run via router state)', async () => {
     const user = userEvent.setup();
-    mockGenerate.mockResolvedValue(null);
+    const notice = { startedAt: '2026-07-03T00:00:00Z', trigger: 'manual' as const };
+    mockGenerate.mockResolvedValue({ runId: 'run-old', error: null, inFlightNotice: notice });
+    renderPage();
+
+    await user.click(screen.getByText('tagReport.new.manualCta'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-1/report/run-old', { state: { inFlightNotice: notice } });
+  });
+
+  it('shows the SPECIFIC backend error message when the manual generate call fails (regression test, 2026-07-03 — previously always showed a fixed generic string regardless of the real reason)', async () => {
+    const user = userEvent.setup();
+    mockGenerate.mockResolvedValue({ runId: null, error: 'This tag has no surveys to report on', inFlightNotice: null });
+    renderPage();
+
+    await user.click(screen.getByText('tagReport.new.manualCta'));
+
+    expect(screen.getByText('This tag has no surveys to report on')).toBeInTheDocument();
+    expect(screen.queryByText('tagReport.new.errorGeneric')).not.toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('shows the rate-limit message distinctly from the no-surveys message', async () => {
+    const user = userEvent.setup();
+    mockGenerate.mockResolvedValue({ runId: null, error: 'Daily tag report limit reached for this tag', inFlightNotice: null });
+    renderPage();
+
+    await user.click(screen.getByText('tagReport.new.manualCta'));
+
+    expect(screen.getByText('Daily tag report limit reached for this tag')).toBeInTheDocument();
+  });
+
+  it('falls back to the generic error string only when generate() returns no specific message', async () => {
+    const user = userEvent.setup();
+    mockGenerate.mockResolvedValue({ runId: null, error: null, inFlightNotice: null });
     renderPage();
 
     await user.click(screen.getByText('tagReport.new.manualCta'));
@@ -94,7 +127,7 @@ describe('TagReportNewPage', () => {
 
   it('submits a valid custom range window as ISO timestamps', async () => {
     const user = userEvent.setup();
-    mockGenerate.mockResolvedValue('run-cr');
+    mockGenerate.mockResolvedValue({ runId: 'run-cr', error: null, inFlightNotice: null });
     renderPage();
 
     await user.type(screen.getByLabelText('tagReport.new.windowStartLabel'), '2026-01-01');
@@ -102,6 +135,6 @@ describe('TagReportNewPage', () => {
     await user.click(screen.getByText('tagReport.new.customRangeCta'));
 
     expect(mockGenerate).toHaveBeenCalledWith(expect.objectContaining({ mode: 'custom_range' }));
-    expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-1/report/run-cr');
+    expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-1/report/run-cr', { state: { inFlightNotice: null } });
   });
 });

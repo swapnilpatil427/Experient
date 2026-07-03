@@ -22,6 +22,18 @@ const TIER_COLOR: Record<ConfidenceTier, string> = {
   insufficient: '#d97706',
 };
 
+// Fixed 2026-07-03 (customer-journey review finding): warning_type is a bare
+// string off the wire (crystalos/graphs/tag_report.py's warning_type values) —
+// only known values get a real sentence via tagReport.metricCard.warningType.*;
+// anything else falls back to the 'unknown' key rather than rendering the raw
+// snake_case identifier.
+const KNOWN_WARNING_TYPES = new Set([
+  'temporal_offset', 'staleness', 'question_type_mismatch', 'scale_mismatch', 'cadence_mismatch',
+]);
+function warningTypeKey(warningType: string): string {
+  return KNOWN_WARNING_TYPES.has(warningType) ? warningType : 'unknown';
+}
+
 interface MetricHeadlineCardProps {
   track: TagReportMetricTrack;
   tagId: string;
@@ -86,10 +98,10 @@ export function MetricHeadlineCard({ track, tagId }: MetricHeadlineCardProps) {
               key={i}
               className="text-[11px] font-semibold px-2 py-0.5 rounded-full"
               style={{ background: '#fef3c7', color: '#d97706' }}
-              title={w.warning_type}
+              title={t(`tagReport.metricCard.warningType.${warningTypeKey(w.warning_type)}`)}
             >
               <Icon name="warning" size={11} className="inline mr-1 align-text-bottom" />
-              {w.warning_type}
+              {t(`tagReport.metricCard.warningType.${warningTypeKey(w.warning_type)}`)}
             </span>
           ))}
         </div>

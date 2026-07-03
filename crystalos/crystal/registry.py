@@ -744,6 +744,101 @@ TOOL_REGISTRY: list[dict[str, Any]] = [
             "required": ["tag_ids", "gap_description", "gap_type"],
         },
     },
+    # ── Tag Report tools (cross-survey trust-weighted rollup) ────────────────────
+    # See docs/tag-report/DESIGN.md / TRACKER.md. Read-only: these tools read
+    # already-generated group_insight_runs/group_insights rows produced by
+    # graphs/tag_report.py — they never trigger fresh generation.
+    {
+        "name": "list_tags",
+        "description": (
+            "Resolve a tag by name (case-insensitive substring match) or list the org's most "
+            "recent tags. Use this to turn a user's reference to a tag ('the onboarding tag', "
+            "'exec-dashboard') into a real tag_id before calling get_tag_report or any other "
+            "tag/group-scoped tool."
+        ),
+        "scope": "both",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Name to fuzzy-match against existing tags (optional — omit to list recent tags)"},
+                "limit": {"type": "integer", "default": 10, "description": "Max tags to return"},
+            },
+        },
+    },
+    {
+        "name": "get_tag_report",
+        "description": (
+            "Fetch a Tag Report — the trust-weighted, cross-survey rollup of per-metric findings "
+            "(headline, narrative, trust_score, confidence_tier, single-survey-sourced disclosure, "
+            "comparability warnings, citations) for every survey sharing a tag. tag_id is required; "
+            "run_id is optional (defaults to the latest completed run for the tag). Output carries "
+            "render_hint='document'. Call this before emitting a Tag Report action proposal to "
+            "decide view vs generate."
+        ),
+        "scope": "tag",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tag_id": {"type": "string", "description": "UUID of the tag"},
+                "run_id": {"type": "string", "description": "Specific group_insight_runs id (optional)"},
+            },
+            "required": ["tag_id"],
+        },
+    },
+    {
+        "name": "get_tag_report_trail",
+        "description": (
+            "List the Tag Report run history for a tag (the Tag Report Trail), newest first, with "
+            "a one-line summary (mode, created_at, headline count) and a trail URL per run. Use for "
+            "'history', 'past tag reports', or to find a prior run to compare against."
+        ),
+        "scope": "tag",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tag_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 10},
+            },
+            "required": ["tag_id"],
+        },
+    },
+    {
+        "name": "propose_view_tag_report",
+        "description": (
+            "Propose opening an existing Tag Report (read-only navigation — no API call). Call "
+            "get_tag_report first to confirm a report exists, then emit this with its run_id + url."
+        ),
+        "scope": "tag",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tag_id":  {"type": "string"},
+                "run_id":  {"type": "string"},
+                "url":     {"type": "string", "description": "In-app Tag Report viewer URL"},
+                "summary": {"type": "string", "description": "One-line summary for Crystal's prose"},
+            },
+            "required": ["tag_id"],
+        },
+    },
+    {
+        "name": "propose_generate_tag_report",
+        "description": (
+            "Propose generating a fresh Tag Report when none exists yet, or the user explicitly "
+            "asks to regenerate/refresh one. Returns a proposal; on confirm the frontend POSTs the "
+            "tag-report trigger endpoint (manual or custom_range mode) and streams progress."
+        ),
+        "scope": "tag",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tag_id":       {"type": "string"},
+                "run_mode":     {"type": "string", "enum": ["manual", "custom_range"], "default": "manual"},
+                "window_start": {"type": "string", "description": "ISO8601 window lower bound (custom_range only)"},
+                "window_end":   {"type": "string", "description": "ISO8601 window upper bound (custom_range only)"},
+            },
+            "required": ["tag_id"],
+        },
+    },
     # ── Tier 3 — X+O intelligence tools ─────────────────────────────────────────
     {
         "name": "get_contact_identity",
@@ -871,7 +966,14 @@ def get_tool_by_name(name: str) -> dict | None:
 
 
 def get_tools_for_scope(scope: str) -> list[dict]:
-    """Return tools available for a given scope ('survey' or 'org')."""
+    """Return tools available for a given scope ('survey', 'org', 'group', or 'tag').
+
+    'tag' also includes 'group'-scoped tools (get_group_surveys/metrics/topics/
+    analyze_group_coverage etc.) since a single tag IS a survey group — Tag Report's
+    tools layer on top of, not instead of, the existing group-scoped tool set.
+    """
+    if scope == "tag":
+        return [t for t in TOOL_REGISTRY if t["scope"] in ("tag", "group", "both")]
     return [
         t for t in TOOL_REGISTRY
         if t["scope"] == scope or t["scope"] == "both"
@@ -894,6 +996,7 @@ DATA_TOOL_NAMES = {
     "analyze_group_coverage", "detect_data_gaps", "suggest_new_survey",
     "get_contact_identity", "get_ownership_route", "get_ontology_context",
     "get_xo_context", "get_case_history",
+    "list_tags", "get_tag_report", "get_tag_report_trail",
 }
 
 # Analytical-skill tools — read-only like data tools, but delegate to the skill runtime
@@ -909,6 +1012,7 @@ ACTION_TOOL_NAMES = {
     "propose_create_case", "propose_assign_owner", "propose_slack_alert",
     "propose_manual_insight_run", "propose_view_report",
     "propose_generate_intelligence_report",
+    "propose_view_tag_report", "propose_generate_tag_report",
 }
 
 

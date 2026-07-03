@@ -2563,6 +2563,15 @@ const en = {
     settingsTitle: 'Tags',
     settingsSubtitle: 'Organize surveys into groups for cross-survey insights.',
     generateReport: 'Group Report',
+    // Fixed 2026-07-03 (customer-journey review finding): SurveysListPage's
+    // multi-tag toolbar button previously reused `generateReport`/the
+    // `auto_awesome` icon — visually near-identical to Tag Report's own
+    // entry points on the same page, despite this path making REAL, PAID
+    // fresh-LLM calls (Tag Report never does). Relabeled to make the distinct
+    // identity and cost unambiguous; only shown now when >1 tag is selected
+    // (single-tag selection routes to the free Tag Report flow instead).
+    generateGroupInsightsCta: 'Generate Group Insights',
+    generateReportTooltip: 'Runs fresh AI analysis across the selected tags (uses credits).',
     generatingReport: 'Generating report across {count} surveys…',
     groupReportTitle: '{name} — Group Report',
     surveysInGroup: '{count} surveys in this group',
@@ -3934,6 +3943,10 @@ const en = {
     notResolved:        'Not resolved? Create a ticket',
     thumbsUp:           'This helped',
     thumbsDown:         'Not helpful',
+    // Tag Report auto-scoping — Crystal is focused on a single tag's cross-survey rollup
+    tagScopeChip:       'Tag: {name}',
+    tagScopeSubtitle:   'Ask about tag: {name}',
+    tagReportGenerating: 'Tag report generation started: "{title}". It will appear here once complete.',
   },
 
   topicsAnalysis: {
@@ -5008,9 +5021,34 @@ const en = {
     tagBadge: {
       viewReport: 'View Tag Report for {name}',
     },
+    // Fixed 2026-07-03 (customer-journey review finding): SurveysListPage's
+    // toolbar CTA, single-tag case — routes to the mode-picker (TAG_REPORT_NEW)
+    // for the one selected tag, using Tag Report's own icon/wording family so
+    // it reads as the same free, zero-fresh-AI feature as the per-survey
+    // TagBadge entry points elsewhere on this page. Label matches
+    // tagReport.new.title exactly (the page it lands on) rather than
+    // "View Tag Report", since the destination is the mode-picker, not an
+    // existing report.
+    toolbarCta: {
+      tooltip: 'Opens the trust-weighted cross-survey report for this tag — no new AI generation.',
+    },
+    // Fixed 2026-07-03 (customer-journey review finding, minor/cosmetic):
+    // TagsSettingsPage's per-tag-card hover hint already correctly navigates
+    // to TAG_REPORT_LATEST, but previously displayed the stale `groups.
+    // generateReport` string ("Group Report") — a label from the older,
+    // unrelated feature, on a card that goes to the right (Tag Report)
+    // destination.
+    settingsCardHint: 'View Tag Report',
     breadcrumbs: {
       experience: 'Experience',
       reports: 'Reports',
+    },
+    page: {
+      // Fixed 2026-07-03 (customer-journey review finding): TagReportPage
+      // previously borrowed groups.groupReportTitle ("{name} — Group Report")
+      // from the older, unrelated Group Insights feature — the page/tab title
+      // never said "Tag Report" anywhere.
+      title: '{name} — Tag Report',
     },
     new: {
       title: 'Generate Tag Report',
@@ -5095,6 +5133,20 @@ const en = {
         nps: 'NPS',
         csat: 'CSAT',
         ces: 'CES',
+      },
+      // Fixed 2026-07-03 (customer-journey review finding): these previously
+      // had no t() lookup at all — the raw snake_case identifier the pipeline
+      // emits (crystalos/graphs/tag_report.py) rendered directly in the
+      // warning pill, e.g. a chip literally reading "cadence_mismatch".
+      warningType: {
+        temporal_offset: 'Checkpoint date doesn’t exactly match the requested boundary',
+        staleness: 'This survey’s data is older than the others in this report',
+        question_type_mismatch: 'Measured with different question types across surveys',
+        scale_mismatch: 'Surveys use different rating scales',
+        cadence_mismatch: 'Surveys run on different schedules',
+        // Fallback for any future/unrecognized warning_type — still a real
+        // sentence, never the bare identifier.
+        unknown: 'This finding has a data comparability caveat',
       },
     },
     comparisonCard: {

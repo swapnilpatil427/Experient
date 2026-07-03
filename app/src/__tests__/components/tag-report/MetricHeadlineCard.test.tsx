@@ -72,7 +72,7 @@ describe('MetricHeadlineCard', () => {
     expect(screen.queryByText('tagReport.metricCard.singleSurveySourced')).not.toBeInTheDocument();
   });
 
-  it('renders warning chips for comparability warnings', () => {
+  it('renders a localized warning chip for a known warning_type, never the raw identifier (regression test, 2026-07-03 — previously rendered "scale_mismatch" verbatim)', () => {
     render(
       <MemoryRouter>
         <MetricHeadlineCard
@@ -81,7 +81,40 @@ describe('MetricHeadlineCard', () => {
         />
       </MemoryRouter>
     );
-    expect(screen.getByText('scale_mismatch')).toBeInTheDocument();
+    expect(screen.getByText('tagReport.metricCard.warningType.scale_mismatch')).toBeInTheDocument();
+    expect(screen.queryByText('scale_mismatch')).not.toBeInTheDocument();
+  });
+
+  it('renders every known warning_type through its own localized key', () => {
+    const knownTypes = ['temporal_offset', 'staleness', 'question_type_mismatch', 'scale_mismatch', 'cadence_mismatch'];
+    render(
+      <MemoryRouter>
+        <MetricHeadlineCard
+          track={makeTrack({
+            warnings: knownTypes.map((warning_type) => ({
+              scope: 'survey-1', warning_type, distortion_score: 0.5, confidence_tier: 'low' as const, affected_survey_ids: ['s1'],
+            })),
+          })}
+          tagId="tag-1"
+        />
+      </MemoryRouter>
+    );
+    for (const warningType of knownTypes) {
+      expect(screen.getByText(`tagReport.metricCard.warningType.${warningType}`)).toBeInTheDocument();
+    }
+  });
+
+  it('falls back to the "unknown" warning key for a warning_type not in the known list — never renders the raw identifier', () => {
+    render(
+      <MemoryRouter>
+        <MetricHeadlineCard
+          track={makeTrack({ warnings: [{ scope: 'survey-1', warning_type: 'some_future_warning_kind', distortion_score: 0.2, confidence_tier: 'low', affected_survey_ids: ['s1'] }] })}
+          tagId="tag-1"
+        />
+      </MemoryRouter>
+    );
+    expect(screen.getByText('tagReport.metricCard.warningType.unknown')).toBeInTheDocument();
+    expect(screen.queryByText('some_future_warning_kind')).not.toBeInTheDocument();
   });
 
   it('renders a corroboration note when corroborated_with is present', () => {

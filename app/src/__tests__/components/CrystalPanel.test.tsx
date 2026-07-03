@@ -89,6 +89,7 @@ const mockApi = {
   crystalChat:              vi.fn().mockResolvedValue({ answer: 'ok', suggestions: [], insight_refs: [] }),
   crystalChat2:             vi.fn().mockResolvedValue({ answer: 'ok', suggestions: [], insight_refs: [] }),
   updateInsightFeedback:    vi.fn().mockResolvedValue({}),
+  generateTagReport:        vi.fn().mockResolvedValue({ run_id: 'run-tag-1', attached_to_existing: false, created_at: '2026-07-03T00:00:00Z' }),
 };
 
 // ── Capture client-side navigation (replaces window.location.href) ────────────
@@ -187,6 +188,7 @@ beforeEach(() => {
   mockApi.createGraphWorkflow.mockResolvedValue({ workflow: { id: 'wf-graph-1' } });
   mockApi.triggerInsightGeneration.mockResolvedValue({});
   mockApi.dismissAction.mockResolvedValue({});
+  mockApi.generateTagReport.mockResolvedValue({ run_id: 'run-tag-1', attached_to_existing: false, created_at: '2026-07-03T00:00:00Z' });
 
   // Reset context mock to default (survey-abc scope)
   vi.mocked(useCrystalPanel).mockReturnValue({
@@ -770,6 +772,217 @@ describe('CrystalPanel — scope propagation', () => {
     expect(body.scope).toBe('org');
     // survey_id must be '' — never 'all'
     expect(body.survey_id).toBe('');
+  });
+
+  it('sends scope=tag and tag_id when crystalCtx.focused_tag_id is set — even though scope="all"', async () => {
+    // Tag Report pages never touch SurveyScope — they inject the tag focus via
+    // crystalCtx while `scope` stays 'all'. The tag focus must still win.
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen:          true,
+      initialQuery:    '',
+      crystalCtx:      { focused_tag_id: 'tag-1', focused_tag_name: 'Onboarding' },
+      scope:           'all',
+      agenticInsights: [],
+      topics:          [],
+      closeCrystal:    mockCloseCrystal,
+      setScope:        mockSetScope,
+      setCrystalCtx:   mockSetCrystalCtx,
+      openCrystal:     vi.fn(),
+      toggleCrystal:   vi.fn(),
+      setCrystalData:  vi.fn(),
+    });
+
+    global.fetch = mockFetchWithAnswer();
+    renderPanel('all');
+
+    const user = userEvent.setup();
+    const textarea = screen.getByPlaceholderText(/ask anything/i);
+    await user.type(textarea, 'tag scoped question');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalled();
+    });
+
+    const [url, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toContain('/api/experience/tag/crystal/stream');
+    const body = JSON.parse(init.body as string);
+    expect(body.scope).toBe('tag');
+    expect(body.tag_id).toBe('tag-1');
+    // survey_id stays '' — the tag focus doesn't imply a survey.
+    expect(body.survey_id).toBe('');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — tag context indicator', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('renders a "Tag: {name}" chip when crystalCtx.focused_tag_id is set', () => {
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen:          true,
+      initialQuery:    '',
+      crystalCtx:      { focused_tag_id: 'tag-1', focused_tag_name: 'Onboarding' },
+      scope:           'all',
+      agenticInsights: [],
+      topics:          [],
+      closeCrystal:    mockCloseCrystal,
+      setScope:        mockSetScope,
+      setCrystalCtx:   mockSetCrystalCtx,
+      openCrystal:     vi.fn(),
+      toggleCrystal:   vi.fn(),
+      setCrystalData:  vi.fn(),
+    });
+
+    renderPanel('all');
+
+    // The i18n mock returns the raw key, so the translated chip collapses to its key.
+    expect(screen.getByText('crystal.tagScopeChip')).toBeInTheDocument();
+  });
+
+  it('does not render the tag chip when no tag is focused', () => {
+    renderPanel('all');
+    expect(screen.queryByText('crystal.tagScopeChip')).not.toBeInTheDocument();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — action execution: tag report', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('view_tag_report navigates to the tag\'s latest-report route using params.tag_id', async () => {
+    const proposal = makeProposal({
+      id:     'ap-vtr',
+      type:   'view_tag_report',
+      title:  'View Tag Report',
+      params: { tag_id: 'tag-99' },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-99/report');
+    });
+  });
+
+  it('view_tag_report falls back to crystalCtx.focused_tag_id when params.tag_id is absent', async () => {
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen:          true,
+      initialQuery:    '',
+      crystalCtx:      { focused_tag_id: 'tag-ctx' },
+      scope:           'survey-abc',
+      agenticInsights: [],
+      topics:          [],
+      closeCrystal:    mockCloseCrystal,
+      setScope:        mockSetScope,
+      setCrystalCtx:   mockSetCrystalCtx,
+      openCrystal:     vi.fn(),
+      toggleCrystal:   vi.fn(),
+      setCrystalData:  vi.fn(),
+    });
+
+    const proposal = makeProposal({ id: 'ap-vtr2', type: 'view_tag_report', params: {} });
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-ctx/report');
+    });
+  });
+
+  it('view_tag_report records a failed outcome when no tag_id is available anywhere', async () => {
+    const proposal = makeProposal({ id: 'ap-vtr-fail', type: 'view_tag_report', params: {} });
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.recordProposalOutcome).toHaveBeenCalledWith(
+        'survey-abc',
+        expect.objectContaining({ proposalKey: 'ap-vtr-fail', status: 'failed' }),
+      );
+    });
+    expect(mockNavigate).not.toHaveBeenCalledWith(expect.stringContaining('/report'));
+  });
+
+  it('generate_tag_report calls api.generateTagReport, invalidates tagReports, and navigates to the new run', async () => {
+    const proposal = makeProposal({
+      id:     'ap-gtr',
+      type:   'generate_tag_report',
+      title:  'Generate report for Enterprise',
+      params: { tag_id: 'tag-99', run_mode: 'manual' },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.generateTagReport).toHaveBeenCalledWith({
+        tag_id:        'tag-99',
+        run_mode:      'manual',
+        window_start:  undefined,
+        window_end:    undefined,
+        parent_run_id: undefined,
+      });
+    });
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/app/experience/tags/tag-99/report/run-tag-1',
+        { state: { inFlightNotice: null } },
+      );
+    });
+
+    // The i18n mock returns the raw key — the confirmation note collapses to its key.
+    await waitFor(() => {
+      expect(screen.getByText('crystal.tagReportGenerating')).toBeInTheDocument();
+    });
+  });
+
+  it('generate_tag_report forwards an in-flight notice through navigation state when generateTagReport reports attached_to_existing (regression test, 2026-07-03 — fixes "InFlightRunBanner unreachable" for the Crystal-triggered generation path too, not just TagReportNewPage)', async () => {
+    mockApi.generateTagReport.mockResolvedValueOnce({
+      run_id: 'run-tag-inflight', attached_to_existing: true, created_at: '2026-07-01T00:00:00Z',
+    });
+    const proposal = makeProposal({
+      id: 'ap-gtr-inflight', type: 'generate_tag_report', title: 'Generate report for Enterprise',
+      params: { tag_id: 'tag-99', run_mode: 'manual' },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/app/experience/tags/tag-99/report/run-tag-inflight',
+        { state: { inFlightNotice: { startedAt: '2026-07-01T00:00:00Z', trigger: 'manual' } } },
+      );
+    });
+  });
+
+  it('generate_tag_report records a failed outcome when no tag_id is available anywhere', async () => {
+    const proposal = makeProposal({ id: 'ap-gtr-fail', type: 'generate_tag_report', params: {} });
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.recordProposalOutcome).toHaveBeenCalledWith(
+        'survey-abc',
+        expect.objectContaining({ proposalKey: 'ap-gtr-fail', status: 'failed' }),
+      );
+    });
+    expect(mockApi.generateTagReport).not.toHaveBeenCalled();
   });
 });
 

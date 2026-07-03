@@ -4,6 +4,7 @@ import { useTranslation } from '../../lib/i18n';
 import { useApi } from '../../hooks/useApi';
 import { useTagReportTrail } from '../../hooks/useTagReport';
 import { useSetPageTitle } from '../../contexts/pageTitle';
+import { useCrystalPanel } from '../../contexts/crystalPanel';
 import { Icon } from '../../components/Icon';
 import { PageHeader } from '../../components/PageHeader';
 import { GlassCard } from '../insights/shared';
@@ -20,6 +21,7 @@ export function TagReportTrailPage() {
   const { tagId } = useParams<{ tagId: string }>();
   const navigate = useNavigate();
   const api = useApi();
+  const { setCrystalCtx } = useCrystalPanel();
   const [latestRunId, setLatestRunId] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
@@ -30,6 +32,14 @@ export function TagReportTrailPage() {
   }, [tagId, api]);
 
   const { tagName, runs, sources, loading, error } = useTagReportTrail(latestRunId ?? undefined);
+
+  // Auto-scope Crystal to this tag via the additive crystalCtx bag (never via
+  // `scope`/`setScope` — a tag_id is not a survey_id). Mirrors TagReportPage.tsx.
+  useEffect(() => {
+    if (!tagId) return;
+    setCrystalCtx({ focused_tag_id: tagId, focused_tag_name: tagName ?? undefined });
+    return () => setCrystalCtx({});
+  }, [tagId, tagName, setCrystalCtx]);
 
   useSetPageTitle(t('tagReport.trailPage.title'));
 

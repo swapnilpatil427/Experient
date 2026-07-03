@@ -20,6 +20,8 @@ vi.mock('../../../hooks/useApi', () => ({
   useApi: () => ({ getTagReportHistory: mockGetTagReportHistory }),
 }));
 vi.mock('../../../contexts/pageTitle', () => ({ useSetPageTitle: vi.fn() }));
+const mockSetCrystalCtx = vi.fn();
+vi.mock('../../../contexts/crystalPanel', () => ({ useCrystalPanel: () => ({ setCrystalCtx: mockSetCrystalCtx }) }));
 vi.mock('../../../pages/insights/shared', () => ({
   GlassCard: ({ children, className }: React.ComponentProps<'div'>) => <div className={className}>{children}</div>,
 }));
@@ -35,6 +37,7 @@ afterEach(cleanup);
 beforeEach(() => {
   mockNavigate.mockReset();
   mockGetTagReportHistory.mockReset();
+  mockSetCrystalCtx.mockReset();
 });
 
 function renderPage() {
@@ -80,5 +83,24 @@ describe('TagReportTrailPage', () => {
     renderPage();
 
     await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument());
+  });
+
+  describe('Crystal auto-scoping', () => {
+    it('scopes Crystal to this tag via setCrystalCtx once the tag name resolves, and clears on unmount', async () => {
+      mockGetTagReportHistory.mockResolvedValue({ runs: [], total: 0 });
+      mockUseTagReportTrail.mockReturnValue({
+        tagId: 'tag-1', tagName: 'Onboarding', runs: [], sources: [], loading: false, error: null,
+      });
+
+      const { unmount } = renderPage();
+
+      await waitFor(() => {
+        expect(mockSetCrystalCtx).toHaveBeenCalledWith({ focused_tag_id: 'tag-1', focused_tag_name: 'Onboarding' });
+      });
+
+      mockSetCrystalCtx.mockClear();
+      unmount();
+      expect(mockSetCrystalCtx).toHaveBeenCalledWith({});
+    });
   });
 });

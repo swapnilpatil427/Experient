@@ -571,4 +571,27 @@ describe('GET /api/group-insights/tag-reports', () => {
     await api(buildApp(), 'GET', '/api/group-insights/tag-reports?sort=bogus');
     expect(capturedSql).toMatch(/latest_run_created_at DESC/);
   });
+
+  it('reports automated_enabled=true only for tags with program_config.tag_report_automated.enabled=true (regression test, 2026-07-03 — previously never selected, always undefined/falsy)', async () => {
+    dbQuery = vi.fn(async (sql) => {
+      expect(sql).toMatch(/tag_report_automated.*enabled/s);
+      return {
+        rows: [
+          { tag_id: 'tag-1', tag_name: 'Automated Tag', tag_color: '#000', survey_count: 2, automated_enabled: true },
+          { tag_id: 'tag-2', tag_name: 'Manual-only Tag', tag_color: '#111', survey_count: 3, automated_enabled: false },
+        ],
+      };
+    });
+    const { body } = await api(buildApp(), 'GET', '/api/group-insights/tag-reports');
+    expect(body.reports[0].automated_enabled).toBe(true);
+    expect(body.reports[1].automated_enabled).toBe(false);
+  });
+
+  it('defaults automated_enabled to false when the DB row omits the field entirely (no program_config set)', async () => {
+    dbQuery = vi.fn(async () => ({
+      rows: [{ tag_id: 'tag-1', tag_name: 'No Config', tag_color: '#000', survey_count: 1 }],
+    }));
+    const { body } = await api(buildApp(), 'GET', '/api/group-insights/tag-reports');
+    expect(body.reports[0].automated_enabled).toBe(false);
+  });
 });

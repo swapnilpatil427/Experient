@@ -139,7 +139,7 @@ export function TagsSettingsPage() {
 
                 <div className="mt-2 flex items-center gap-1 text-xs text-primary opacity-0 group-hover:opacity-100 transition-opacity">
                   <Icon name="analytics" size={12} />
-                  {t('groups.generateReport')}
+                  {t('tagReport.settingsCardHint')}
                 </div>
               </Card>
             </motion.div>

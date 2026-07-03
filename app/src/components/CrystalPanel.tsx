@@ -257,7 +257,10 @@ export function CrystalPanel({
           // called together from the hub page survey chip handler).
           const currentScope = scopeRef.current;
           const currentIsAll = currentScope === 'all';
-          const streamScope = currentIsAll ? 'org' : 'survey';
+          // A page-injected tag focus (Tag Report pages) wins over the
+          // survey/org scope distinction — a user can be tag-focused while
+          // `scope` itself is still 'all' (tag pages never touch SurveyScope).
+          const streamScope = activeCtx.focused_tag_id ? 'tag' : (currentIsAll ? 'org' : 'survey');
           // IMPORTANT: never send 'all' as survey_id — the agents service treats
           // any non-empty survey_id as a UUID and runs check_survey_access on it.
           // Org scope passes '' so the access check is skipped entirely.
@@ -287,6 +290,9 @@ export function CrystalPanel({
                 scope: streamScope,
                 window: activeCtx.window,
                 focused_topic: activeCtx.focused_topic,
+                // Only present when streamScope === 'tag' — omitted (undefined
+                // values are dropped by JSON.stringify) for survey/org scope.
+                tag_id: streamScope === 'tag' ? activeCtx.focused_tag_id : undefined,
               }),
             },
           );
@@ -793,6 +799,47 @@ export function CrystalPanel({
           break;
         }
 
+        // ── Tag Report — cross-survey AI insight rollups ────────────────────────
+        case 'view_tag_report': {
+          const tagId = (proposal.params.tag_id as string | undefined) ?? crystalCtx.focused_tag_id;
+          if (!tagId) { track('failed', undefined, 'no tag_id in proposal params or context'); break; }
+          track('succeeded', tagId);
+          navigate(toPath(ROUTES.TAG_REPORT_LATEST, { tagId }));
+          break;
+        }
+        case 'generate_tag_report': {
+          const tagId = (proposal.params.tag_id as string | undefined) ?? crystalCtx.focused_tag_id;
+          if (!tagId) { track('failed', undefined, 'no tag_id in proposal params or context'); break; }
+          try {
+            const result = await api.generateTagReport({
+              tag_id:         tagId,
+              run_mode:       (proposal.params.run_mode as 'manual' | 'custom_range') || 'manual',
+              window_start:   proposal.params.window_start as string | undefined,
+              window_end:     proposal.params.window_end as string | undefined,
+              parent_run_id:  proposal.params.parent_run_id as string | undefined,
+            });
+            invalidate('tagReports');
+            track('succeeded', result.run_id);
+            // Fixed 2026-07-03 (customer-journey review finding:
+            // "InFlightRunBanner unreachable") — same fix as
+            // TagReportNewPage: forward the authoritative attached_to_existing
+            // signal through navigation state so TagReportPage's fresh hook
+            // instance can show the banner. `trigger` isn't currently rendered
+            // by InFlightRunBanner (only startedAt is) — 'manual' is an honest
+            // placeholder for "a user-initiated action caused this call",
+            // which is true regardless of what triggered the run it attached to.
+            const inFlightNotice = result.attached_to_existing
+              ? { startedAt: result.created_at, trigger: 'manual' as const }
+              : null;
+            navigate(toPath(ROUTES.TAG_REPORT, { tagId, runId: result.run_id }), { state: { inFlightNotice } });
+            note(t('crystal.tagReportGenerating', { title: proposal.title }));
+          } catch (err) {
+            track('failed', undefined, String(err));
+            throw err;
+          }
+          break;
+        }
+
         // ── Tier 3 — Closed-Loop Action Platform ──────────────────────────────
         case 'create_case': {
           try {
@@ -867,7 +914,7 @@ export function CrystalPanel({
     } finally {
       setExecutingAction(null);
     }
-  }, [api, executingAction, focusSurvey, navigate, submitQuery, note]);
+  }, [api, executingAction, focusSurvey, navigate, submitQuery, note, crystalCtx, t]);
 
   // "Ticket" button on a Crystal answer → create a CX case (ticket) from the insight.
   // The click is itself the confirmation gesture, so we run the wired create_case path directly.
@@ -1049,11 +1096,13 @@ export function CrystalPanel({
                   )}
                 </div>
                 <div className="text-[10px] text-on-surface-variant truncate">
-                  {isAll
-                    ? `Ask across ${activeSurveys.length} active survey${activeSurveys.length !== 1 ? 's' : ''}${nps != null ? ` · Portfolio NPS ${nps}` : ''}`
-                    : focusSurvey
-                      ? `${focusSurvey.title} · ${responseCount.toLocaleString()} responses${nps != null ? ` · NPS ${nps}` : ''}${crystalCtx.focused_topic ? ` · ${crystalCtx.focused_topic}` : ''}`
-                      : 'Ask anything about this survey'}
+                  {crystalCtx.focused_tag_id
+                    ? t('crystal.tagScopeSubtitle', { name: crystalCtx.focused_tag_name ?? crystalCtx.focused_tag_id })
+                    : isAll
+                      ? `Ask across ${activeSurveys.length} active survey${activeSurveys.length !== 1 ? 's' : ''}${nps != null ? ` · Portfolio NPS ${nps}` : ''}`
+                      : focusSurvey
+                        ? `${focusSurvey.title} · ${responseCount.toLocaleString()} responses${nps != null ? ` · NPS ${nps}` : ''}${crystalCtx.focused_topic ? ` · ${crystalCtx.focused_topic}` : ''}`
+                        : 'Ask anything about this survey'}
                 </div>
               </div>
 
@@ -1093,6 +1142,15 @@ export function CrystalPanel({
               style={{ background: 'rgba(42,75,217,0.04)', borderBottom: '1px solid rgba(42,75,217,0.08)' }}>
               {/* What Crystal is looking at — derived from scope, not hardcoded */}
               <Icon name="diamond" size={11} style={{ color: '#2a4bd9', flexShrink: 0 }} />
+              {/* Tag focus — shown independent of isAll, since a Tag Report page
+                  keeps `scope` at 'all' and carries the tag via crystalCtx instead. */}
+              {crystalCtx.focused_tag_id && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-1"
+                  style={{ background: '#eef2ff', color: '#4f46e5' }}>
+                  <Icon name="sell" size={10} />
+                  {t('crystal.tagScopeChip', { name: crystalCtx.focused_tag_name ?? crystalCtx.focused_tag_id })}
+                </span>
+              )}
               {isAll ? (
                 <span className="text-[10px] text-on-surface-variant">
                   {activeSurveys.length > 0
@@ -1136,8 +1194,9 @@ export function CrystalPanel({
                     Portfolio
                   </button>
                 )}
-                {/* Clear filters */}
-                {!isAll && (crystalCtx.window || crystalCtx.focused_topic) && (
+                {/* Clear filters — also shown for a tag focus even though scope stays 'all' */}
+                {(!isAll || crystalCtx.focused_tag_id) &&
+                  (crystalCtx.window || crystalCtx.focused_topic || crystalCtx.focused_tag_id) && (
                   <button className="text-[10px] text-on-surface-variant hover:text-on-surface"
                     onClick={() => setCrystalCtx({})}>
                     clear

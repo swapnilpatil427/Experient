@@ -41,6 +41,7 @@ import { SurveysListPage } from '../../pages/SurveysListPage';
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const mockTag = { id: 't1', name: 'Employee Experience', color: '#6366f1', slug: 'employee-experience' };
+const mockTag2 = { id: 't2', name: 'Onboarding', color: '#059669', slug: 'onboarding' };
 
 const mockSurvey = {
   id: 's1',
@@ -65,7 +66,7 @@ function buildMockApi(overrides: Record<string, unknown> = {}) {
       hasMore: false,
     }),
     listTags: vi.fn().mockResolvedValue({
-      tags: [mockTag],
+      tags: [mockTag, mockTag2],
     }),
     addTagsToSurvey: vi.fn().mockResolvedValue({}),
     removeTagFromSurvey: vi.fn().mockResolvedValue({}),
@@ -147,6 +148,20 @@ async function selectTagAndClose(user: ReturnType<typeof setup>) {
   // Wait until Radix removes aria-hidden from the main document
   await waitFor(() => {
     // The generate report button or the remove button should now be findable
+    expect(document.body).not.toHaveAttribute('style', expect.stringContaining('pointer-events: none'));
+  }, { timeout: 2000 }).catch(() => { /* may not have pointer-events restriction — continue */ });
+}
+
+/** Same as selectTagAndClose, but selects BOTH fixture tags — exercises the
+ * multi-tag toolbar path (legacy Group Insights), preserved unchanged
+ * alongside the 2026-07-03 single-tag-routes-to-Tag-Report fix. */
+async function selectTwoTagsAndClose(user: ReturnType<typeof setup>) {
+  await openTagsDropdown(user);
+  await user.click(screen.getByText('Employee Experience'));
+  await user.click(screen.getByText('Onboarding'));
+  await waitFor(() => expect(screen.getByText('2')).toBeInTheDocument());
+  await user.keyboard('{Escape}');
+  await waitFor(() => {
     expect(document.body).not.toHaveAttribute('style', expect.stringContaining('pointer-events: none'));
   }, { timeout: 2000 }).catch(() => { /* may not have pointer-events restriction — continue */ });
 }
@@ -334,46 +349,83 @@ describe('Survey List entry point to Tag Report', () => {
 });
 
 // ── Generate group report button ──────────────────────────────────────────────
+//
+// Fixed 2026-07-03 (customer-journey review finding): this toolbar button
+// previously always ran the legacy, paid Group Insights flow regardless of
+// tag-selection count. Single-tag selection (the common case — and the only
+// case Tag Report actually supports, since it's always scoped to one tag) now
+// routes to the free Tag Report flow instead; multi-tag selection keeps the
+// legacy flow unchanged (Tag Report cannot replicate a blended multi-tag
+// query), just relabeled so it's never confused with the free one.
 
-describe('Generate group report button', () => {
-  it('shows the Generate group report button when a tag filter is active', async () => {
+describe('Generate report toolbar button — single tag selected (routes to Tag Report)', () => {
+  it('shows the Tag Report CTA (not the legacy Group Insights label) when exactly one tag is filtered', async () => {
     const user = setup();
     renderPage();
     await selectTagAndClose(user);
 
     await waitFor(() => {
-      expect(screen.getByText('groups.generateReport')).toBeInTheDocument();
+      expect(screen.getByText('tagReport.new.title')).toBeInTheDocument();
     });
+    expect(screen.queryByText('groups.generateGroupInsightsCta')).not.toBeInTheDocument();
   });
 
-  it('clicking it calls api.generateGroupInsights with tag_ids: ["t1"]', async () => {
+  it('clicking it navigates straight to TAG_REPORT_NEW for the selected tag — does NOT call the legacy generateGroupInsights API', async () => {
     const user = setup();
     const { mockApi } = renderPage();
     await selectTagAndClose(user);
 
-    await waitFor(() => expect(screen.getByText('groups.generateReport')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('tagReport.new.title')).toBeInTheDocument());
 
-    // Use the button element itself (inner Icon span has pointer-events:none)
-    const generateBtn = screen.getByText('groups.generateReport').closest('button') as HTMLElement;
+    const generateBtn = screen.getByText('tagReport.new.title').closest('button') as HTMLElement;
     expect(generateBtn).toBeTruthy();
     await user.click(generateBtn);
 
     await waitFor(() => {
-      expect(mockApi.generateGroupInsights).toHaveBeenCalledWith({ tag_ids: ['t1'] });
+      expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/t1/report/new');
+    });
+    expect(mockApi.generateGroupInsights).not.toHaveBeenCalled();
+  });
+});
+
+describe('Generate report toolbar button — multiple tags selected (legacy Group Insights, preserved)', () => {
+  it('shows the relabeled Group Insights CTA (not the Tag Report label) when more than one tag is filtered', async () => {
+    const user = setup();
+    renderPage();
+    await selectTwoTagsAndClose(user);
+
+    await waitFor(() => {
+      expect(screen.getByText('groups.generateGroupInsightsCta')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('tagReport.new.title')).not.toBeInTheDocument();
+  });
+
+  it('clicking it still calls api.generateGroupInsights with all selected tag_ids', async () => {
+    const user = setup();
+    const { mockApi } = renderPage();
+    await selectTwoTagsAndClose(user);
+
+    await waitFor(() => expect(screen.getByText('groups.generateGroupInsightsCta')).toBeInTheDocument());
+
+    const generateBtn = screen.getByText('groups.generateGroupInsightsCta').closest('button') as HTMLElement;
+    expect(generateBtn).toBeTruthy();
+    await user.click(generateBtn);
+
+    await waitFor(() => {
+      expect(mockApi.generateGroupInsights).toHaveBeenCalledWith({ tag_ids: ['t1', 't2'] });
     });
   });
 
-  it('after generation, navigate is called to the GROUP_REPORT route', async () => {
+  it('after generation, navigate is still called to the legacy GROUP_REPORT route', async () => {
     const user = setup();
     renderPage();
-    await selectTagAndClose(user);
+    await selectTwoTagsAndClose(user);
 
-    await waitFor(() => expect(screen.getByText('groups.generateReport')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('groups.generateGroupInsightsCta')).toBeInTheDocument());
 
-    const generateBtn = screen.getByText('groups.generateReport').closest('button') as HTMLElement;
+    const generateBtn = screen.getByText('groups.generateGroupInsightsCta').closest('button') as HTMLElement;
     await user.click(generateBtn);
 
-    // navigate should be called with /app/groups/t1/report/run1
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith(
         expect.stringMatching(/\/app\/groups\/t1\/report\/run1/),

@@ -1845,3 +1845,155 @@ class TestActionProposalTypes:
         restored = CrystalOutput(**dumped)
         assert len(restored.action_proposals) == 1
         assert restored.action_proposals[0].id == "p1"
+
+
+# ── Tag scope wiring (scope='tag' + tag_id → CrystalContext.tag_ids) ──────────
+
+class TestTagScopeWiring:
+    """CrystalContext.tag_ids existed but nothing populated/used it for scope='tag'
+    requests until this change. Covers CrystalInput.tag_id -> _build_ctx ->
+    CrystalContext.tag_ids, and the semantic-routing/tool-prefetch signal that
+    consumes it."""
+
+    def test_crystal_context_accepts_tag_scope(self):
+        from crystalos.crystal.context import CrystalContext
+        ctx = CrystalContext(org_id="org-1", user_id="u1", survey_id=None,
+                              scope="tag", tag_ids=("tag-1",))
+        assert ctx.scope == "tag"
+        assert ctx.tag_ids == ("tag-1",)
+
+    def test_build_ctx_populates_tag_ids_from_singular_tag_id(self):
+        """Backend's scope='tag' request body sends `tag_id` (singular) — see
+        backend/src/routes/experience.ts. _build_ctx must wrap it into tag_ids."""
+        from crystalos.agents.crystal import _build_ctx
+        inp = CrystalInput(survey_id="", org_id="org-1", message="how's this tag doing?",
+                            insights=[], scope="tag", tag_id="tag-42")
+        ctx = _build_ctx(inp)
+        assert ctx.scope == "tag"
+        assert ctx.tag_ids == ("tag-42",)
+
+    def test_build_ctx_prefers_explicit_tag_ids_list(self):
+        from crystalos.agents.crystal import _build_ctx
+        inp = CrystalInput(survey_id="", org_id="org-1", message="msg", insights=[],
+                            scope="group", tag_ids=["tag-a", "tag-b"], tag_id="tag-ignored")
+        ctx = _build_ctx(inp)
+        assert ctx.tag_ids == ("tag-a", "tag-b")
+
+    def test_build_ctx_survey_scope_has_no_tag_ids(self):
+        """Backward-compat: existing survey-scope callers (no tag_id/tag_ids at
+        all) must still resolve tag_ids to None, unchanged."""
+        from crystalos.agents.crystal import _build_ctx
+        inp = CrystalInput(survey_id="s1", org_id="org-1", message="msg", insights=[])
+        ctx = _build_ctx(inp)
+        assert ctx.scope == "survey"
+        assert ctx.tag_ids is None
+
+    def test_get_tools_for_scope_tag_includes_group_tools(self):
+        """A tag IS a survey group — tag scope must see get_group_* tools too,
+        not just the tag-specific ones, since tag-analyst's allowed-tools spans both."""
+        from crystalos.crystal.registry import get_tools_for_scope
+        names = {t["name"] for t in get_tools_for_scope("tag")}
+        assert "get_tag_report" in names
+        assert "get_group_surveys" in names
+        assert "get_group_metrics" in names
+        assert "get_survey_overview" not in names  # survey-only tool stays excluded
+
+    def test_routing_hint_added_for_tag_scope(self):
+        from crystalos.agents.crystal import _routing_hint_for_scope
+        from crystalos.crystal.context import CrystalContext
+        tag_ctx = CrystalContext(org_id="o", user_id="u", survey_id=None, scope="tag", tag_ids=("t1",))
+        survey_ctx = CrystalContext(org_id="o", user_id="u", survey_id="s1", scope="survey")
+        assert _routing_hint_for_scope(tag_ctx) != ""
+        assert _routing_hint_for_scope(survey_ctx) == ""
+        assert _routing_hint_for_scope(None) == ""
+
+    @pytest.mark.asyncio
+    async def test_resolve_crystal_skill_match_biases_query_for_tag_scope(self):
+        """registry.find has no scope param — the only way to bias routing is the
+        query text itself. Assert the hint text actually reaches registry.find."""
+        from crystalos.crystal.context import CrystalContext
+        captured_queries = []
+
+        async def fake_find(query, top_k=5):
+            captured_queries.append(query)
+            return [({"name": "tag-analyst"}, 0.9)]
+
+        mock_registry = MagicMock()
+        mock_registry.find = fake_find
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        tag_ctx = CrystalContext(org_id="o", user_id="u", survey_id=None, scope="tag", tag_ids=("t1",))
+        meta, score = await _resolve_crystal_skill_match(mock_registry, "how's onboarding doing", ctx=tag_ctx)
+        assert meta["name"] == "tag-analyst"
+        assert "how's onboarding doing" in captured_queries[0]
+        assert captured_queries[0] != "how's onboarding doing"  # hint text was appended
+
+    @pytest.mark.asyncio
+    async def test_fetch_skill_context_uses_tag_id_args_for_tag_scope(self):
+        """_fetch_skill_context must call tag-scoped tools with tag_id/tag_ids
+        args (not survey_id) when ctx.scope == 'tag'."""
+        from crystalos.crystal.context import CrystalContext
+
+        captured_calls = []
+
+        async def fake_dispatch(tool_name, ctx, args):
+            captured_calls.append((tool_name, args))
+            return {"ok": True}
+
+        ctx = CrystalContext(org_id="o", user_id="u", survey_id=None, scope="tag", tag_ids=("tag-9",))
+        skill_meta = {"name": "tag-analyst", "allowed_tools": [
+            "get_tag_report", "get_group_topics", "get_group_metrics", "get_tag_report_trail",
+        ]}
+        inp = CrystalInput(survey_id="", org_id="o", message="how's this tag doing?", insights=[], scope="tag")
+
+        with patch("crystalos.crystal.tools.dispatch_tool", new=fake_dispatch):
+            results = await _fetch_skill_context(inp, skill_meta, ctx)
+
+        assert len(results) == 3  # capped at 3
+        tool_names = [c[0] for c in captured_calls]
+        assert tool_names[0] == "get_tag_report"
+        assert captured_calls[0][1] == {"tag_id": "tag-9"}
+        assert captured_calls[1][1] == {"tag_ids": ["tag-9"]}
+
+    @pytest.mark.asyncio
+    async def test_run_skill_stream_prefetches_tag_tools_for_tag_scope(self):
+        """End-to-end through _run_skill_stream: a tag-scoped request must
+        dispatch get_tag_report (not a survey-scoped tool) during prefetch."""
+        skill_meta = {
+            "name": "tag-analyst",
+            "description": "Tag-scoped analyst",
+            "allowed_tools": ["get_tag_report", "get_group_topics"],
+            "_body": "", "_dir": "/tmp", "version": "1.0.0", "evals": "EVALS.md",
+            "max_output_tokens": 2000, "max_retries": 1, "timeout_seconds": 60,
+        }
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {"tag-analyst": skill_meta}
+        mock_registry.find = AsyncMock(return_value=[(skill_meta, 0.85)])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        skill_out = CrystalOutput(answer="Tag-wide NPS is up.", citations=[], suggestions=[])
+        captured_calls = []
+
+        async def fake_dispatch(tool_name, ctx, args):
+            captured_calls.append((tool_name, args))
+            return {"response_count": 10}
+
+        inp = CrystalInput(survey_id="", org_id="org1", message="how's this tag doing?",
+                            insights=[], scope="tag", tag_id="tag-5")
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=fake_dispatch),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            events = []
+            async for line in _run_skill_stream(inp):
+                events.append(json.loads(line))
+
+        tool_names = [c[0] for c in captured_calls]
+        assert "get_tag_report" in tool_names
+        assert "get_survey_overview" not in tool_names
+        args_for_get_tag_report = next(a for n, a in captured_calls if n == "get_tag_report")
+        assert args_for_get_tag_report == {"tag_id": "tag-5"}

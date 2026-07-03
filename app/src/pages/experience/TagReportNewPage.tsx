@@ -24,6 +24,11 @@ export function TagReportNewPage() {
   const [submitting, setSubmitting] = useState<'manual' | 'custom_range' | null>(null);
   const [windowStart, setWindowStart] = useState('');
   const [windowEnd, setWindowEnd] = useState('');
+  // Client-side validation errors (window required/order) use these fixed
+  // strings as-is. Server-side generation failures use the SPECIFIC message
+  // `generate()` returns (no surveys / rate limit / tag not found) rather than
+  // one fixed generic string for every failure mode (fixed 2026-07-03,
+  // customer-journey review finding: "generic error masking").
   const [formError, setFormError] = useState<string | null>(null);
 
   useSetPageTitle(t('tagReport.new.title'));
@@ -37,10 +42,15 @@ export function TagReportNewPage() {
     if (!tagId) return;
     setSubmitting('manual');
     setFormError(null);
-    const runId = await generate({ mode: 'manual' });
+    const { runId, error, inFlightNotice } = await generate({ mode: 'manual' });
     setSubmitting(null);
-    if (runId) navigate(toPath(ROUTES.TAG_REPORT, { tagId, runId }));
-    else setFormError(t('tagReport.new.errorGeneric'));
+    // Fixed 2026-07-03 (customer-journey review finding: "InFlightRunBanner
+    // unreachable") — this page's own useTagReport instance (and its
+    // inFlightNotice state) is discarded the instant we navigate away.
+    // Forwarding the notice through router navigation state lets the
+    // DESTINATION page (TagReportPage, a fresh hook instance) show it.
+    if (runId) navigate(toPath(ROUTES.TAG_REPORT, { tagId, runId }), { state: { inFlightNotice } });
+    else setFormError(error || t('tagReport.new.errorGeneric'));
   }
 
   async function handleCustomRange() {
@@ -55,14 +65,14 @@ export function TagReportNewPage() {
     }
     setSubmitting('custom_range');
     setFormError(null);
-    const runId = await generate({
+    const { runId, error, inFlightNotice } = await generate({
       mode: 'custom_range',
       windowStart: new Date(windowStart).toISOString(),
       windowEnd: new Date(windowEnd).toISOString(),
     });
     setSubmitting(null);
-    if (runId) navigate(toPath(ROUTES.TAG_REPORT, { tagId, runId }));
-    else setFormError(t('tagReport.new.errorGeneric'));
+    if (runId) navigate(toPath(ROUTES.TAG_REPORT, { tagId, runId }), { state: { inFlightNotice } });
+    else setFormError(error || t('tagReport.new.errorGeneric'));
   }
 
   return (

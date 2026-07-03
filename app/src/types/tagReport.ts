@@ -343,4 +343,13 @@ export interface TagReportGenerateRequest {
 
 export interface TagReportGenerateResponse {
   run_id: string;
+  // Fixed 2026-07-03 (customer-journey review finding): the backend's manual/
+  // custom-range endpoints already return these two fields — the AUTHORITATIVE
+  // signal from insertGroupInsightRunWithConcurrencyGuard's real DB-level
+  // concurrency check (a 23505 conflict, not a guess) — but the frontend
+  // previously discarded them and re-derived a fragile timestamp/trigger
+  // heuristic from a second, separate API call instead. Declaring them here so
+  // callers use the real signal directly.
+  attached_to_existing: boolean;
+  created_at: string;
 }

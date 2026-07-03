@@ -5,6 +5,10 @@ import type { AgenticInsight, SurveyTopic } from '../types';
 export interface CrystalCtx {
   window?: 'all_time' | '30d' | '7d';
   focused_topic?: string;
+  // Tag Report pages inject these so Crystal automatically scopes to the tag
+  // being viewed, without touching `scope`/`SurveyScope` (survey_id | 'all').
+  focused_tag_id?: string;
+  focused_tag_name?: string;
 }
 
 interface CrystalPanelContextValue {

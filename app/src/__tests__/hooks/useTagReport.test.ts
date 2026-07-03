@@ -127,57 +127,68 @@ describe('useTagReport', () => {
   });
 
   describe('generate()', () => {
-    it('starts a manual run and does not flag an in-flight notice for a freshly created run', async () => {
-      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-1' });
-      // Initial load (explicit runId, skips history) resolves to some existing run;
-      // then generate()'s own getTagReportRun call resolves to a run created "now".
-      const freshRun = makeRunResponse({ run: makeRun({ created_at: new Date().toISOString(), trigger: 'manual' }) });
-      mockGetTagReportRun.mockResolvedValueOnce(makeRunResponse()).mockResolvedValueOnce(freshRun);
+    it('starts a manual run and does not flag an in-flight notice when attached_to_existing is false', async () => {
+      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-1', attached_to_existing: false, created_at: new Date().toISOString() });
+      mockGetTagReportRun.mockResolvedValueOnce(makeRunResponse())
+        .mockResolvedValueOnce(makeRunResponse({ run: makeRun({ trigger: 'manual' }) }));
 
       const { result } = renderHook(() => useTagReport('tag-1', 'run-1'));
       await waitFor(() => expect(result.current.loading).toBe(false));
 
-      let runId: string | null = null;
-      await act(async () => { runId = await result.current.generate({ mode: 'manual' }); });
+      let generateResult: { runId: string | null; error: string | null; inFlightNotice: unknown } =
+        { runId: null, error: null, inFlightNotice: undefined };
+      await act(async () => { generateResult = await result.current.generate({ mode: 'manual' }); });
 
-      expect(runId).toBe('run-1');
+      expect(generateResult.runId).toBe('run-1');
+      expect(generateResult.error).toBeNull();
+      expect(generateResult.inFlightNotice).toBeNull();
       expect(mockGenerateTagReport).toHaveBeenCalledWith({ tag_id: 'tag-1', run_mode: 'manual', window_start: undefined, window_end: undefined });
       expect(result.current.inFlightNotice).toBeNull();
     });
 
-    it('flags an in-flight notice when the resolved run predates this click (DESIGN.md Appendix A.5 / Task 17)', async () => {
+    it('flags an in-flight notice using the AUTHORITATIVE attached_to_existing signal from generateTagReport itself, not a timestamp/trigger heuristic (fixed 2026-07-03 — see generate()\'s JSDoc for why the old heuristic was replaced)', async () => {
       mockGetTagReportHistory.mockResolvedValue({ runs: [], total: 0 });
-      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-old' });
       const staleCreatedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
+      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-old', attached_to_existing: true, created_at: staleCreatedAt });
       mockGetTagReportRun.mockResolvedValue(makeRunResponse({ run: makeRun({ id: 'run-old', created_at: staleCreatedAt, trigger: 'manual' }) }));
 
       const { result } = renderHook(() => useTagReport('tag-1', undefined));
       await waitFor(() => expect(result.current.loading).toBe(false));
 
-      await act(async () => { await result.current.generate({ mode: 'manual' }); });
+      let generateResult: { runId: string | null; error: string | null; inFlightNotice: { startedAt: string } | null } =
+        { runId: null, error: null, inFlightNotice: null };
+      await act(async () => { generateResult = await result.current.generate({ mode: 'manual' }); });
 
       expect(result.current.inFlightNotice).not.toBeNull();
       expect(result.current.inFlightNotice?.startedAt).toBe(staleCreatedAt);
+      // Also returned directly (not just set on hook state) — this is what
+      // lets a caller (TagReportNewPage) forward it via router navigation
+      // state before this hook instance is discarded on navigation.
+      expect(generateResult.inFlightNotice?.startedAt).toBe(staleCreatedAt);
     });
 
-    it('flags an in-flight notice when the resolved run was scheduler-triggered', async () => {
+    it('does NOT flag an in-flight notice merely because the run is old or scheduler-triggered — only attached_to_existing matters now', async () => {
+      // Regression guard for the old (removed) heuristic: a run that happens
+      // to be old, or scheduler-triggered, must NOT trip the notice on its
+      // own — only the generate response's own attached_to_existing field can.
       mockGetTagReportHistory.mockResolvedValue({ runs: [], total: 0 });
-      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-sched' });
-      mockGetTagReportRun.mockResolvedValue(makeRunResponse({ run: makeRun({ id: 'run-sched', created_at: new Date().toISOString(), trigger: 'scheduled' }) }));
+      const oldTimestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-sched', attached_to_existing: false, created_at: oldTimestamp });
+      mockGetTagReportRun.mockResolvedValue(makeRunResponse({ run: makeRun({ id: 'run-sched', created_at: oldTimestamp, trigger: 'scheduled' }) }));
 
       const { result } = renderHook(() => useTagReport('tag-1', undefined));
       await waitFor(() => expect(result.current.loading).toBe(false));
 
       await act(async () => { await result.current.generate({ mode: 'manual' }); });
 
-      expect(result.current.inFlightNotice).not.toBeNull();
-      expect(result.current.inFlightNotice?.trigger).toBe('scheduled');
+      expect(result.current.inFlightNotice).toBeNull();
     });
 
     it('dismissInFlightNotice clears the notice', async () => {
       mockGetTagReportHistory.mockResolvedValue({ runs: [], total: 0 });
-      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-old' });
-      mockGetTagReportRun.mockResolvedValue(makeRunResponse({ run: makeRun({ id: 'run-old', created_at: new Date(Date.now() - 60000).toISOString() }) }));
+      const staleCreatedAt = new Date(Date.now() - 60000).toISOString();
+      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-old', attached_to_existing: true, created_at: staleCreatedAt });
+      mockGetTagReportRun.mockResolvedValue(makeRunResponse({ run: makeRun({ id: 'run-old', created_at: staleCreatedAt }) }));
 
       const { result } = renderHook(() => useTagReport('tag-1', undefined));
       await waitFor(() => expect(result.current.loading).toBe(false));
@@ -188,23 +199,30 @@ describe('useTagReport', () => {
       expect(result.current.inFlightNotice).toBeNull();
     });
 
-    it('returns null and sets error when generate fails', async () => {
+    it('returns null runId/inFlightNotice and sets error when generate fails', async () => {
       mockGetTagReportHistory.mockResolvedValue({ runs: [], total: 0 });
       mockGenerateTagReport.mockRejectedValue(new Error('quota exceeded'));
 
       const { result } = renderHook(() => useTagReport('tag-1', undefined));
       await waitFor(() => expect(result.current.loading).toBe(false));
 
-      let runId: string | null = 'unset';
-      await act(async () => { runId = await result.current.generate({ mode: 'manual' }); });
+      let generateResult: { runId: string | null; error: string | null; inFlightNotice: unknown } =
+        { runId: 'unset', error: null, inFlightNotice: undefined };
+      await act(async () => { generateResult = await result.current.generate({ mode: 'manual' }); });
 
-      expect(runId).toBeNull();
+      expect(generateResult.runId).toBeNull();
+      expect(generateResult.inFlightNotice).toBeNull();
+      // The error message is returned directly from generate() (not just set
+      // on hook state) so a caller reading it right after the awaited call
+      // gets the real, fresh message — no stale-closure read of `error` from
+      // an earlier render (fixed 2026-07-03, see generate()'s JSDoc).
+      expect(generateResult.error).toBe('quota exceeded');
       expect(result.current.error).toBe('quota exceeded');
     });
 
     it('passes window_start/window_end through for custom_range mode', async () => {
       mockGetTagReportHistory.mockResolvedValue({ runs: [], total: 0 });
-      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-cr' });
+      mockGenerateTagReport.mockResolvedValue({ run_id: 'run-cr', attached_to_existing: false, created_at: new Date().toISOString() });
       mockGetTagReportRun.mockResolvedValue(makeRunResponse({ run: makeRun({ id: 'run-cr', run_mode: 'custom_range' }) }));
 
       const { result } = renderHook(() => useTagReport('tag-1', undefined));

@@ -49,15 +49,55 @@ interface CrystalContext {
   response_count: number;
   citationMap: Record<string, CitationEntry>;
   scope?: string;
+  tag_id?: string;
+  tag_name?: string;
+  tag_survey_ids?: string[];
 }
 
-async function loadCrystalContext(surveyId: string, orgId: string): Promise<CrystalContext> {
+async function loadCrystalContext(surveyId: string, orgId: string, tagId?: string): Promise<CrystalContext> {
   // citationMap: insight_id → { headline, survey_title, survey_id, layer, category }
   // Returned alongside context so the frontend can render rich source cards
   // without additional round-trips.
   const ctx: CrystalContext = {
     insights: [], topics: [], metrics: {}, survey_title: '', response_count: 0, citationMap: {},
   };
+
+  if (tagId) {
+    // ── Tag context ──────────────────────────────────────────────────────────
+    // Validate the tag belongs to this org first — if it doesn't match, treat
+    // this exactly as if no tag context had been provided at all (fall through
+    // to the surveyId/org branches below) rather than leaking whether a
+    // cross-org tag id exists.
+    const { rows: tagRows } = await query(
+      'SELECT id, name FROM survey_tags WHERE id = $1 AND org_id = $2',
+      [tagId, orgId],
+    ).catch(() => ({ rows: [] }));
+
+    if (tagRows.length) {
+      const tag = tagRows[0] as { id: string; name: string };
+      ctx.scope = 'tag';
+      ctx.tag_id = tag.id;
+      ctx.tag_name = tag.name;
+
+      // Mirrors survey-groups.ts's /generate join shape.
+      const { rows: mappings } = await query(
+        `SELECT DISTINCT m.survey_id
+         FROM survey_tag_mappings m
+         JOIN surveys s ON s.id = m.survey_id
+         WHERE m.tag_id = $1 AND m.org_id = $2 AND s.deleted_at IS NULL`,
+        [tagId, orgId],
+      ).catch(() => ({ rows: [] }));
+      ctx.tag_survey_ids = (mappings as { survey_id: string }[]).map(r => r.survey_id);
+
+      // Getting tag_id (+ org-validated membership) to CrystalOS is this route's
+      // job; the get_tag_report/get_tag_report_trail tools do the trust-weighted
+      // aggregation from group_insight_runs/group_insights themselves, so no
+      // insights/topics/metrics are loaded here for tag scope.
+      return ctx;
+    }
+    // Invalid/cross-org tag — fall through to surveyId (empty for tag calls) and
+    // then the org-wide branch below, same as if tagId had never been passed.
+  }
 
   if (surveyId) {
     // ── Survey context ───────────────────────────────────────────────────────
@@ -244,7 +284,7 @@ async function loadCrystalContext(surveyId: string, orgId: string): Promise<Crys
 async function crystalHandler(req: Request, res: Response): Promise<void> {
   const orgId = req.orgId;
   const userId = req.userId;
-  const { message, conversation_history = [], survey_id, focused_topic } = req.body as Record<string, unknown>;
+  const { message, conversation_history = [], survey_id, tag_id, focused_topic } = req.body as Record<string, unknown>;
 
   if (!message || typeof message !== 'string' || (message as string).trim().length < 2) {
     res.status(400).json({ error: 'message is required' });
@@ -268,7 +308,7 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
         actionType: 'crystal_turn',
         credits:    CREDIT_COSTS.crystal_turn,
         userId,
-        actionRef:  (survey_id as string) || 'org',
+        actionRef:  (survey_id as string) || (tag_id ? `tag:${tag_id as string}` : 'org'),
         note:       'Crystal conversational turn',
       });
     } catch (e) {
@@ -277,13 +317,19 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
   };
 
   try {
-    const ctx = await loadCrystalContext((survey_id as string) || '', orgId);
+    // If both survey_id and tag_id are present, loadCrystalContext checks tagId
+    // first (returns early once a valid tag context is built) — scope stays
+    // auto-detected from the body, no route param needed here.
+    const ctx = await loadCrystalContext((survey_id as string) || '', orgId, (tag_id as string) || undefined);
 
     // Build a rich fallback message that embeds all loaded context so the LLM
     // can answer meaningfully even without tool calls.
     const contextLines: string[] = [];
     if (ctx.scope === 'survey' && ctx.survey_title) {
       contextLines.push(`[SURVEY: ${ctx.survey_title} — ${ctx.response_count} responses]`);
+    }
+    if (ctx.scope === 'tag' && ctx.tag_name) {
+      contextLines.push(`[TAG: ${ctx.tag_name} — ${(ctx.tag_survey_ids || []).length} surveys]`);
     }
     const portfolio = (ctx.metrics as Record<string, unknown>).portfolio as { title: string; nps_score: unknown; response_count: unknown }[] | undefined;
     if (ctx.scope === 'org' && portfolio?.length) {
@@ -324,6 +370,11 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
       survey_title:          ctx.survey_title || '',
     };
     if (focused_topic) agentBody.focused_topic = focused_topic;
+    if (ctx.scope === 'tag') {
+      agentBody.tag_id = ctx.tag_id || (tag_id as string) || '';
+      agentBody.tag_name = ctx.tag_name;
+      agentBody.tag_survey_ids = ctx.tag_survey_ids;
+    }
 
     // Try streaming first (Crystal's tool loop gives richer, data-driven answers)
     try {
@@ -441,7 +492,7 @@ router.post('/:scope/crystal/stream', requireAuth, async (req: Request, res: Res
   const userId = req.userId;
   const body = req.body as Record<string, unknown>;
 
-  if (!['survey', 'org'].includes(scope)) {
+  if (!['survey', 'org', 'tag'].includes(scope)) {
     clientError(res, 400, 'invalid_scope');
     return;
   }
@@ -466,18 +517,39 @@ router.post('/:scope/crystal/stream', requireAuth, async (req: Request, res: Res
   res.flushHeaders();
 
   const surveyIdForCtx = scope === 'survey' ? String(body.survey_id || '') : '';
+  const tagIdForCtx = scope === 'tag' ? String(body.tag_id || '') : '';
   let citationMap: Record<string, Record<string, unknown>> = {};
-  let agentBody: Record<string, unknown> = { ...body, org_id: orgId, user_id: userId, scope };
+  // Fixed 2026-07-03 (security review, Riley — CONFIRMED, contained by redundant
+  // downstream org-checks but not fail-closed at this layer): agentBody's
+  // scope/tag_id must be derived from ctx.scope/ctx.tag_id (loadCrystalContext's
+  // ORG-VALIDATED result) — never from the raw route param + raw client body.
+  // loadCrystalContext only sets ctx.scope='tag'/ctx.tag_id when the tag_id
+  // actually belongs to this org (falls through to org-wide otherwise); before
+  // this fix, a cross-org tag_id still got forwarded to CrystalOS labeled
+  // scope='tag' with that unvalidated id, relying entirely on every downstream
+  // CrystalOS tool independently re-checking org ownership rather than failing
+  // closed here. Declared before the try block so the catch path (context load
+  // failed) also defaults to no tag context, not the unvalidated one.
+  let effectiveScope: string = scope === 'tag' ? 'org' : scope;
+  let effectiveTagId: string | undefined;
+  let agentBody: Record<string, unknown> = { ...body, org_id: orgId, user_id: userId, scope: effectiveScope };
 
   try {
-    const ctx = await loadCrystalContext(surveyIdForCtx, orgId!);
+    const ctx = await loadCrystalContext(surveyIdForCtx, orgId!, tagIdForCtx);
     citationMap = ctx.citationMap as unknown as Record<string, Record<string, unknown>>;
+    if (scope === 'tag' && ctx.scope === 'tag' && ctx.tag_id) {
+      effectiveScope = 'tag';
+      effectiveTagId = ctx.tag_id;
+    }
     const bodyInsights = Array.isArray(body.insights) ? (body.insights as Record<string, unknown>[]) : [];
     agentBody = {
       ...body,
       org_id: orgId,
       user_id: userId,
-      scope,
+      scope: effectiveScope,
+      tag_id: effectiveTagId,
+      tag_name: effectiveTagId ? ctx.tag_name : undefined,
+      tag_survey_ids: effectiveTagId ? ctx.tag_survey_ids : undefined,
       insights: bodyInsights.length > 0 ? bodyInsights : ctx.insights,
       topics: Array.isArray(body.topics) && (body.topics as unknown[]).length > 0
         ? body.topics
@@ -490,6 +562,9 @@ router.post('/:scope/crystal/stream', requireAuth, async (req: Request, res: Res
     };
   } catch (ctxErr: unknown) {
     logger.warn({ err: (ctxErr as Error).message, orgId }, 'crystal_stream_context_load_failed');
+    // Context load failed — fail closed on tag scope too (effectiveScope/
+    // effectiveTagId already default to the no-tag-context state above).
+    agentBody = { ...body, org_id: orgId, user_id: userId, scope: effectiveScope, tag_id: undefined };
     const bodyInsights = Array.isArray(body.insights) ? (body.insights as Record<string, unknown>[]) : [];
     bodyInsights.forEach(i => {
       if (i.id) citationMap[String(i.id)] = {
@@ -534,7 +609,7 @@ router.post('/:scope/crystal/stream', requireAuth, async (req: Request, res: Res
         actionType: 'crystal_turn',
         credits:    CREDIT_COSTS.crystal_turn,
         userId,
-        actionRef:  surveyIdForCtx || 'org',
+        actionRef:  surveyIdForCtx || (scope === 'tag' ? `tag:${tagIdForCtx}` : 'org'),
         note:       'Crystal conversational turn (stream)',
       });
     } catch (debitErr) {

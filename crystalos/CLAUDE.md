@@ -20,8 +20,8 @@ agents/         # Package root
   consumers/    # Redis stream consumer (response_stream.py) — progressive tier triggers
   crystal/      # Crystal Intelligence platform
     context.py    # CrystalContext frozen dataclass
-    registry.py   # 13 tool definitions with JSON Schema
-    tools.py      # 13 async tool executor functions
+    registry.py   # 58 tool definitions with JSON Schema (re-derive: count `"name":` in TOOL_REGISTRY)
+    tools.py      # executor functions, one per tool + dispatch_tool
   graphs/       # LangGraph pipelines
     insights.py   # Main insight generation pipeline (13 nodes as of Phase 0.5)
     nodes/        # Shared node logic (context, route_specialists)
@@ -111,7 +111,8 @@ creation graph's revision loop).
 - **Fallback chain:** skill synthesis returns None (no match / eval fail / normalize fail) → single-shot `_run_crystal`; if the stream throws before the first event → `_run_crystal` once more (`main.py`)
 - **Legacy:** `?legacy=true` (admin/brand_admin only) runs `_run_react_loop_streaming` — the old LLM-driven ReAct tool loop, preserved for admin debug. `?debug=true` (admin) emits `debug_routing`/`debug_timing` events
 - Semantic routing is live because the lifespan calls `await _skill_reg.warm_router()` at startup (pre-embeds skill descriptions); falls back to difflib `find_sync()` if not warmed
-- `TOOL_REGISTRY` (`crystal/registry.py`) has **45** tool definitions (re-derive: count `"name":` in `TOOL_REGISTRY`); executors + `dispatch_tool` in `crystal/tools.py`. Phase 6 added the Insight Pipeline v2 read tools (`get_checkpoint_chain`, `get_insight_settings`, `get_insight_report`, `get_insight_trail`, `get_checkpoint_detail`, `compare_checkpoints`) and three report action proposals (`propose_manual_insight_run` → `trigger_manual_insight_run`, `propose_view_report` → `view_report`, `propose_generate_intelligence_report` → `generate_intelligence_report`). `get_insight_report` output carries `render_hint='document'` so the frontend renders an `InsightDocumentCard`.
+- `TOOL_REGISTRY` (`crystal/registry.py`) has **58** tool definitions (re-derive: count `"name":` in `TOOL_REGISTRY`); executors + `dispatch_tool` in `crystal/tools.py`. Phase 6 added the Insight Pipeline v2 read tools (`get_checkpoint_chain`, `get_insight_settings`, `get_insight_report`, `get_insight_trail`, `get_checkpoint_detail`, `compare_checkpoints`) and three report action proposals (`propose_manual_insight_run` → `trigger_manual_insight_run`, `propose_view_report` → `view_report`, `propose_generate_intelligence_report` → `generate_intelligence_report`). `get_insight_report` output carries `render_hint='document'` so the frontend renders an `InsightDocumentCard`.
+- **Tag Report tools** (`docs/tag-report/DESIGN.md`, scope `"tag"`) — read-only tools for the conversational surface on top of `graphs/tag_report.py`'s cross-survey rollup: `list_tags` (resolve a tag by name → `tag_id`, scope `"both"`), `get_tag_report` (latest or specific `run_id`'s trust-weighted per-metric findings, `render_hint='document'`), `get_tag_report_trail` (run history for a tag). Two action proposals: `propose_view_tag_report` → `view_tag_report`, `propose_generate_tag_report` → `generate_tag_report`. Every query re-validates the caller-supplied `tag_id` against `ctx.org_id` before reading any other table (`_load_org_tag`). `get_tools_for_scope("tag")` also includes `"group"`-scoped tools (`get_group_surveys`/`get_group_metrics`/`get_group_topics`/`analyze_group_coverage`) since a tag is a survey group. Routed via the `tag-analyst` skill; `CrystalContext.tag_ids` is populated from the request body's `scope: 'tag'` + `tag_id` (see `crystal_stream_endpoint` in `main.py` and `_build_ctx` in `agents/crystal.py`), and `_routing_hint_for_scope` nudges semantic skill routing toward `tag-analyst` for tag-scoped queries since `skill_registry.find` takes free text only, no scope parameter.
 - Thread continuity: `crystal_threads` by `(survey_id, org_id)`, 7-day TTL. Rate limit: 10 req/org/min (Redis)
 
 ### Crystal action proposals & telemetry
