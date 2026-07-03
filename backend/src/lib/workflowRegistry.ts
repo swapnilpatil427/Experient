@@ -104,6 +104,11 @@ export const CONDITION_FIELDS: ConditionFieldDef[] = [
   { field: 'channel', label: 'Channel', kind: 'string' },
 ];
 
+// DEEP_AUDIT_PM_FINDINGS.md 2d: evaluateConditions (workflowEngine.ts) validates
+// a rule's field against this set at run time so a typo'd/unknown field name
+// throws instead of silently resolving to `undefined` and evaluating false forever.
+export const CONDITION_FIELD_SET: Set<string> = new Set(CONDITION_FIELDS.map((f) => f.field));
+
 // Actions the engine can execute. `live:true` = wired now; others are stubs/roadmap.
 export const ACTIONS: ActionDef[] = [
   { action: 'notify.in_app', category: 'Notify', label: 'In-app notification', live: true },

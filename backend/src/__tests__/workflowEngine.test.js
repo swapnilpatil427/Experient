@@ -79,12 +79,12 @@ describe('evaluateConditions', () => {
   // `context[r.field]` lookup and silently compares as false forever, with the
   // typo indistinguishable from a legitimately-false real match.
   //
-  // A correct fix needs `evaluateConditions` (or a save/run-time guard wrapping
-  // it) to reject/flag a rule whose `field` isn't one of the registry's known
-  // condition fields — surfacing a clear error instead of a silent always-false.
-  // This test asserts that fix-shaped expectation and is RED against current
-  // code, which has no such check anywhere.
-  it('rejects a condition rule whose field is not a known registry field — RED, proves 2d', () => {
+  // Fixed: `evaluateConditions` now validates `field` against
+  // `workflowRegistry.ts`'s `CONDITION_FIELD_SET` and throws instead of
+  // silently evaluating false. Run-time only (matches this test's scope) —
+  // the canvas builder's free-text field input (WorkflowCanvasPage.tsx) is a
+  // separate, save-time/UX half of finding 2d, not addressed here.
+  it('rejects a condition rule whose field is not a known registry field', () => {
     const { evaluateConditions } = load();
     // Customer meant `nps` (the real field the registry declares) but typed `NPS`.
     const conds = { rules: [{ field: 'NPS', op: 'lt', value: 7 }] };

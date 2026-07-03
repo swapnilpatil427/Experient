@@ -15,6 +15,7 @@ import { getCredentials } from './workflowCredentials';
 import { cronMatches } from './cron';
 import { resolveRecipients, type RecipientTarget } from './recipientResolver';
 import { checkTriggerTierGate } from './planGating';
+import { CONDITION_FIELD_SET } from './workflowRegistry';
 
 function log(level: 'info' | 'warn' | 'error', obj: Record<string, unknown>, msg: string): void {
   try {
@@ -149,7 +150,19 @@ export function compare(op: string, actual: unknown, value: unknown): boolean {
 export function evaluateConditions(conditions: ConditionSet | null | undefined, context: Record<string, unknown> = {}): boolean {
   if (!conditions || !Array.isArray(conditions.rules) || conditions.rules.length === 0) return true;
   const op = (conditions.operator || 'AND').toUpperCase();
-  const results = conditions.rules.map((r) => compare(r.op, context[r.field], r.value));
+  const results = conditions.rules.map((r) => {
+    // DEEP_AUDIT_PM_FINDINGS.md 2d — a rule referencing a field the registry
+    // doesn't declare (typically a typo, since the canvas builder's field input
+    // is free text) previously resolved to `undefined` and silently evaluated
+    // false forever. Surface it as an execution failure instead — callers
+    // (runNodes/runGraph, both invoked inside try/catch by runWorkflow/
+    // resumeWorkflow) already turn a thrown error into a 'failed' execution
+    // status, so this is visible in execution history rather than a crash.
+    if (!CONDITION_FIELD_SET.has(r.field)) {
+      throw new Error(`Unknown field "${r.field}" in workflow condition — not declared in the condition-fields registry`);
+    }
+    return compare(r.op, context[r.field], r.value);
+  });
   return op === 'OR' ? results.some(Boolean) : results.every(Boolean);
 }
 
