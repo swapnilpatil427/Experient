@@ -42,6 +42,9 @@
   --color-primary-dim: #173dcd;
   --color-primary-container: #879aff;
   --color-on-primary: #f2f1ff;
+  /* shadcn Button's default variant reads text-primary-foreground; without this,
+     Tailwind v4 never generates that utility and text falls back to inherited/black. */
+  --color-primary-foreground: #f2f1ff;
   --color-on-primary-container: #00176b;
   --color-on-primary-fixed: #000000;
   --color-on-primary-fixed-variant: #001e82;
