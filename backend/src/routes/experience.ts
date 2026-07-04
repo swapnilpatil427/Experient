@@ -787,13 +787,34 @@ router.get('/:id/trends', requireAuth, async (req: Request, res: Response): Prom
       [surveyId, orgId, days]
     );
 
-    const { rows: checkpoints } = await query(
-      `SELECT checkpoint_number, response_count_at_checkpoint, nps_at_checkpoint, created_at
-       FROM survey_insight_checkpoints
-       WHERE survey_id = $1 AND org_id = $2
-       ORDER BY created_at ASC`,
-      [surveyId, orgId]
-    ).catch(() => ({ rows: [] }));
+    // Fixed 2026-07-04: this used to query ONLY survey_insight_checkpoints (legacy),
+    // so a survey whose history has moved to insight_checkpoints_v2 would silently
+    // get an empty checkpoints array here — found during the same audit as the
+    // node_delta_compute/get_checkpoint_history checkpoint-versioning fixes.
+    const checkpointCols = 'checkpoint_number, response_count_at_checkpoint, nps_at_checkpoint, created_at';
+    let checkpoints: unknown[] = [];
+    try {
+      const { rows } = await query(
+        `SELECT ${checkpointCols}
+         FROM insight_checkpoints_v2
+         WHERE survey_id = $1 AND org_id = $2 AND lane = 'automated'
+         ORDER BY created_at ASC`,
+        [surveyId, orgId]
+      );
+      checkpoints = rows;
+    } catch {
+      // insight_checkpoints_v2 not migrated yet — fall through to legacy
+    }
+    if (!checkpoints.length) {
+      const { rows } = await query(
+        `SELECT ${checkpointCols}
+         FROM survey_insight_checkpoints
+         WHERE survey_id = $1 AND org_id = $2
+         ORDER BY created_at ASC`,
+        [surveyId, orgId]
+      ).catch(() => ({ rows: [] }));
+      checkpoints = rows;
+    }
 
     res.json({ snapshots, checkpoints, days });
   } catch (err: unknown) {

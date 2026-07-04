@@ -356,3 +356,55 @@ describe('POST /api/experience/crystal — tag_id auto-detected (non-streaming f
     expect(sentBody.tag_name).toBeUndefined();
   });
 });
+
+// ── GET /api/experience/:id/trends ────────────────────────────────────────────
+
+describe('GET /api/experience/:id/trends', () => {
+  // Fixed 2026-07-04: this endpoint used to query ONLY survey_insight_checkpoints
+  // (legacy) for the checkpoints array, so a survey whose history has moved to
+  // insight_checkpoints_v2 would silently get an empty checkpoints array back —
+  // same bug class as node_delta_compute / get_checkpoint_history in CrystalOS,
+  // found during the same audit.
+  it('reads checkpoints from insight_checkpoints_v2 when present', async () => {
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM survey_metric_snapshots')) return { rows: [] };
+      if (sql.includes('FROM insight_checkpoints_v2')) {
+        return { rows: [{ checkpoint_number: 9, response_count_at_checkpoint: 120, nps_at_checkpoint: 46.0, created_at: 't2' }] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await inject(buildApp(), { method: 'GET', url: '/api/experience/s1/trends' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.checkpoints).toHaveLength(1);
+    expect(body.checkpoints[0].checkpoint_number).toBe(9);
+  });
+
+  it('falls back to legacy survey_insight_checkpoints when v2 is empty', async () => {
+    const seen = [];
+    dbQuery = vi.fn(async (sql) => {
+      seen.push(sql);
+      if (sql.includes('FROM survey_metric_snapshots')) return { rows: [] };
+      if (sql.includes('FROM insight_checkpoints_v2')) return { rows: [] };
+      if (sql.includes('FROM survey_insight_checkpoints')) {
+        return { rows: [{ checkpoint_number: 3, response_count_at_checkpoint: 80, nps_at_checkpoint: 41.0, created_at: 't1' }] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await inject(buildApp(), { method: 'GET', url: '/api/experience/s1/trends' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(seen.some((s) => s.includes('FROM survey_insight_checkpoints'))).toBe(true);
+    expect(body.checkpoints).toHaveLength(1);
+    expect(body.checkpoints[0].checkpoint_number).toBe(3);
+  });
+
+  it('returns an empty checkpoints array (not an error) when neither table has rows', async () => {
+    dbQuery = vi.fn(async () => ({ rows: [] }));
+    const res = await inject(buildApp(), { method: 'GET', url: '/api/experience/s1/trends' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().checkpoints).toEqual([]);
+  });
+});

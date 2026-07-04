@@ -1938,21 +1938,22 @@ router.get('/:surveyId/checkpoints/:checkpointId/report', requireAuth, async (re
   const { surveyId, checkpointId } = req.params;
   const { orgId } = req;
   try {
-    const { rows } = await query(
-      `SELECT report_url FROM survey_insight_checkpoints
-       WHERE id = $1 AND survey_id = $2 AND org_id = $3`,
-      [checkpointId, surveyId, orgId]
-    );
-    if (!rows.length) { clientError(res, 404, 'checkpoint_not_found'); return; }
-    const { report_url } = rows[0] as { report_url: string | null };
-    if (!report_url) { clientError(res, 404, 'report_not_ready'); return; }
+    // Fixed 2026-07-04: this used to query ONLY survey_insight_checkpoints (legacy)
+    // by id, so any checkpointId from insight_checkpoints_v2 (e.g. ids returned by
+    // the /checkpoints list above, which is v2-first) would 404 here even though
+    // the checkpoint exists. Reuses loadCheckpointRow (v2-then-legacy, ownership
+    // scoped) — the same lookup GET /trail/:checkpointId already uses.
+    const found = await loadCheckpointRow(checkpointId, surveyId, orgId);
+    if (!found) { clientError(res, 404, 'checkpoint_not_found'); return; }
+    const blobRef = (found.row.report_blob_ref as string | null) ?? (found.row.report_url as string | null) ?? null;
+    if (!blobRef) { clientError(res, 404, 'report_not_ready'); return; }
 
     const isProduction = process.env.NODE_ENV === 'production' || process.env.AGENTS_ENV === 'staging';
     if (isProduction) {
-      const url = await agentsClient.getCheckpointReadUrl(report_url);
+      const url = await agentsClient.getCheckpointReadUrl(blobRef);
       res.json({ url, expires_in_seconds: 900 });
     } else {
-      const blob = await agentsClient.getCheckpointBlob(report_url);
+      const blob = await agentsClient.getCheckpointBlob(blobRef);
       res.json(blob);
     }
   } catch (err: unknown) {
