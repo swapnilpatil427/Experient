@@ -38,7 +38,7 @@ from crystalos.lib.constants import (
     USE_SKILL_RUNTIME,
     PROGRESSIVE_TIER_FIRST_VOICES, PROGRESSIVE_TIER_EARLY_SIGNALS,
     PROGRESSIVE_TIER_GROWING_PICTURE, PROGRESSIVE_TIER_FULL_REPORT,
-    STOP_LEGACY_CHECKPOINT_WRITE,
+    STOP_LEGACY_CHECKPOINT_WRITE, DEFAULT_STREAM_THRESHOLD,
 )
 from crystalos.lib.logger import logger
 from crystalos.lib.openrouter import call_agent
@@ -822,8 +822,19 @@ async def node_resolve_context(state: dict) -> dict:
         max_age = None
     prior_chain = await walk_parent_chain(survey_id, org_id, lookback, max_age_days=max_age)
     parent = prior_chain[0] if prior_chain else None
+    # Fixed 2026-07-04: walk_parent_chain() falls back to the LEGACY
+    # survey_insight_checkpoints table when insight_checkpoints_v2 has no rows
+    # yet for this survey — necessary for delta/watermark context, but its `id`
+    # is a legacy-table primary key, never a row in insight_checkpoints_v2.
+    # insight_checkpoints_v2.parent_checkpoint_id has a foreign key to
+    # insight_checkpoints_v2(id) itself, so using a legacy id there always
+    # fails with a FK violation, silently dropping every checkpoint write for
+    # any survey whose only prior history predates the v2 migration. Both
+    # tables stamp schema_version (legacy DEFAULT 1, v2 DEFAULT 2) — a parent
+    # is only a valid v2 lineage link when it's genuinely from v2.
+    is_v2_parent = bool(parent) and parent.get("schema_version") == 2
     parent_ckpt_id = state.get("parent_checkpoint_id") or (
-        str(parent.get("id")) if parent and parent.get("id") else ""
+        str(parent.get("id")) if is_v2_parent and parent.get("id") else ""
     )
 
     # ── Watermark = parent.response_high_watermark; bootstrap → epoch ─────────
@@ -873,7 +884,7 @@ async def node_resolve_context(state: dict) -> dict:
         # Threshold gate (04 §2 step 6): skip when below stream threshold AND not
         # bootstrap AND not a tier milestone. Milestone is detected later by count;
         # here we honour an explicit milestone trigger.
-        threshold = int(settings.get("stream_response_threshold", 10) or 10)
+        threshold = int(settings.get("stream_response_threshold", DEFAULT_STREAM_THRESHOLD) or DEFAULT_STREAM_THRESHOLD)
         is_milestone = trigger == "milestone"
         if (not is_bootstrap) and (not is_milestone) and watermark is not None and len(new_ids) < threshold:
             logger.info("resolve_context_below_threshold", survey_id=survey_id,

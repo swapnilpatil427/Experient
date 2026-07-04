@@ -204,7 +204,7 @@ class TestLoadInsightSettings:
         with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(return_value=None)):
             from crystalos.lib.insight_settings import load_insight_settings
             s = await load_insight_settings("s1", "org-1")
-        assert s["stream_response_threshold"] == 10
+        assert s["stream_response_threshold"] == 100
         assert s["meaningful_delta_nps_points"] == 2.0
         assert s["credit_cost_manual_expert"] == 40
         assert s["prior_checkpoint_lookback"] == 5
@@ -226,6 +226,114 @@ class TestLoadInsightSettings:
         assert s["stream_response_threshold"] == 50    # survey override
         assert s["prior_checkpoint_lookback"] == 7      # org override (survey NULL)
         assert s["refresh_daily_limit"] == 5            # constant (both NULL)
+
+
+class TestResolveStreamResponseThreshold:
+    """resolve_stream_response_threshold — added 2026-07-04 so
+    consumers/response_stream.py's automated-trigger consumer honours the same
+    UI-configurable stream_response_threshold setting (Experience → Intelligence
+    → Settings) that node_resolve_context's skip-run gate already did, instead of
+    a flat env-var-only value shared by every survey. Precedence: explicit
+    INSIGHT_NEW_RESPONSE_THRESHOLD env override > survey row > org row (non-null)
+    > platform constant (with a dev/dev-paid console log on that last fallback)."""
+
+    def setup_method(self):
+        import os
+        self._env_backup = dict(os.environ)
+        os.environ.pop("INSIGHT_NEW_RESPONSE_THRESHOLD", None)
+
+    def teardown_method(self):
+        import os
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+
+    @pytest.mark.asyncio
+    async def test_survey_row_wins(self):
+        async def fake_fetch(table, key_col, key_val):
+            if table == "survey_insight_settings":
+                return {"survey_id": "s1", "stream_response_threshold": 42}
+            return {"org_id": "org-1", "stream_response_threshold": 20}  # would lose anyway
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(side_effect=fake_fetch)):
+            from crystalos.lib.insight_settings import resolve_stream_response_threshold
+            assert await resolve_stream_response_threshold("s1", "org-1") == 42
+
+    @pytest.mark.asyncio
+    async def test_org_row_wins_when_no_survey_row(self):
+        async def fake_fetch(table, key_col, key_val):
+            if table == "survey_insight_settings":
+                return None
+            return {"org_id": "org-1", "stream_response_threshold": 20}
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(side_effect=fake_fetch)):
+            from crystalos.lib.insight_settings import resolve_stream_response_threshold
+            assert await resolve_stream_response_threshold("s1", "org-1") == 20
+
+    @pytest.mark.asyncio
+    async def test_org_row_with_null_threshold_falls_through_to_platform_default(self):
+        # org_insight_defaults.stream_response_threshold IS nullable (NULL means
+        # "use platform constant") — unlike survey_insight_settings' NOT NULL
+        # DEFAULT 10 column, this genuinely signals "not configured."
+        async def fake_fetch(table, key_col, key_val):
+            if table == "survey_insight_settings":
+                return None
+            return {"org_id": "org-1", "stream_response_threshold": None}
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(side_effect=fake_fetch)):
+            from crystalos.lib.insight_settings import resolve_stream_response_threshold
+            assert await resolve_stream_response_threshold("s1", "org-1") == 100
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_platform_default_when_neither_row_exists(self):
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(return_value=None)):
+            from crystalos.lib.insight_settings import resolve_stream_response_threshold
+            assert await resolve_stream_response_threshold("s1", "org-1") == 100
+
+    @pytest.mark.asyncio
+    async def test_env_override_wins_outright_even_with_configured_rows(self):
+        import os
+        os.environ["INSIGHT_NEW_RESPONSE_THRESHOLD"] = "3"
+        fetch_mock = AsyncMock(return_value={"stream_response_threshold": 42})
+        with patch("crystalos.lib.insight_settings._fetch_row", new=fetch_mock):
+            from crystalos.lib.insight_settings import resolve_stream_response_threshold
+            assert await resolve_stream_response_threshold("s1", "org-1") == 3
+        fetch_mock.assert_not_awaited()  # env override short-circuits the DB lookups entirely
+
+    @pytest.mark.asyncio
+    async def test_logs_fallback_to_console_in_dev(self, capsys):
+        import os
+        os.environ["AGENTS_ENV"] = "dev"
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(return_value=None)):
+            from crystalos.lib.insight_settings import resolve_stream_response_threshold
+            await resolve_stream_response_threshold("s1", "org-1")
+        out = capsys.readouterr().out
+        assert "stream_response_threshold" in out
+        assert "s1" in out
+        assert "org-1" in out
+        assert "100" in out
+        assert "\n" in out.strip()  # multi-line, per the "log with new lines" ask
+
+    @pytest.mark.asyncio
+    async def test_does_not_log_to_console_in_production(self, capsys):
+        # The structured logger.info(...) call still fires in production (that's
+        # the source of truth there) — only the special multi-line human-readable
+        # print() block is dev/dev-paid-only, so assert its distinctive framing
+        # is absent rather than asserting stdout is silent altogether.
+        import os
+        os.environ["AGENTS_ENV"] = "production"
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(return_value=None)):
+            from crystalos.lib.insight_settings import resolve_stream_response_threshold
+            await resolve_stream_response_threshold("s1", "org-1")
+        out = capsys.readouterr().out
+        assert "Configure it at Experience" not in out
+        assert "──" not in out
+
+    @pytest.mark.asyncio
+    async def test_does_not_log_to_console_when_survey_row_configures_it(self, capsys):
+        import os
+        os.environ["AGENTS_ENV"] = "dev"
+        with patch("crystalos.lib.insight_settings._fetch_row",
+                   new=AsyncMock(return_value={"stream_response_threshold": 42})):
+            from crystalos.lib.insight_settings import resolve_stream_response_threshold
+            await resolve_stream_response_threshold("s1", "org-1")
+        assert capsys.readouterr().out == ""
 
 
 class TestCreditPreflight:
@@ -343,6 +451,66 @@ class TestResolveContextAutomated:
         assert out["profile"] == INSIGHT_PROFILE_AUTOMATED
 
     @pytest.mark.asyncio
+    async def test_legacy_only_parent_does_not_leak_a_foreign_parent_checkpoint_id(self):
+        """Regression test (2026-07-04): walk_parent_chain() falls back to the
+        legacy survey_insight_checkpoints table when insight_checkpoints_v2 has
+        no rows yet for this survey. That legacy row's `id` is real in ITS OWN
+        table but was never inserted into insight_checkpoints_v2 — using it as
+        parent_checkpoint_id there always violated the FK
+        (insight_checkpoints_v2_parent_checkpoint_id_fkey), silently failing
+        checkpoint_v2_write_failed for every survey whose only prior history
+        predates the v2 migration (confirmed against a real production log).
+        Both tables stamp schema_version (legacy DEFAULT 1, v2 DEFAULT 2); a
+        legacy-sourced parent must never be treated as a valid v2 lineage link."""
+        legacy_parent = {
+            "id": "legacy-ckpt-not-in-v2", "schema_version": 1,
+            "checkpoint_number": 3,
+            # Legacy survey_insight_checkpoints has no response_high_watermark
+            # column at all — absent here exactly as a real row would be.
+        }
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.lib.insight_settings.load_insight_settings",
+                  new=AsyncMock(return_value={"automated_insights_enabled": True,
+                                              "automated_report_generation_enabled": True,
+                                              "stream_response_threshold": 10,
+                                              "prior_checkpoint_lookback": 5})),
+            patch("crystalos.graphs.insights.walk_parent_chain", new=AsyncMock(return_value=[legacy_parent])),
+            patch("crystalos.graphs.insights._load_recent_snapshots", new=AsyncMock(return_value=[])),
+        ):
+            out = await node_resolve_context(_base_state())
+        # The whole point: never forward the legacy id as a v2 FK target.
+        assert out["parent_checkpoint_id"] == ""
+        # Falls through to the same safe behavior as a true bootstrap: no
+        # watermark (legacy rows don't have one), so the run proceeds and does
+        # a wide sample rather than incorrectly skipping as "below threshold."
+        assert out["watermark"] is None
+        assert out["skip_run"] is False
+
+    @pytest.mark.asyncio
+    async def test_v2_parent_correctly_used_as_lineage_link(self):
+        """Companion to the regression test above: a genuine v2-sourced parent
+        (schema_version=2) IS used as parent_checkpoint_id — confirms the fix
+        distinguishes the two cases rather than always blanking it out."""
+        v2_parent = {
+            "id": "v2-ckpt-real", "schema_version": 2,
+            "response_high_watermark": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        }
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.lib.insight_settings.load_insight_settings",
+                  new=AsyncMock(return_value={"automated_insights_enabled": True,
+                                              "automated_report_generation_enabled": True,
+                                              "stream_response_threshold": 10,
+                                              "prior_checkpoint_lookback": 5})),
+            patch("crystalos.graphs.insights.walk_parent_chain", new=AsyncMock(return_value=[v2_parent])),
+            patch("crystalos.graphs.insights.db._pool_conn", return_value=_pool_for(_Cursor([(_desc("id", "submitted_at"), [])]))),
+        ):
+            out = await node_resolve_context(_base_state())
+        assert out["parent_checkpoint_id"] == "v2-ckpt-real"
+        assert out["watermark"] == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    @pytest.mark.asyncio
     async def test_automated_disabled_skips(self):
         with (
             patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
@@ -355,7 +523,7 @@ class TestResolveContextAutomated:
 
     @pytest.mark.asyncio
     async def test_below_threshold_skips(self):
-        parent = {"id": "ck1", "response_high_watermark": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        parent = {"id": "ck1", "schema_version": 2, "response_high_watermark": datetime(2026, 1, 1, tzinfo=timezone.utc)}
         # new_response_ids query returns 2 rows; threshold is 10 → skip.
         new_rows = [("a", datetime(2026, 1, 2, tzinfo=timezone.utc)),
                     ("b", datetime(2026, 1, 3, tzinfo=timezone.utc))]
@@ -377,7 +545,7 @@ class TestResolveContextAutomated:
 
     @pytest.mark.asyncio
     async def test_milestone_trigger_bypasses_threshold(self):
-        parent = {"id": "ck1", "response_high_watermark": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        parent = {"id": "ck1", "schema_version": 2, "response_high_watermark": datetime(2026, 1, 1, tzinfo=timezone.utc)}
         new_rows = [("a", datetime(2026, 1, 2, tzinfo=timezone.utc))]
         cur = _Cursor([(_desc("id", "submitted_at"), new_rows)])
         with (
