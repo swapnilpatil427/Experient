@@ -2971,12 +2971,15 @@ async def node_delta_compute(state: dict) -> dict:
     """Compute delta from the prior checkpoint. Runs BETWEEN topics and narrate.
 
     Phase 0.5: uses compute_delta() output only (NPS/CSAT/CES + topic name-set
-    changes). Loads up to 5 prior checkpoints from survey_insight_checkpoints
-    (ordered by checkpoint_number DESC, report_url IS NOT NULL), reads the latest
-    prior blob, computes current metrics from state + parent metrics from the blob,
-    sets meaningful_delta, and builds scalar prior_checkpoint_summaries (oldest
-    first). On bootstrap or any load failure it falls back to the bootstrap path
-    (delta_from_prior=None, meaningful_delta=True) — never crashes the pipeline.
+    changes). Uses up to 5 prior checkpoints from state["prior_checkpoints"]
+    (resolve_context's already-walked, schema-aware chain — v2-first, legacy
+    fallback, correctly reading each row's blob ref regardless of which table
+    it came from; fixed 2026-07-04, see _checkpoint_blob_ref), reads the
+    latest prior blob, computes current metrics from state + parent metrics
+    from the blob, sets meaningful_delta, and builds scalar
+    prior_checkpoint_summaries (oldest first). On bootstrap or any load
+    failure it falls back to the bootstrap path (delta_from_prior=None,
+    meaningful_delta=True) — never crashes the pipeline.
 
     Phase 2 extension: walk_parent_chain + compute_topic_lifecycle (share-weighted).
     """
@@ -3004,30 +3007,35 @@ async def node_delta_compute(state: dict) -> dict:
             "ai_trigger_baseline_negative_pct": None,
         }
 
-    # Load prior checkpoints (Phase 0.5 has no parent_checkpoint_id — order by
-    # checkpoint_number; Phase 2 replaces this with walk_parent_chain).
+    # Fixed 2026-07-04: this previously ran its OWN independent query against
+    # ONLY the legacy survey_insight_checkpoints table — never
+    # insight_checkpoints_v2 — despite this docstring claiming "Phase 2
+    # replaces this with walk_parent_chain". That replacement was never
+    # actually done. Found during a deep audit prompted by the
+    # parent_checkpoint_id/is_bootstrap/lineage fixes above: if
+    # STOP_LEGACY_CHECKPOINT_WRITE is ever enabled (the documented next step
+    # once v2 migration is complete), this would silently stop finding ANY
+    # prior data — every automated run would report "no meaningful delta,
+    # treat as fresh" instead of a real trend comparison, with no error
+    # anywhere. Now reuses resolve_context's own already-resolved,
+    # schema-aware chain (state["prior_checkpoints"]) instead of a second,
+    # independent, legacy-only lookup — one canonical source of "what's the
+    # prior checkpoint history" for the whole run, not two that can disagree.
     prior_rows: list[dict] = []
     prior_blob: dict | None = None
     try:
-        async with db._pool_conn().connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """SELECT checkpoint_number, report_url, created_at,
-                              nps_at_checkpoint, topic_fingerprint
-                       FROM survey_insight_checkpoints
-                       WHERE survey_id = %s AND org_id = %s
-                         AND report_url IS NOT NULL
-                       ORDER BY checkpoint_number DESC LIMIT 5""",
-                    (survey_id, org_id),
-                )
-                rows = await cur.fetchall()
-                if rows:
-                    cols = [d[0] for d in cur.description]
-                    prior_rows = [dict(zip(cols, r)) for r in rows]
-                    prior_blob_url = prior_rows[0]["report_url"]
-                    if prior_blob_url:
-                        from crystalos.lib.checkpoint_store import read_checkpoint_blob
-                        prior_blob = await read_checkpoint_blob(prior_blob_url)
+        for row in (state.get("prior_checkpoints") or []):
+            if not isinstance(row, dict):
+                continue
+            blob_ref = _checkpoint_blob_ref(row)
+            if not blob_ref:
+                continue
+            prior_rows.append({**row, "report_url": blob_ref})
+            if len(prior_rows) >= 5:
+                break
+        if prior_rows:
+            from crystalos.lib.checkpoint_store import read_checkpoint_blob
+            prior_blob = await read_checkpoint_blob(prior_rows[0]["report_url"])
     except Exception as exc:
         logger.warning("node_delta_compute_load_failed", survey_id=survey_id, error=str(exc))
 
@@ -4139,6 +4147,19 @@ async def _append_metric_snapshot(state: dict) -> None:
             )
     except Exception as exc:
         logger.warning("append_metric_snapshot_failed", error=str(exc))
+
+
+def _checkpoint_blob_ref(row: dict) -> str | None:
+    """Return the checkpoint-blob storage ref for a walked prior-checkpoint
+    row, regardless of which table it came from. v2 rows store this as
+    report_blob_ref; legacy rows store the equivalent concept as report_url —
+    same purpose, different column name across the two schemas. Used by
+    node_delta_compute (fixed 2026-07-04 to stop reading survey_insight_
+    checkpoints directly and reuse resolve_context's already-walked,
+    schema-aware chain instead)."""
+    if row.get("schema_version") == 2:
+        return row.get("report_blob_ref")
+    return row.get("report_url")
 
 
 def _v2_only_prior_refs(prior_chain: list) -> list[str]:
