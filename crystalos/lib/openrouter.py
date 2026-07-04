@@ -240,9 +240,19 @@ async def _raw_call(
         raise OpenRouterError(f"OpenRouter {resp.status_code}: {resp.text[:200]}", retryable=False)
 
 
-    data    = resp.json()
-    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-    usage   = data.get("usage", {})
+    data = resp.json()
+    # Fixed 2026-07-04: dict.get(key, default) only applies `default` when the
+    # key is ABSENT — not when it's present with an explicit null. Several
+    # real OpenRouter/upstream-provider responses set "content": null (e.g. a
+    # tool-call-only response, or certain moderation/safety responses), and an
+    # empty `choices` list is also possible on some content-filtered
+    # responses. Either one used to flow `None`/an IndexError all the way into
+    # `_strip_markdown_fences`, crashing with "expected string or bytes-like
+    # object, got 'NoneType'" deep inside skill execution — confirmed via a
+    # real production log for two different skills sharing this call path.
+    choices = data.get("choices") or [{}]
+    content = (choices[0].get("message") or {}).get("content") or ""
+    usage   = data.get("usage") or {}
     return content, usage
 
 
