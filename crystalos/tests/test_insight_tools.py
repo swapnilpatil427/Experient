@@ -17,6 +17,7 @@ from crystalos.crystal.tools import (
     execute_get_insights_list,
     execute_get_driver_analysis,
     execute_get_checkpoint_history,
+    execute_get_recent_checkpoints,
     execute_get_benchmark_comparison,
 )
 from crystalos.crystal.context import CrystalContext
@@ -805,6 +806,125 @@ class TestCrystalToolOrgScoping:
         ctx = CrystalContext(org_id="org-1", user_id="u1", survey_id=None, scope="survey")
         result = await execute_get_recent_checkpoints(ctx, {})
         assert result == {"error": "survey_id required"}
+
+
+class TestCheckpointToolsV2FirstLegacyFallback:
+    """Fixed 2026-07-04: execute_get_checkpoint_history and
+    execute_get_recent_checkpoints used to query ONLY the legacy
+    survey_insight_checkpoints table — found during the same audit that fixed
+    node_delta_compute's identical mistake (graphs/insights.py). A survey
+    whose history has moved to insight_checkpoints_v2 got silently empty
+    results from these two tools. They now share _v2_then_legacy_rows
+    (v2-first, legacy fallback only when v2 has no rows) with
+    execute_get_checkpoint_chain / execute_get_insight_trail. These tests
+    route on the SQL text so v2 and legacy can return different rows — the
+    single-mock-for-any-query pattern used by the older test above would
+    never actually exercise the fallback branch."""
+
+    def _make_ctx(self, survey_id="survey-1", org_id="org-1"):
+        from crystalos.crystal.context import CrystalContext
+        return CrystalContext(org_id=org_id, user_id="user-1", survey_id=survey_id, scope="survey")
+
+    def _make_routed_pool(self, v2_rows, v2_desc, legacy_rows, legacy_desc):
+        """Pool whose cursor answers differently depending on which table the
+        just-issued SQL targets, so v2-hit and legacy-fallback are both
+        independently observable in one test."""
+        mock_cur = AsyncMock()
+        mock_cur.execute = AsyncMock()
+        state = {"last_sql": ""}
+
+        async def _execute(sql, params=None):
+            state["last_sql"] = sql
+        mock_cur.execute.side_effect = _execute
+
+        async def _fetchall():
+            if "insight_checkpoints_v2" in state["last_sql"]:
+                mock_cur.description = v2_desc
+                return v2_rows
+            mock_cur.description = legacy_desc
+            return legacy_rows
+        mock_cur.fetchall = AsyncMock(side_effect=_fetchall)
+        mock_cur.__aenter__ = AsyncMock(return_value=mock_cur)
+        mock_cur.__aexit__ = AsyncMock(return_value=False)
+
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cur)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        pool_ctx = MagicMock()
+        pool_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        pool_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_pool = MagicMock()
+        mock_pool.connection = MagicMock(return_value=pool_ctx)
+        return mock_pool, mock_cur
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_history_reads_v2_when_present(self):
+        v2_desc = [
+            ("id",), ("checkpoint_number",), ("response_count_at_checkpoint",),
+            ("nps_at_checkpoint",), ("csat_at_checkpoint",), ("topic_fingerprint",),
+            ("delta_from_prior",), ("created_at",),
+        ]
+        v2_row = ("v2-id-1", 9, 120, 46.0, 4.2, "fp9", None, "2026-07-01 00:00:00")
+        pool, cur = self._make_routed_pool(
+            v2_rows=[v2_row], v2_desc=v2_desc, legacy_rows=[("should-not-be-used",)], legacy_desc=[("x",)],
+        )
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=pool):
+            result = await execute_get_checkpoint_history(self._make_ctx(), {"survey_id": "survey-1"})
+        assert result["count"] == 1
+        assert result["checkpoints"][0]["id"] == "v2-id-1"
+        assert result["checkpoints"][0]["checkpoint_number"] == 9
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_history_falls_back_to_legacy_when_v2_empty(self):
+        """The exact bug scenario: a survey with only legacy history must still
+        return it, not silently empty results, once v2-first querying exists."""
+        legacy_desc = [
+            ("id",), ("checkpoint_number",), ("response_count_at_checkpoint",),
+            ("nps_at_checkpoint",), ("csat_at_checkpoint",), ("topic_fingerprint",),
+            ("delta_from_prior",), ("created_at",),
+        ]
+        legacy_row = ("legacy-id-1", 3, 80, 41.0, 3.9, "fp3", None, "2026-05-01 00:00:00")
+        pool, cur = self._make_routed_pool(
+            v2_rows=[], v2_desc=[], legacy_rows=[legacy_row], legacy_desc=legacy_desc,
+        )
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=pool):
+            result = await execute_get_checkpoint_history(self._make_ctx(), {"survey_id": "survey-1"})
+        assert result["count"] == 1
+        assert result["checkpoints"][0]["id"] == "legacy-id-1"
+        assert result["checkpoints"][0]["checkpoint_number"] == 3
+
+    @pytest.mark.asyncio
+    async def test_recent_checkpoints_reads_v2_when_present(self):
+        v2_desc = [
+            ("checkpoint_number",), ("nps_at_checkpoint",),
+            ("delta_from_prior",), ("meaningful_delta",), ("created_at",),
+        ]
+        v2_row = (9, 46.0, {"nps_delta": 1.0}, True, "2026-07-01 00:00:00")
+        pool, cur = self._make_routed_pool(
+            v2_rows=[v2_row], v2_desc=v2_desc, legacy_rows=[("should-not-be-used",)], legacy_desc=[("x",)],
+        )
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=pool):
+            result = await execute_get_recent_checkpoints(self._make_ctx(), {"survey_id": "survey-1"})
+        assert result["count"] == 1
+        assert result["checkpoints"][0]["checkpoint_number"] == 9
+
+    @pytest.mark.asyncio
+    async def test_recent_checkpoints_falls_back_to_legacy_when_v2_empty(self):
+        legacy_desc = [
+            ("checkpoint_number",), ("nps_at_checkpoint",),
+            ("delta_from_prior",), ("meaningful_delta",), ("created_at",),
+        ]
+        legacy_row = (3, 41.0, {"nps_delta": -2.0}, True, "2026-05-01 00:00:00")
+        pool, cur = self._make_routed_pool(
+            v2_rows=[], v2_desc=[], legacy_rows=[legacy_row], legacy_desc=legacy_desc,
+        )
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=pool):
+            result = await execute_get_recent_checkpoints(self._make_ctx(), {"survey_id": "survey-1"})
+        assert result["count"] == 1
+        assert result["checkpoints"][0]["checkpoint_number"] == 3
 
 
 class TestProposeWorkflowModernShape:

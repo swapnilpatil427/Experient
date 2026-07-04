@@ -543,6 +543,58 @@ async def execute_get_segment_breakdown(ctx: CrystalContext, params: dict) -> di
         return {"error": str(exc)}
 
 
+async def _v2_then_legacy_rows(
+    survey_id: str, org_id: str, limit: int, v2_select: str, legacy_select: str,
+) -> list[dict]:
+    """Shared v2-first / legacy-fallback row loader.
+
+    Fixed 2026-07-04: execute_get_checkpoint_history and execute_get_recent_checkpoints
+    used to query ONLY survey_insight_checkpoints (legacy), found during the same audit
+    that fixed node_delta_compute's identical mistake (graphs/insights.py) — any survey
+    whose history has moved to insight_checkpoints_v2 (and especially once
+    STOP_LEGACY_CHECKPOINT_WRITE is ever enabled) would silently get empty results from
+    these tools. execute_get_checkpoint_chain/get_insight_trail already used this
+    v2-first-with-fallback shape; this factors it out for the two callers below instead
+    of hand-rolling a third and fourth copy.
+    """
+    rows: list[dict] = []
+    try:
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""SELECT {v2_select}
+                        FROM insight_checkpoints_v2
+                        WHERE survey_id = %s AND org_id = %s AND lane = 'automated'
+                        ORDER BY checkpoint_number DESC
+                        LIMIT %s""",
+                    (survey_id, org_id, limit),
+                )
+                fetched = await cur.fetchall()
+                if fetched:
+                    cols = [d[0] for d in cur.description]
+                    rows = [dict(zip(cols, r)) for r in fetched]
+    except Exception as exc:
+        logger.debug("checkpoint_rows_v2_unavailable", survey_id=survey_id, error=str(exc))
+        rows = []
+
+    if not rows:
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""SELECT {legacy_select}
+                        FROM survey_insight_checkpoints
+                        WHERE survey_id = %s AND org_id = %s
+                        ORDER BY checkpoint_number DESC
+                        LIMIT %s""",
+                    (survey_id, org_id, limit),
+                )
+                fetched = await cur.fetchall()
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, r)) for r in fetched]
+
+    return rows
+
+
 async def execute_get_checkpoint_history(ctx: CrystalContext, params: dict) -> dict:
     try:
         survey_id = params.get("survey_id") or ctx.survey_id
@@ -550,24 +602,14 @@ async def execute_get_checkpoint_history(ctx: CrystalContext, params: dict) -> d
         if not survey_id:
             return {"error": "survey_id required"}
 
-        async with db._pool_conn().connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """SELECT id, checkpoint_number, response_count_at_checkpoint,
-                              nps_at_checkpoint, csat_at_checkpoint, topic_fingerprint,
-                              delta_from_prior, created_at
-                       FROM survey_insight_checkpoints
-                       WHERE survey_id = %s AND org_id = %s
-                       ORDER BY checkpoint_number DESC
-                       LIMIT %s""",
-                    (survey_id, ctx.org_id, limit),
-                )
-                rows = await cur.fetchall()
-                cols = [d[0] for d in cur.description]
+        cols = ("id, checkpoint_number, response_count_at_checkpoint, "
+                "nps_at_checkpoint, csat_at_checkpoint, topic_fingerprint, "
+                "delta_from_prior, created_at")
+        rows = await _v2_then_legacy_rows(survey_id, ctx.org_id, limit, cols, cols)
 
         checkpoints = []
         for row in rows:
-            cp = dict(zip(cols, row))
+            cp = dict(row)
             cp["id"] = str(cp["id"])
             if cp.get("created_at"):
                 cp["created_at"] = str(cp["created_at"])
@@ -586,7 +628,8 @@ async def execute_get_recent_checkpoints(ctx: CrystalContext, params: dict) -> d
     """Return the most recent insight checkpoints with delta_from_prior + meaningful_delta.
 
     Phase 0.5 (Insight Pipeline v2) read tool — surfaces the code-computed delta so
-    Crystal can narrate "what changed since the last checkpoint".
+    Crystal can narrate "what changed since the last checkpoint". v2-first with legacy
+    fallback (see _v2_then_legacy_rows).
     """
     try:
         survey_id = params.get("survey_id") or ctx.survey_id
@@ -594,23 +637,12 @@ async def execute_get_recent_checkpoints(ctx: CrystalContext, params: dict) -> d
         if not survey_id:
             return {"error": "survey_id required"}
 
-        async with db._pool_conn().connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """SELECT checkpoint_number, nps_at_checkpoint,
-                              delta_from_prior, meaningful_delta, created_at
-                       FROM survey_insight_checkpoints
-                       WHERE survey_id = %s AND org_id = %s
-                       ORDER BY checkpoint_number DESC
-                       LIMIT %s""",
-                    (survey_id, ctx.org_id, limit),
-                )
-                rows = await cur.fetchall()
-                cols = [d[0] for d in cur.description]
+        cols = "checkpoint_number, nps_at_checkpoint, delta_from_prior, meaningful_delta, created_at"
+        rows = await _v2_then_legacy_rows(survey_id, ctx.org_id, limit, cols, cols)
 
         checkpoints = []
         for row in rows:
-            cp = dict(zip(cols, row))
+            cp = dict(row)
             if cp.get("created_at"):
                 cp["created_at"] = str(cp["created_at"])
             if cp.get("nps_at_checkpoint") is not None:
