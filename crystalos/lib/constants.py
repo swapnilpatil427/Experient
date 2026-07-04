@@ -110,7 +110,7 @@ MANUAL_REFRESH_MAX_DAILY = 3               # max manual refreshes per survey per
 # Per-survey/per-org overrides take precedence; these are the floor.
 DEFAULT_PRIOR_CHECKPOINT_LOOKBACK:        int = int(os.getenv("DEFAULT_PRIOR_CHECKPOINT_LOOKBACK",        "5"))
 DEFAULT_PRIOR_CHECKPOINT_MAX_AGE_DAYS:    int = int(os.getenv("DEFAULT_PRIOR_CHECKPOINT_MAX_AGE_DAYS",    "90"))
-DEFAULT_STREAM_THRESHOLD:                 int = int(os.getenv("DEFAULT_STREAM_THRESHOLD",                 "10"))
+DEFAULT_STREAM_THRESHOLD:                 int = int(os.getenv("DEFAULT_STREAM_THRESHOLD",                 "100"))
 DEFAULT_REPORT_REGEN_THRESHOLD:           int = int(os.getenv("DEFAULT_REPORT_REGEN_THRESHOLD",           "25"))
 DEFAULT_FULL_CHECKPOINT_THRESHOLD:        int = int(os.getenv("DEFAULT_FULL_CHECKPOINT_THRESHOLD",        "200"))
 DEFAULT_MEANINGFUL_DELTA_NPS_POINTS:    float = float(os.getenv("DEFAULT_MEANINGFUL_DELTA_NPS_POINTS",    "2.0"))

@@ -31,7 +31,7 @@ export const INSIGHT_SETTING_DEFAULTS = {
   // Automated incremental
   automated_insights_enabled:           true,
   automated_report_generation_enabled:  true,
-  stream_response_threshold:            10,
+  stream_response_threshold:            100,
   report_regen_threshold:               25,
   prior_checkpoint_lookback:            5,
   prior_checkpoint_max_age_days:        90,

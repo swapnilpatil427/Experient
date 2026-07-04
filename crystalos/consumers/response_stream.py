@@ -1,12 +1,24 @@
 """Background consumer: reads insight_events stream, batches by survey_id,
 and triggers incremental insight generation when a threshold is met.
 
-Thresholds (smart defaults by AGENTS_ENV, overridable via env vars):
-  NEW_RESPONSE_THRESHOLD — trigger after N new responses for a survey
-    production default: 10  |  development/local default: 1
-  TIME_THRESHOLD_MINUTES — trigger if >= N minutes elapsed since last run (+ 1 new response)
-    production default: 5   |  development/local default: 1
-  Set AGENTS_ENV=development or AGENTS_ENV=local to auto-apply local-dev defaults.
+Thresholds:
+  NEW_RESPONSE_THRESHOLD (per survey/org, resolved per event) — trigger after
+    N new responses. Resolved by lib.insight_settings.resolve_stream_response_
+    threshold(): survey-level Experience → Intelligence → Settings override →
+    org-level default → platform constant (DEFAULT_STREAM_THRESHOLD, currently
+    100). An explicit INSIGHT_NEW_RESPONSE_THRESHOLD env var still wins outright
+    as an ops escape hatch. Fixed 2026-07-04: this was previously a single
+    flat, env-var-only value shared by every survey org-wide, with no
+    connection to the same stream_response_threshold setting the UI already
+    exposed and node_resolve_context's own skip-run gate already honoured —
+    so configuring it in the UI silently did nothing for this consumer. When
+    neither a survey nor an org override exists, the platform-default fallback
+    is logged to the console in dev/dev-paid (see resolve_stream_response_
+    threshold's docstring) so it's never silently unclear why.
+  TIME_THRESHOLD_MINUTES — trigger if >= N minutes elapsed since last run (+ 1
+    new response). Unchanged by the above: still a flat, AGENTS_ENV-aware
+    env-var default (production: 5, dev/dev-paid: 1), since only the
+    response-count threshold has a UI setting to defer to.
 
 The consumer runs as a long-lived asyncio task. Start it from the FastAPI lifespan
 or as a standalone process:
@@ -92,11 +104,12 @@ async def mark_progressive_tier_complete(survey_id: str, tier: str) -> None:
         pass
 
 
-_AGENTS_ENV: str = os.getenv("AGENTS_ENV", "production")
-_DEFAULT_THRESHOLD = "1" if _AGENTS_ENV in ("development", "local") else "10"
-_DEFAULT_TIME = "1" if _AGENTS_ENV in ("development", "local") else "5"
+_AGENTS_ENV: str = os.getenv("AGENTS_ENV", "dev")
+_DEFAULT_TIME = "1" if _AGENTS_ENV in ("dev", "dev-paid") else "5"
 
-NEW_RESPONSE_THRESHOLD: int = int(os.getenv("INSIGHT_NEW_RESPONSE_THRESHOLD", _DEFAULT_THRESHOLD))
+# NEW_RESPONSE_THRESHOLD is no longer a flat module constant (fixed 2026-07-04)
+# — see resolve_stream_response_threshold, resolved per survey/org on every
+# _should_trigger call instead.
 TIME_THRESHOLD_MINUTES: int = int(os.getenv("INSIGHT_TIME_THRESHOLD_MIN", _DEFAULT_TIME))
 
 _AGENTS_URL: str = os.getenv("AGENTS_URL", "http://localhost:8001")
@@ -110,15 +123,19 @@ MAX_RETRIES = 3
 # In-memory batch tracker: {survey_id: {"org_id": str, "count": int, "last_trigger": datetime|None}}
 _batches: dict[str, dict] = defaultdict(lambda: {"org_id": "", "count": 0, "last_trigger": None})
 
-# Surveys with a trigger task currently in-flight (prevents duplicate concurrent triggers
-# when multiple events arrive in the same consumer batch and threshold=1)
+# Surveys with a trigger task currently in-flight (prevents duplicate concurrent
+# triggers when multiple events arrive in the same consumer batch and a
+# low/1-response threshold is configured for that survey)
 _pending_triggers: set[str] = set()
 
 
 async def _should_trigger(survey_id: str) -> bool:
     """Return True when the batch warrants kicking off a new insight run."""
+    from crystalos.lib.insight_settings import resolve_stream_response_threshold
+
     batch = _batches[survey_id]
-    if batch["count"] >= NEW_RESPONSE_THRESHOLD:
+    threshold = await resolve_stream_response_threshold(survey_id, batch["org_id"])
+    if batch["count"] >= threshold:
         return True
     if batch["last_trigger"] is None:
         return False
@@ -349,9 +366,14 @@ async def run_response_stream_consumer() -> None:
     Retries indefinitely if Redis is unavailable — polls every 15s until Redis comes up.
     This prevents silent death when Redis starts after CrystalOS.
     """
+    from crystalos.lib.constants import DEFAULT_STREAM_THRESHOLD
+
     logger.info(
         "stream_consumer_started",
-        new_response_threshold=NEW_RESPONSE_THRESHOLD,
+        # new_response_threshold is resolved per survey/org on every event now
+        # (see resolve_stream_response_threshold) — this is just the platform
+        # fallback for visibility, not necessarily what any given survey uses.
+        platform_default_new_response_threshold=DEFAULT_STREAM_THRESHOLD,
         time_threshold_minutes=TIME_THRESHOLD_MINUTES,
     )
 

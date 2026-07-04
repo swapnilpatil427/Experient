@@ -11,6 +11,8 @@ All external I/O (Redis, Postgres, httpx) is mocked.
 from __future__ import annotations
 
 import asyncio
+import importlib
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,18 +30,82 @@ def _reset_batches():
 
 
 # ---------------------------------------------------------------------------
-# _should_trigger — count threshold
+# TIME_THRESHOLD_MINUTES defaults by AGENTS_ENV (module-load-time computation)
+# ---------------------------------------------------------------------------
+
+class TestTimeThresholdDefaultsByAgentsEnv:
+    """Regression tests (2026-07-03, still applicable 2026-07-04): TIME_THRESHOLD_
+    MINUTES is computed once at import time from AGENTS_ENV — this module previously
+    checked for "development"/"local" (values AGENTS_ENV is never actually set to
+    anywhere in this codebase) and defaulted to "production". NEW_RESPONSE_THRESHOLD
+    is no longer part of this — as of 2026-07-04 it's resolved per survey/org via
+    resolve_stream_response_threshold (see TestShouldTrigger* below and
+    test_insight_settings.py) instead of a flat module constant."""
+
+    def _time_threshold_for(self, agents_env: str | None, **overrides: str) -> int:
+        """Reload the module under a given AGENTS_ENV and capture the resulting
+        VALUE (not the module reference) before restoring real state — the module
+        object is a singleton, so returning it directly would let the restoring
+        reload in `finally` overwrite the very attribute being tested, before the
+        caller ever gets to assert on it."""
+        env_backup = dict(os.environ)
+        try:
+            for key in ("AGENTS_ENV", "INSIGHT_TIME_THRESHOLD_MIN"):
+                os.environ.pop(key, None)
+            if agents_env is not None:
+                os.environ["AGENTS_ENV"] = agents_env
+            os.environ.update(overrides)
+            import crystalos.consumers.response_stream as rs
+            importlib.reload(rs)
+            return rs.TIME_THRESHOLD_MINUTES
+        finally:
+            os.environ.clear()
+            os.environ.update(env_backup)
+            import crystalos.consumers.response_stream as rs
+            importlib.reload(rs)
+
+    def test_dev_env_uses_fast_threshold(self):
+        assert self._time_threshold_for("dev") == 1
+
+    def test_dev_paid_env_uses_fast_threshold(self):
+        assert self._time_threshold_for("dev-paid") == 1
+
+    def test_production_env_uses_slow_threshold(self):
+        assert self._time_threshold_for("production") == 5
+
+    def test_unset_agents_env_defaults_to_dev_fast_threshold(self):
+        # AGENTS_ENV unset must default the same way every other module in this
+        # codebase does (checkpoint_store.py, constants.py, security.py: "dev") —
+        # not silently behave as production, which is what the old buggy default
+        # of "production" here did.
+        assert self._time_threshold_for(None) == 1
+
+    def test_explicit_override_env_var_still_wins_regardless_of_agents_env(self):
+        assert self._time_threshold_for("production", INSIGHT_TIME_THRESHOLD_MIN="2") == 2
+
+
+# ---------------------------------------------------------------------------
+# _should_trigger — count threshold (resolved per survey/org, 2026-07-04)
 # ---------------------------------------------------------------------------
 
 class TestShouldTriggerCountThreshold:
+    """NEW_RESPONSE_THRESHOLD is no longer a flat module constant — _should_trigger
+    now resolves it per survey/org via resolve_stream_response_threshold (the same
+    UI-configurable stream_response_threshold setting node_resolve_context's
+    skip-run gate already honoured). Mocked at its source
+    (crystalos.lib.insight_settings.resolve_stream_response_threshold) since
+    response_stream.py imports it locally inside _should_trigger on every call,
+    not as a module-level name that could be patched on response_stream itself."""
+
     def setup_method(self):
-        import crystalos.consumers.response_stream as rs
-        self._orig_threshold = rs.NEW_RESPONSE_THRESHOLD
-        rs.NEW_RESPONSE_THRESHOLD = 10
+        self._patcher = patch(
+            "crystalos.lib.insight_settings.resolve_stream_response_threshold",
+            new=AsyncMock(return_value=10),
+        )
+        self._patcher.start()
 
     def teardown_method(self):
-        import crystalos.consumers.response_stream as rs
-        rs.NEW_RESPONSE_THRESHOLD = self._orig_threshold
+        self._patcher.stop()
 
     @pytest.mark.asyncio
     async def test_triggers_at_threshold(self):
@@ -48,7 +114,7 @@ class TestShouldTriggerCountThreshold:
         original = rs._batches
         rs._batches = _reset_batches()
         try:
-            rs._batches["survey-1"]["count"] = 10  # default threshold
+            rs._batches["survey-1"]["count"] = 10  # mocked threshold
             assert await rs._should_trigger("survey-1") is True
         finally:
             rs._batches = original
@@ -77,6 +143,26 @@ class TestShouldTriggerCountThreshold:
         finally:
             rs._batches = original
 
+    @pytest.mark.asyncio
+    async def test_resolves_threshold_using_the_batch_org_id(self):
+        """_should_trigger must pass the batch's tracked org_id through to the
+        resolver (survey/org-scoped resolution, not global) — regression test for
+        the exact bug this change fixes: previously a single flat threshold
+        applied to every survey org-wide regardless of that survey's own or its
+        org's configured stream_response_threshold."""
+        from crystalos.consumers import response_stream as rs
+        from crystalos.lib import insight_settings
+
+        original = rs._batches
+        rs._batches = _reset_batches()
+        try:
+            rs._batches["survey-9"]["org_id"] = "org-42"
+            rs._batches["survey-9"]["count"] = 1
+            await rs._should_trigger("survey-9")
+            insight_settings.resolve_stream_response_threshold.assert_awaited_with("survey-9", "org-42")
+        finally:
+            rs._batches = original
+
 
 # ---------------------------------------------------------------------------
 # _should_trigger — time threshold
@@ -84,13 +170,25 @@ class TestShouldTriggerCountThreshold:
 
 class TestShouldTriggerTimeThreshold:
     def setup_method(self):
+        self._threshold_patcher = patch(
+            "crystalos.lib.insight_settings.resolve_stream_response_threshold",
+            new=AsyncMock(return_value=10),
+        )
+        self._threshold_patcher.start()
+
         import crystalos.consumers.response_stream as rs
-        self._orig_threshold = rs.NEW_RESPONSE_THRESHOLD
-        rs.NEW_RESPONSE_THRESHOLD = 10
+        self._orig_time_threshold = rs.TIME_THRESHOLD_MINUTES
+        # Pinned explicitly (regression fix, 2026-07-03): this class's assertions
+        # are only meaningful relative to a known TIME_THRESHOLD_MINUTES value —
+        # previously left to whatever AGENTS_ENV computed at import time, which
+        # silently broke test_does_not_trigger_before_time_threshold once the
+        # AGENTS_ENV default-threshold bug elsewhere in this module was fixed.
+        rs.TIME_THRESHOLD_MINUTES = 5
 
     def teardown_method(self):
+        self._threshold_patcher.stop()
         import crystalos.consumers.response_stream as rs
-        rs.NEW_RESPONSE_THRESHOLD = self._orig_threshold
+        rs.TIME_THRESHOLD_MINUTES = self._orig_time_threshold
 
     @pytest.mark.asyncio
     async def test_triggers_after_time_with_pending_responses(self):
@@ -229,6 +327,9 @@ class TestBatchAccumulation:
             patch("crystalos.consumers.response_stream._get_survey_status", new=AsyncMock(return_value="active")),
             patch("crystalos.consumers.response_stream._get_total_response_count", new=AsyncMock(return_value=10)),
             patch("crystalos.consumers.response_stream.should_trigger_progressive_tier", new=AsyncMock(return_value=None)),
+            # _should_trigger resolves the threshold per survey/org now (2026-07-04)
+            # instead of reading a flat module constant — mock it at its source.
+            patch("crystalos.lib.insight_settings.resolve_stream_response_threshold", new=AsyncMock(return_value=10)),
         ):
             try:
                 await asyncio.wait_for(

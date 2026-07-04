@@ -1,13 +1,26 @@
 """Insight Pipeline v2 — settings loader + credit pre-flight.
 
-Two responsibilities:
+Three responsibilities:
 
 1. ``load_insight_settings(survey_id, org_id)`` — resolves the 3-level COALESCE
    merge ``survey_insight_settings`` → ``org_insight_defaults`` → platform constant
    defaults (``lib/constants.py``). Tolerates missing tables/rows: on ANY failure it
    returns the platform defaults so the pipeline never crashes on config load.
 
-2. ``credit_preflight(org_id, run_type, settings)`` — resolves the per-run credit
+2. ``resolve_stream_response_threshold(survey_id, org_id)`` — the same 3-level
+   precedence as above, scoped to just ``stream_response_threshold`` (added
+   2026-07-04), for callers that need ONLY this one setting without loading the
+   full settings dict — specifically ``consumers/response_stream.py``'s
+   standalone streaming consumer, which decides whether to even attempt an
+   automated run at all (as opposed to ``node_resolve_context``'s use of the
+   full ``load_insight_settings()``, which decides whether to skip a run that's
+   already been attempted). Configurable per survey at Experience → Intelligence
+   → Settings (``InsightSettingsPage.tsx``'s "Stream response threshold" field),
+   or per org via ``org_insight_defaults``. When neither is configured, logs the
+   platform-default fallback to the console in dev/dev-paid (previously this
+   silently used a hardcoded value with no visibility into why).
+
+3. ``credit_preflight(org_id, run_type, settings)`` — resolves the per-run credit
    cost and checks the org balance. **CrystalOS does NOT debit** — the Node backend
    owns the credit ledger and debits on its ``/runs`` path (see module note below).
    CrystalOS reads the balance only for the automated silent-skip decision. For
@@ -24,6 +37,7 @@ Credit-debit ownership decision (02 §6):
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from crystalos.lib import db
@@ -144,6 +158,76 @@ async def load_insight_settings(survey_id: str, org_id: str) -> dict[str, Any]:
                 merged[k] = v
 
     return merged
+
+
+# ── Stream response threshold (standalone resolver) ────────────────────────────
+
+def _log_stream_threshold_fallback(survey_id: str, org_id: str) -> None:
+    """Console-print (dev/dev-paid only) when stream_response_threshold falls
+    through to the platform default — i.e. neither this survey nor its org has
+    ever configured it. Fixed 2026-07-04: previously a silent hardcoded value
+    with zero visibility into why an automated run wasn't triggering as
+    expected during local testing. Uses plain print() (not the structured
+    logger) specifically because the ask is console readability with real
+    newlines, not a one-line structured log entry — production environments
+    don't get this (see AGENTS_ENV check below), where the structured
+    `stream_response_threshold_defaulted` log line is the source of truth."""
+    agents_env = os.getenv("AGENTS_ENV", "dev")
+    if agents_env not in ("dev", "dev-paid"):
+        return
+    print(
+        "\n"
+        "──────────────────────────────────────────────────────────────\n"
+        "  stream_response_threshold is not configured for this survey\n"
+        "  or its org — falling back to the platform default.\n"
+        f"    survey_id = {survey_id}\n"
+        f"    org_id    = {org_id}\n"
+        f"    default   = {C.DEFAULT_STREAM_THRESHOLD} new responses\n"
+        "  Configure it at Experience → Intelligence → Settings (per survey)\n"
+        "  or via org_insight_defaults (per org) to change this.\n"
+        "──────────────────────────────────────────────────────────────\n"
+    )
+
+
+async def resolve_stream_response_threshold(survey_id: str, org_id: str) -> int:
+    """Resolve stream_response_threshold with the same survey → org → platform
+    precedence as load_insight_settings(), but scoped to just this one setting
+    and without loading the rest of the settings dict — for callers (currently
+    only the standalone response_stream.py consumer) that need just this value
+    on every incoming event and shouldn't pay for the full settings load each
+    time.
+
+    An explicit INSIGHT_NEW_RESPONSE_THRESHOLD env var, if set, is an ops
+    escape hatch that wins outright (no console log — it's an intentional
+    override, not an absent one).
+
+    Note on "configured" for the survey level: survey_insight_settings.
+    stream_response_threshold is a NOT NULL DEFAULT 10 column (any row that
+    exists always has *some* value), so "configured" here means "a
+    survey_insight_settings row exists at all" — it cannot distinguish a
+    customer who explicitly set this exact field from one who saved some
+    other field on the same settings form and never touched this one. The
+    org-level column is nullable and does support a true "not set" signal.
+    """
+    env_override = os.getenv("INSIGHT_NEW_RESPONSE_THRESHOLD")
+    if env_override:
+        try:
+            return int(env_override)
+        except ValueError:
+            logger.warning("insight_new_response_threshold_env_invalid", value=env_override)
+
+    survey_row = await _fetch_row("survey_insight_settings", "survey_id", survey_id)
+    if survey_row and survey_row.get("stream_response_threshold") is not None:
+        return int(survey_row["stream_response_threshold"])
+
+    org_row = await _fetch_row("org_insight_defaults", "org_id", org_id)
+    if org_row and org_row.get("stream_response_threshold") is not None:
+        return int(org_row["stream_response_threshold"])
+
+    logger.info("stream_response_threshold_defaulted", survey_id=survey_id, org_id=org_id,
+                default=C.DEFAULT_STREAM_THRESHOLD)
+    _log_stream_threshold_fallback(survey_id, org_id)
+    return C.DEFAULT_STREAM_THRESHOLD
 
 
 # ── Credit pre-flight ─────────────────────────────────────────────────────────
