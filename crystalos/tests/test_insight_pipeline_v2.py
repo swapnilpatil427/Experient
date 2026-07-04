@@ -461,7 +461,19 @@ class TestResolveContextAutomated:
         checkpoint_v2_write_failed for every survey whose only prior history
         predates the v2 migration (confirmed against a real production log).
         Both tables stamp schema_version (legacy DEFAULT 1, v2 DEFAULT 2); a
-        legacy-sourced parent must never be treated as a valid v2 lineage link."""
+        legacy-sourced parent must never be treated as a valid v2 lineage link.
+
+        is_bootstrap must ALSO be True in this scenario, not just
+        parent_checkpoint_id blanked — node_ingest ANDs this value with its own
+        (correctly v2-based) bootstrap check, so leaving it False here silently
+        overrode that correct answer, making node_ingest treat the run as a
+        narrow incremental fetch against an empty new_response_ids (watermark
+        is also None for a legacy parent) instead of the wide historical
+        sample a true first v2 run needs. Confirmed against a real
+        reproduction: the checkpoint got written successfully (previous fix),
+        but ABSA/topics/sentiment/emotion/effort were never computed for any
+        of the survey's 150 existing responses, because node_ingest believed
+        there was nothing new to look at."""
         legacy_parent = {
             "id": "legacy-ckpt-not-in-v2", "schema_version": 1,
             "checkpoint_number": 3,
@@ -486,6 +498,10 @@ class TestResolveContextAutomated:
         # a wide sample rather than incorrectly skipping as "below threshold."
         assert out["watermark"] is None
         assert out["skip_run"] is False
+        # The other half of this fix: must present as a genuine bootstrap so
+        # node_ingest loads the wide historical sample, not an empty
+        # incremental delta.
+        assert out["is_bootstrap"] is True
 
     @pytest.mark.asyncio
     async def test_v2_parent_correctly_used_as_lineage_link(self):
@@ -509,6 +525,7 @@ class TestResolveContextAutomated:
             out = await node_resolve_context(_base_state())
         assert out["parent_checkpoint_id"] == "v2-ckpt-real"
         assert out["watermark"] == datetime(2026, 1, 1, tzinfo=timezone.utc)
+        assert out["is_bootstrap"] is False
 
     @pytest.mark.asyncio
     async def test_automated_disabled_skips(self):

@@ -841,7 +841,19 @@ async def node_resolve_context(state: dict) -> dict:
     watermark = None
     if parent is not None:
         watermark = parent.get("response_high_watermark")
-    is_bootstrap = parent is None
+    # Fixed 2026-07-04: a legacy-only parent must ALSO count as bootstrap, not
+    # just have its id blanked above. This state's is_bootstrap gets ANDed
+    # with node_ingest's own (correctly v2-based) bootstrap check further
+    # downstream — if this stayed False here, that AND silently overrode
+    # node_ingest's correct answer, making it treat the run as a narrow
+    # incremental fetch (against an empty new_response_ids, since watermark
+    # is also None for a legacy parent) instead of the wide historical sample
+    # a real first v2 run needs. Confirmed against a real reproduction: a
+    # survey whose only prior history was legacy got its checkpoint written
+    # successfully (previous fix), but ABSA/topics/sentiment/emotion/effort
+    # were never computed for any of its 150 existing responses because
+    # node_ingest believed there was nothing new to look at.
+    is_bootstrap = parent is None or not is_v2_parent
 
     out: dict = {
         **state,
