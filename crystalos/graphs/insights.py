@@ -4141,6 +4141,25 @@ async def _append_metric_snapshot(state: dict) -> None:
         logger.warning("append_metric_snapshot_failed", error=str(exc))
 
 
+def _v2_only_prior_refs(prior_chain: list) -> list[str]:
+    """Extract insight_checkpoints_v2 ids from a walked prior-checkpoint chain,
+    filtering out legacy-sourced rows. Fixed 2026-07-04: walk_parent_chain()
+    can return LEGACY survey_insight_checkpoints rows (when v2 has no history
+    yet for this survey) — their `id` is real in that table but was never
+    inserted into insight_checkpoints_v2. Unlike parent_checkpoint_id (a real
+    FK, so a legacy id there crashes the insert outright), lineage_json and
+    the citations manifest are plain JSONB with no referential integrity, so
+    this doesn't crash — it silently stores a dangling reference that Crystal's
+    get_checkpoint_detail tool passes straight through as
+    prior_checkpoint_refs, misinforming any lineage/trail lookup that tries to
+    resolve it against insight_checkpoints_v2. Both tables stamp schema_version
+    (legacy DEFAULT 1, v2 DEFAULT 2) — only a genuine v2 row's id belongs here."""
+    return [
+        str(p.get("id")) for p in prior_chain
+        if isinstance(p, dict) and p.get("id") and p.get("schema_version") == 2
+    ]
+
+
 def _build_citations_manifest(state: dict, insights: list[dict]) -> dict:
     """Build the citations manifest (04 §11). Phase 2: prior_checkpoint refs come from
     walked v2 chain when available, else fall back to Phase 0.5 checkpoint_number refs."""
@@ -4153,7 +4172,7 @@ def _build_citations_manifest(state: dict, insights: list[dict]) -> dict:
     snapshots = state.get("metric_snapshots") or []
     snapshot_ids = [str(s.get("id")) for s in snapshots if isinstance(s, dict) and s.get("id")]
     prior_chain = state.get("prior_checkpoints") or []
-    prior_refs = [str(p.get("id")) for p in prior_chain if isinstance(p, dict) and p.get("id")]
+    prior_refs = _v2_only_prior_refs(prior_chain)
     if not prior_refs:
         prior_refs = [
             f"checkpoint#{s['checkpoint_number']}"
@@ -4174,7 +4193,7 @@ def _build_lineage_json(state: dict, *, run_mode: str, blob_ref: str | None,
                         insight_report_id: str | None = None) -> dict:
     """Assemble lineage_json for an insight_checkpoints_v2 row (03 §3a)."""
     prior_chain = state.get("prior_checkpoints") or []
-    prior_refs = [str(p.get("id")) for p in prior_chain if isinstance(p, dict) and p.get("id")]
+    prior_refs = _v2_only_prior_refs(prior_chain)
     new_ids = list(state.get("new_response_ids") or set())[:500]  # cap in-row; full list in manifest
     snapshots = state.get("metric_snapshots") or []
     snapshot_ids = [str(s.get("id")) for s in snapshots if isinstance(s, dict) and s.get("id")]

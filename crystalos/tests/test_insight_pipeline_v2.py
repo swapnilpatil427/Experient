@@ -19,6 +19,7 @@ from crystalos.tools.delta import compute_topic_lifecycle
 from crystalos.tools.sampling import stratified_sample, recency_weighted_sample
 from crystalos.graphs.insights import (
     node_resolve_context, walk_parent_chain, node_publish_manual, _derive_profile,
+    _v2_only_prior_refs, _build_citations_manifest, _build_lineage_json,
 )
 from crystalos.lib.constants import (
     INSIGHT_PROFILE_AUTOMATED, INSIGHT_PROFILE_REFRESH,
@@ -417,6 +418,66 @@ class TestWalkParentChain:
     async def test_zero_lookback_returns_empty(self):
         out = await walk_parent_chain("s1", "org-1", 0)
         assert out == []
+
+
+# ── _v2_only_prior_refs / _build_lineage_json / _build_citations_manifest ─────
+
+class TestV2OnlyPriorRefs:
+    """Regression tests (2026-07-04): _build_lineage_json and
+    _build_citations_manifest both extracted `id` from the FULL
+    prior_checkpoints chain (state["prior_checkpoints"]) with no schema_version
+    check at all — the same walk_parent_chain legacy-fallback rows the
+    parent_checkpoint_id fix already had to guard against. Unlike
+    parent_checkpoint_id (a real FK, so a bad id there crashes the insert),
+    lineage_json/citations manifest are plain JSONB with no referential
+    integrity — a legacy id here doesn't crash anything, it silently stores a
+    dangling reference. crystal/tools.py's get_checkpoint_detail passes
+    prior_checkpoint_refs straight through with no resolution, so this would
+    have quietly misinformed any lineage/trail lookup that tried to resolve it
+    against insight_checkpoints_v2. Confirmed reachable even on a CORRECTLY
+    bootstrapped run: resolve_context sets prior_checkpoints unconditionally,
+    regardless of the (now-fixed) is_bootstrap value, so the dangling legacy
+    row is still sitting in state for these two functions to pick up."""
+
+    def test_filters_out_legacy_rows(self):
+        chain = [
+            {"id": "legacy-1", "schema_version": 1},
+            {"id": "legacy-2", "schema_version": 1},
+        ]
+        assert _v2_only_prior_refs(chain) == []
+
+    def test_keeps_genuine_v2_rows(self):
+        chain = [{"id": "v2-1", "schema_version": 2}, {"id": "v2-2", "schema_version": 2}]
+        assert _v2_only_prior_refs(chain) == ["v2-1", "v2-2"]
+
+    def test_mixed_chain_keeps_only_v2_entries(self):
+        # Not realistically producible by walk_parent_chain today (it's always
+        # all-v2 or all-legacy, never mixed) — defensive coverage in case that
+        # ever changes.
+        chain = [{"id": "v2-1", "schema_version": 2}, {"id": "legacy-1", "schema_version": 1}]
+        assert _v2_only_prior_refs(chain) == ["v2-1"]
+
+    def test_missing_schema_version_treated_as_non_v2(self):
+        chain = [{"id": "unknown-1"}]
+        assert _v2_only_prior_refs(chain) == []
+
+    def test_build_lineage_json_excludes_legacy_prior_refs(self):
+        state = {
+            "prior_checkpoints": [{"id": "legacy-1", "schema_version": 1}],
+            "config_hash": "abc", "new_response_ids": set(), "metric_snapshots": [],
+        }
+        lineage = _build_lineage_json(state, run_mode="automated_incremental", blob_ref=None)
+        assert lineage["prior_checkpoint_refs"] == []
+
+    def test_build_citations_manifest_excludes_legacy_prior_refs(self):
+        state = {"prior_checkpoints": [{"id": "legacy-1", "schema_version": 1}], "metric_snapshots": []}
+        manifest = _build_citations_manifest(state, insights=[])
+        assert manifest["prior_checkpoint_refs"] == []
+
+    def test_build_citations_manifest_includes_genuine_v2_prior_refs(self):
+        state = {"prior_checkpoints": [{"id": "v2-1", "schema_version": 2}], "metric_snapshots": []}
+        manifest = _build_citations_manifest(state, insights=[])
+        assert manifest["prior_checkpoint_refs"] == ["v2-1"]
 
 
 # ── node_resolve_context ──────────────────────────────────────────────────────
