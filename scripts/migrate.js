@@ -197,18 +197,38 @@ async function main() {
       process.stdout.write(`[migrate] → ${file}\n`);
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
 
-      await client.query('BEGIN');
-      try {
+      // CREATE INDEX CONCURRENTLY / REFRESH MATERIALIZED VIEW CONCURRENTLY cannot run inside a
+      // transaction block. Migrations that need CONCURRENTLY (org-dashboard's
+      // idx_insights_survey_layer_trust / idx_responses_org_submitted) are run as a bare
+      // statement instead of being wrapped in BEGIN/COMMIT like every other migration. Every
+      // such statement uses IF NOT EXISTS, so a partial failure (index created, ledger insert
+      // below it failing) is safely idempotent on retry — no ROLLBACK is possible or needed
+      // once the CONCURRENTLY statement itself has committed.
+      // Strip line comments before testing — several migrations mention "CONCURRENTLY" only in
+      // prose comments (explaining why a *different* file needs it), which must not trip this.
+      const sqlNoComments = sql.replace(/--.*$/gm, '');
+      const isConcurrent = /\bCONCURRENTLY\b/i.test(sqlNoComments);
+      if (isConcurrent) {
         await client.query(sql);
         await client.query(
-          'INSERT INTO schema_migrations (version) VALUES ($1)',
+          'INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING',
           [version]
         );
-        await client.query('COMMIT');
         ran++;
-      } catch (err) {
-        await client.query('ROLLBACK');
-        throw new Error(`Migration ${file} failed: ${err.message}`);
+      } else {
+        await client.query('BEGIN');
+        try {
+          await client.query(sql);
+          await client.query(
+            'INSERT INTO schema_migrations (version) VALUES ($1)',
+            [version]
+          );
+          await client.query('COMMIT');
+          ran++;
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw new Error(`Migration ${file} failed: ${err.message}`);
+        }
       }
     }
 

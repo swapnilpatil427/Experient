@@ -7,6 +7,14 @@ const POLL_INTERVAL_MS = 30_000;
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 // Map a live SSE payload (camelCase from the backend) into the Notification shape.
+//
+// Additive: `org_summary_ready` (Manual Summary Generator completion) and
+// `brief_trust_score_ready` (the hallucination/trust score arriving after the
+// rest of a Crystal Brief has already rendered) ride this SAME flat
+// `'notification'` event type — per Decision 21, these do NOT get a new SSE
+// stream or a per-type switch, they're just two more `type` values consumers
+// can match on via `n.payload`/`n.entityType`. No existing type's handling
+// changes below.
 function mapLive(n: Record<string, unknown>): Notification {
   return {
     id: n.id as string,
@@ -22,6 +30,16 @@ function mapLive(n: Record<string, unknown>): Notification {
     entityType: (n.entityType as string) ?? null,
   };
 }
+
+// Notification `type` values a consumer can switch on for org-dashboard UI
+// (e.g. GenerationStatusChip listens for 'org_summary_ready' to know when to
+// swap itself out for the toast + Brief Archive entry; CrystalBriefCard
+// listens for 'brief_trust_score_ready' keyed by payload.periodKey to patch
+// its confidence indicator in place once the score lands).
+export const ORG_DASHBOARD_NOTIFICATION_TYPES = {
+  SUMMARY_READY:      'org_summary_ready',
+  TRUST_SCORE_READY:  'brief_trust_score_ready',
+} as const;
 
 export function useNotifications() {
   const api = useApi();

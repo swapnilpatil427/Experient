@@ -59,6 +59,8 @@ import copilotRouter from './routes/copilot';
 import runsRouter from './routes/runs';
 import experienceRouter from './routes/experience';
 import notificationsRouter from './routes/notifications';
+import orgDashboardRouter from './routes/org-dashboard';
+import { registerOrgDashboardStream } from './services/org-realtime.service';
 import adminRouter from './routes/admin';
 import crystalNovuRouter from './routes/crystal-novu';
 import contactSegmentsRouter from './routes/contact-segments';
@@ -241,6 +243,8 @@ app.use('/api/copilot',     apiLimiter, copilotRouter);
 app.use('/api/runs',        apiLimiter, runsRouter);
 app.use('/api/experience',  apiLimiter, experienceRouter);
 app.use('/api/notifications', apiLimiter, notificationsRouter);
+app.use('/api/org',          apiLimiter, orgDashboardRouter);
+registerOrgDashboardStream(app);
 app.use('/api/admin',        apiLimiter, adminRouter);
 app.use('/api/crystal-novu', apiLimiter, crystalNovuRouter);
 // Tier 3: Contacts, Segments, Sync, CX Cases, Ownership, Ontology

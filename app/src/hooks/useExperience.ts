@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useApi } from './useApi';
 
-function useFetch<T>(fetcher: (() => Promise<T>) | null) {
+// Exported so other org-scoped data hooks (useOrgDashboard.ts, useOrgPrograms.ts,
+// useOrgAlerts.ts, useOrgTopics.ts, useTagMetrics.ts) can reuse the exact same
+// fetch/loading/error/refetch contract instead of re-implementing it.
+export function useFetch<T>(fetcher: (() => Promise<T>) | null) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

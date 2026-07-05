@@ -26,6 +26,14 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { ROUTES, toPath } from '../../constants/routes';
 import { GlassCard, LAYER_CONFIG } from '../insights/shared';
 import type { AgenticInsight, Survey } from '../../types';
+// ── Org Dashboard (Command Center) — additive Hub teaser imports ────────────
+// Decision 18: pure insertions only, nothing in §1-§5 below is touched.
+import { KpiTile } from '../../components/org-dashboard/KpiTile';
+import { WeeklyBriefTeaserCard } from '../../components/org-dashboard/WeeklyBriefTeaserCard';
+import { TagGroupsStrip } from '../../components/org-dashboard/TagGroupsStrip';
+import { useOrgDashboard } from '../../hooks/useOrgDashboard';
+import { useTagMetrics } from '../../hooks/useTagMetrics';
+import { healthStatusFromScore, healthStatusColor } from '../../components/org-dashboard/HealthPill';
 
 // ── Motion ───────────────────────────────────────────────────────────────────
 const stagger = { hidden: {}, visible: { transition: { staggerChildren: 0.06 } } };
@@ -75,6 +83,17 @@ export function ExperienceHubPage() {
   const [topInsights,  setTopInsights]    = useState<RichInsight[]>([]);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [crystalOpening, setCrystalOpening]   = useState<string | null>(null);
+
+  // ── Org Dashboard (Command Center) — additive Hub teaser data ─────────────
+  // Decision 18: these three elements (5th KPI tile, Weekly Brief teaser, Tag
+  // Groups strip) are pure insertions layered onto the existing hero/KPI
+  // strip/§3-§4 boundary below — nothing already on this page is touched.
+  const { data: orgDashboardData, loading: orgDashboardLoading, error: orgDashboardError, refetch: refetchOrgDashboard } = useOrgDashboard();
+  const { data: tagMetricsData, loading: tagMetricsLoading } = useTagMetrics();
+  const atRiskTags = useMemo(
+    () => (tagMetricsData?.tags ?? []).filter((tag) => tag.healthStatus !== 'healthy'),
+    [tagMetricsData],
+  );
 
   useSetPageTitle(t('nav.experience'), t('experience.hub.subtitle'));
 
@@ -146,6 +165,10 @@ export function ExperienceHubPage() {
   }, [velocityData]);
 
   const loading = overviewLoading || surveysLoading;
+
+  // Org Dashboard additive derived values
+  const orgHealthScore = orgDashboardData?.healthScore?.total ?? null;
+  const orgHealthStatusForKpi = orgHealthScore != null ? healthStatusFromScore(orgHealthScore) : null;
 
   const handleAsk = (q: string) => {
     if (q.trim()) { openCrystal(q.trim()); setAskQuery(''); }
@@ -365,11 +388,27 @@ export function ExperienceHubPage() {
       </motion.section>
 
       {/* ══════════════════════════════════════════════════════════════════
+          Crystal's Weekly Brief — additive teaser (Decision 17/18).
+          Inserted immediately after the Hero's `crystalOpening` narrative
+          (§1 above), which keeps full, unconditional, primary-hero weight
+          for everyone. This card is a clearly-labeled, visually subordinate
+          secondary artifact — never a competing equal to crystalOpening.
+      ══════════════════════════════════════════════════════════════════ */}
+      <WeeklyBriefTeaserCard
+        orgName={orgDashboardData?.org?.name ?? t('experience.hub.hero.tagline')}
+        brief={orgDashboardData?.crystalBrief ?? null}
+        loading={orgDashboardLoading}
+        error={orgDashboardError}
+        onAskFollowUp={() => openCrystal(t('orgDashboard.crystalBrief.followUpQuery'))}
+        onRetry={refetchOrgDashboard}
+      />
+
+      {/* ══════════════════════════════════════════════════════════════════
           § 2  PORTFOLIO KPI STRIP
           Mission Cockpit: sparkbars, CI mini-bar, live trend, velocity.
       ══════════════════════════════════════════════════════════════════ */}
       <motion.section variants={stagger} initial="hidden" animate="visible"
-        className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
         <motion.div variants={rise}>
           <KpiTile label={t('experience.hub.kpi.nps')}
             value={npsLabel(portfolioNps)} valueColor={npsColor(portfolioNps)}
@@ -396,6 +435,18 @@ export function ExperienceHubPage() {
             unit={avgVelocity!=null ? t('experience.hub.kpi.velocity', { n: String(avgVelocity) }) : undefined}
             icon="people" iconColor="#059669"
             sparkBars={velocityBars} sparkColor="#059669" loading={loading} />
+        </motion.div>
+        {/* ── 5th tile — Org Health Score (Decision 17/18, additive) ─────────
+            Desktop: grid-cols-5 (own column). Tablet: wraps to its own 4-wide
+            row. Mobile: wraps to its own 2-wide row — per DESIGN.md's
+            Responsive Design section, never a horizontal-scroll carousel. */}
+        <motion.div variants={rise} className="col-span-2 md:col-span-4 lg:col-span-1">
+          <KpiTile label={t('orgDashboard.healthScore.label')}
+            value={orgDashboardLoading ? '—' : orgHealthScore != null ? String(orgHealthScore) : '—'}
+            valueColor={orgHealthStatusForKpi ? healthStatusColor(orgHealthStatusForKpi).text : undefined}
+            unit={orgHealthStatusForKpi ? t(`orgDashboard.health.${orgHealthStatusForKpi}`) : undefined}
+            icon="monitor_heart" iconColor={orgHealthStatusForKpi ? healthStatusColor(orgHealthStatusForKpi).dot : 'var(--color-primary)'}
+            loading={orgDashboardLoading} />
         </motion.div>
       </motion.section>
 
@@ -479,6 +530,17 @@ export function ExperienceHubPage() {
           </motion.section>
         )}
       </AnimatePresence>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          Tag Groups strip — additive teaser (Decision 17/18), between §3 and
+          §4. Hard-scoped at the data layer to `healthStatus !== 'healthy'`
+          tags only (filtered above via `atRiskTags`) — never a general tag
+          browser. Its only exit is a single "View Tag Report" CTA doing full
+          navigation. Renders nothing at all if no tag is at risk or the
+          fetch fails (extends the existing "don't render a broken card on
+          the primary landing page" precedent).
+      ══════════════════════════════════════════════════════════════════ */}
+      <TagGroupsStrip tags={atRiskTags} loading={tagMetricsLoading} />
 
       {/* ══════════════════════════════════════════════════════════════════
           § 4  SURVEY INTELLIGENCE GRID
@@ -607,50 +669,6 @@ function CrystalOrb() {
         borderRadius:'50%', filter:'blur(5px)', animation:'pulse-glow 2.5s ease-in-out infinite' }} />
       <style>{`@keyframes exp-hub-spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
     </div>
-  );
-}
-
-// ── KPI tile ──────────────────────────────────────────────────────────────────
-function KpiTile({
-  label, value, valueColor, unit, ci, ciPosition, sample,
-  icon, iconColor, sparkBars, sparkColor, loading,
-}: {
-  label: string; value: string; valueColor?: string; unit?: string;
-  ci?: string; ciPosition?: number; sample?: string;
-  icon: string; iconColor: string; sparkBars?: number[]; sparkColor?: string; loading?: boolean;
-}) {
-  if (loading) return <div className="h-[112px] rounded-2xl bg-surface-container animate-pulse" />;
-  return (
-    <GlassCard className="p-5" style={{ boxShadow:'0 10px 30px -10px rgba(0,0,0,0.08), inset 0 2px 4px rgba(255,255,255,0.80)' }}>
-      <div className="flex items-start justify-between mb-2.5">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-          style={{ background:`${iconColor}18` }}>
-          <Icon name={icon} size={17} style={{ color:iconColor }} />
-        </div>
-      </div>
-      <div className="flex items-baseline gap-1.5 mb-0.5">
-        <span className="font-headline text-[28px] font-black leading-none" style={{ color:valueColor }}>{value}</span>
-        {unit && <span className="text-xs text-on-surface-variant font-medium">{unit}</span>}
-        {ci   && <span className="text-[10px] text-on-surface-variant font-mono">{ci}</span>}
-      </div>
-      <div className="text-[9px] font-black uppercase tracking-widest text-on-surface-variant mb-1.5">{label}</div>
-      {ciPosition!=null && (
-        <div className="relative h-1 rounded-full mb-1.5"
-          style={{ background:'linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 10%, transparent), color-mix(in srgb, var(--color-primary) 35%, transparent), color-mix(in srgb, var(--color-primary) 10%, transparent))' }}>
-          <div className="absolute top-[-3px] w-[2px] h-[7px] rounded-full"
-            style={{ left:`${ciPosition}%`, background:'var(--color-primary)' }} />
-        </div>
-      )}
-      {sparkBars && sparkBars.length>0 && (
-        <div className="flex items-end gap-[2px] h-5 mt-1">
-          {sparkBars.map((h,i)=>(
-            <span key={i} className="flex-1 rounded-sm"
-              style={{ height:h, background:sparkColor??'var(--color-primary)', opacity:0.50+(i/sparkBars.length)*0.45 }} />
-          ))}
-        </div>
-      )}
-      {sample && <div className="text-[9px] text-on-surface-variant/60 font-mono mt-0.5">{sample}</div>}
-    </GlassCard>
   );
 }
 

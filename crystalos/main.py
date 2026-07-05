@@ -211,6 +211,9 @@ app.include_router(cdx_router)
 from crystalos.routers.novu import router as novu_router
 app.include_router(novu_router)
 
+from crystalos.routers.org_brief import router as _org_brief_router
+app.include_router(_org_brief_router)
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────────
 

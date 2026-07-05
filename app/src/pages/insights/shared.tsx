@@ -31,10 +31,20 @@ const SENTIMENT_BORDER: Record<string, string> = {
   neutral:  'var(--color-outline-variant, #ccc)',
 };
 
-export function CitationChip({ id, dark = false, title }: { id: string; dark?: boolean; title?: string }) {
+// `onClick` is additive (org-dashboard's Crystal Brief needs click-to-reveal
+// citations, per DESIGN.md's Trust/Citation progressive-disclosure spec —
+// "stay click-to-reveal, exactly as the existing CitationChip already
+// behaves"). Optional and defaults to undefined so every existing caller
+// keeps its current no-op behavior unchanged.
+export function CitationChip({
+  id, dark = false, title, onClick,
+}: {
+  id: string; dark?: boolean; title?: string; onClick?: () => void;
+}) {
   return (
     <button
       type="button"
+      onClick={onClick}
       className={
         'inline-flex items-center px-1.5 mx-0.5 rounded-full text-[10px] font-bold transition-colors cursor-pointer ' +
         (dark

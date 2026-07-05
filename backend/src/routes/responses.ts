@@ -11,6 +11,7 @@ import { responsesSubmitted } from '../lib/metrics';
 import { publishResponseEvent } from '../lib/redisStream';
 import { publishNotificationEvent } from '../lib/notificationEvents';
 import { triggerInsightGeneration } from '../lib/agentsClient';
+import { publishResponseReceivedDebounced } from '../services/org-realtime.service';
 import logger from '../lib/logger';
 
 const router = express.Router();
@@ -170,6 +171,17 @@ router.post('/:surveyId/responses', responseSubmitLimiter, validate(submitRespon
       publishResponseEvent({ surveyId: surveyRow.id as string, orgId: surveyRow.org_id as string, responseId: respRow.id })
         .catch(() => {});
       maybeEmitResponseMilestone(surveyRow.id as string, surveyRow.org_id as string); // fire-and-forget
+      // Org Intelligence Dashboard live KPI counter (docs/org-dashboard/DECISIONS.md
+      // Decision 22 — SSE + Redis pub/sub, debounced 3s per org). This is the real,
+      // end-user-submitted response insert path (surveys.ts's generate-sample-responses
+      // insert loop is synthetic/AI-generated demo data, not live traffic, so it's
+      // intentionally not wired to the live KPI counter here).
+      publishResponseReceivedDebounced(surveyRow.org_id as string, {
+        surveyId: surveyRow.id as string,
+        orgId: surveyRow.org_id as string,
+        npsScore: npsScore,
+        submittedAt: new Date().toISOString(),
+      });
     } else {
       maybeAutoAnalyze(surveyRow.id as string, surveyRow.org_id as string).catch(() => {});
     }

@@ -9,6 +9,7 @@ import { query } from './db';
 import { getRedisClient } from './redis';
 import { publishNotificationEvent } from './notificationEvents';
 import { linearForecast } from './forecast';
+import { publishOrgEvent } from '../services/org-realtime.service';
 
 // Dedup window per severity (ms) — prevents the same condition re-firing.
 export const DEDUP_TTL_MS: Record<string, number> = { critical: 24 * 3600e3, warning: 6 * 3600e3, info: 1 * 3600e3, success: 1 * 3600e3 };
@@ -142,6 +143,19 @@ export async function fireAlert(rule: AlertRule, {
     title, body: crystalNarration || description,
     actionUrl: '/app/alerts',
     payload: { alertType: rule.alert_type, ruleId: rule.id, surveyId, metricValue, metricChange },
+  }).catch(() => {});
+
+  // Org Intelligence Dashboard live anomaly feed (docs/org-dashboard/DECISIONS.md
+  // Decision 22/23 — SSE + Redis pub/sub over the existing alert_events table; no new
+  // anomaly-storage infra). Additive only — never affects fireAlert's own return value
+  // or the notification delivery above.
+  const eventRow = event as Record<string, unknown>;
+  publishOrgEvent(orgId, {
+    type: 'anomaly_detected',
+    payload: {
+      alertId: eventRow.id, surveyId, severity, title, description,
+      detectedAt: eventRow.triggered_at,
+    },
   }).catch(() => {});
 
   return event as Record<string, unknown>;

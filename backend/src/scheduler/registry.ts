@@ -10,6 +10,11 @@ import { creditLedgerMaintenance } from './jobs/creditLedgerMaintenance';
 import { credentialHealth } from './jobs/credentialHealth';
 import { reNotifyStaleApprovals } from './jobs/reNotifyStaleApprovals';
 import { resumeDelayedExecutions } from './jobs/resumeDelayedExecutions';
+import { orgMetricsDaily } from './jobs/orgMetricsDaily.job';
+import { surveyHealthSummary } from './jobs/surveyHealthSummary.job';
+import { orgMetricsWeekly } from './jobs/orgMetricsWeekly.job';
+import { orgTopicTrends } from './jobs/orgTopicTrends.job';
+import { orgHealthScore } from './jobs/orgHealthScore.job';
 
 export interface JobResult { affected?: number; note?: string }
 
@@ -89,5 +94,42 @@ export const JOBS: Job[] = [
     intervalSec: intSec('JOB_RESUME_DELAYED_EXECUTIONS_SEC', 60), // every minute
     enabled: flag('JOB_RESUME_DELAYED_EXECUTIONS', true),
     handler: resumeDelayedExecutions,
+  },
+  {
+    name: 'org-metrics-daily',
+    description: 'Refresh org_metrics_daily + tag_metrics materialized views (org-dashboard).',
+    intervalSec: intSec('JOB_ORG_METRICS_DAILY_SEC', 900), // 15 min
+    enabled: flag('JOB_ORG_METRICS_DAILY', true),
+    handler: orgMetricsDaily,
+  },
+  {
+    name: 'survey-health-summary',
+    description: 'Refresh survey_health_summary materialized view (org-dashboard).',
+    intervalSec: intSec('JOB_SURVEY_HEALTH_SUMMARY_SEC', 3_600), // hourly
+    enabled: flag('JOB_SURVEY_HEALTH_SUMMARY', true),
+    handler: surveyHealthSummary,
+  },
+  {
+    name: 'org-metrics-weekly',
+    description: 'Refresh org_metrics_weekly materialized view (org-dashboard).',
+    intervalSec: intSec('JOB_ORG_METRICS_WEEKLY_SEC', 86_400), // daily
+    enabled: flag('JOB_ORG_METRICS_WEEKLY', true),
+    handler: orgMetricsWeekly,
+  },
+  {
+    // Weekly (Monday) — the registry has no day-of-week primitive, so this ticks daily and
+    // self-gates to Monday UTC inside the handler (org-dashboard).
+    name: 'org-topic-trends',
+    description: 'CALL compute_org_topic_trends() — self-gates to Monday UTC inside the handler.',
+    intervalSec: intSec('JOB_ORG_TOPIC_TRENDS_SEC', 86_400), // daily tick, Monday-gated handler
+    enabled: flag('JOB_ORG_TOPIC_TRENDS', true),
+    handler: orgTopicTrends,
+  },
+  {
+    name: 'org-health-score',
+    description: 'CALL compute_all_org_health_scores() (org-dashboard).',
+    intervalSec: intSec('JOB_ORG_HEALTH_SCORE_SEC', 86_400), // daily
+    enabled: flag('JOB_ORG_HEALTH_SCORE', true),
+    handler: orgHealthScore,
   },
 ];

@@ -822,6 +822,86 @@ export async function parseWorkflowNL(
 }
 
 
+// ── Org Intelligence Dashboard (Command Center) ─────────────────────────────────
+// docs/org-dashboard/ARCHITECTURE.md "Addendum: Org Insight History & Manual
+// Custom-Range Summary" + DECISIONS.md Decision 12.
+//
+// Ground truth (crystalos/routers/org_brief.py, confirmed by direct read — NOT the path
+// this file originally guessed before that router existed): CrystalOS exposes exactly
+// ONE endpoint, `POST /api/crystal/graphs/org-brief`, for BOTH the scheduled/manual
+// weekly brief and the manual custom-range summary — they're the same
+// `org_brief_graph.py` DAG, differentiated only by `period_type` in the request body.
+// There is no separate `/org-dashboard/summaries/run` or `/org-dashboard/brief/run`
+// path. The call is synchronous on CrystalOS's side (it awaits the full graph +
+// `verify_and_score` before responding) — the Express route layer is what makes this
+// feel async to the client, by firing this call in the background and responding 202
+// immediately (mirrors triggerCustomAnalysis's fire-and-forget pattern, just with a
+// longer-running single call instead of a queue).
+export const ORG_BRIEF_GENERATE_PATH = '/api/crystal/graphs/org-brief';
+
+export interface OrgBriefGenerateResult {
+  brief_id: string;
+  status: string; // 'complete' on success
+  generated_at: string;
+}
+
+/**
+ * Generate (or regenerate) an org-level Crystal brief — weekly scheduled/manual
+ * regeneration, or a manual custom-range summary, depending on `periodType`. Fire-and-
+ * forget from the caller's perspective (Express route awaits this in a `.catch()`-guarded
+ * background call, never in the request/response cycle) — see routes/org-dashboard.ts's
+ * `POST /dashboard/crystal-brief/regenerate` and `POST /dashboard/summaries`.
+ *
+ * CrystalOS writes the result directly to `org_crystal_briefs` (period_type='weekly') or
+ * `org_custom_summaries` (period_type='custom') itself — the Express layer does not need
+ * to (and should not) write brief_text/status back on success, only mark the corresponding
+ * row 'failed' if this call itself throws (network failure, CrystalOS 5xx, timeout).
+ *
+ * @param params - { orgId, dateRangeStart, dateRangeEnd, periodType, requestedBy }
+ */
+export async function triggerOrgBrief({
+  orgId, dateRangeStart, dateRangeEnd, periodType = 'weekly', requestedBy,
+}: {
+  orgId: string;
+  dateRangeStart: string;
+  dateRangeEnd: string;
+  periodType?: 'weekly' | 'custom';
+  requestedBy?: string | null;
+}): Promise<OrgBriefGenerateResult> {
+  logger.info({ orgId, periodType, dateRangeStart, dateRangeEnd }, 'agents:triggerOrgBrief');
+  return _fetch(ORG_BRIEF_GENERATE_PATH, {
+    method: 'POST',
+    body: JSON.stringify({
+      org_id:           orgId,
+      date_range_start: dateRangeStart,
+      date_range_end:   dateRangeEnd,
+      period_type:      periodType,
+      requested_by:     requestedBy ?? null,
+    }),
+  }, LLM_TIMEOUT_MS) as Promise<OrgBriefGenerateResult>;
+}
+
+/**
+ * Thin, intent-clarifying wrapper over `triggerOrgBrief` for the manual Custom Summary
+ * path (`period_type: 'custom'`) — kept as a distinct exported name (rather than callers
+ * passing `periodType: 'custom'` directly) so `POST /dashboard/summaries`' call site
+ * reads unambiguously, matching this file's convention of one named function per
+ * product-facing trigger (e.g. `triggerCustomAnalysis` vs `triggerInsightGeneration`).
+ *
+ * @param params - { orgId, dateRangeStart, dateRangeEnd, requestedBy }
+ */
+export async function triggerOrgCustomSummary({
+  orgId, dateRangeStart, dateRangeEnd, requestedBy,
+}: {
+  orgId: string;
+  dateRangeStart: string;
+  dateRangeEnd: string;
+  requestedBy?: string | null;
+}): Promise<OrgBriefGenerateResult> {
+  return triggerOrgBrief({ orgId, dateRangeStart, dateRangeEnd, periodType: 'custom', requestedBy });
+}
+
+
 // ── Registry + health ──────────────────────────────────────────────────────────
 
 /** List all agent capabilities (active + stubs). */

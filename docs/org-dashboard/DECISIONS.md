@@ -4,6 +4,74 @@ Append-only. See `TEAM.md` for the entry format and escalation rules.
 
 ---
 
+## Decision 27: Recommendation JSONB — resolve snake_case/camelCase and tagId naming during integration
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (integration pass)
+**Context:** Four parallel workstreams built against the same `org_crystal_briefs.recommendations` JSONB shape without a live shared type to compile against. `org_brief_graph.py` wrote raw Python/SQL-native snake_case keys (`survey_id`, `action_type`, `source_insight_ids`, and — per the ambiguity the CrystalOS engineer flagged in their own handoff report — both `tag_group_id` and `tag_id`, always null). The backend passed the JSONB array through as `unknown[]` with no transformation. The frontend's `CrystalBriefRecommendation` TypeScript type declared camelCase fields (`surveyId`, `actionType`, `tagGroupId`) and was missing `sourceInsightIds` entirely. Caught during the integration pass by tracing `CrystalBriefCard.tsx`'s actual render logic (`rec.surveyId ? <Link>... : <span>...`) against what the JSONB would really contain at runtime: every recommendation's `surveyId` and `actionType` would have been `undefined`, silently disabling the survey drill-down link (Decision 17's "shortcut" navigation rule) and always falling back to the default icon, on every brief, in production.
+**Decision:** Added a single `mapRecommendation()` function in `backend/src/services/org-metrics.service.ts` — the one place recommendations are read for client consumption — that maps snake_case → camelCase and resolves the tag-field ambiguity to `tagId` (canonical, since a "tag group" is a `survey_tags` row per Decision 23, not a `tag_group_id`). Updated `CrystalBriefRecommendation` (both the backend service type and `app/src/types/orgDashboard.ts`) to include `sourceInsightIds: string[]`, which existed in the DB shape and CrystalOS's output but had no frontend type field at all. `org_brief_graph.py` itself was left unchanged (it already defensively emits both tag-field names); the mapper's fallback chain (`tag_id ?? tagId ?? tag_group_id ?? tagGroupId`) absorbs the ambiguity at the read boundary instead.
+**Verification:** Full backend test suite re-run after the fix (1353/1353 passing, no regressions), `tsc --noEmit` clean on both sides.
+**Rationale:** Fixing this at the single service-layer read site is lower-risk than editing the CrystalOS write site (which would require re-verifying the graph's own EVALS.md traces) and is the natural boundary for a snake_case (DB/Python) ↔ camelCase (TS/JSON-over-the-wire) translation in this codebase's existing conventions (no other JSONB column read by this service is passed through untransformed).
+**Reversibility:** Easy — additive mapping function, no schema change, no API contract change (the wire shape was always meant to be camelCase; this just makes it actually be that).
+
+---
+
+## Decision 26: No new role-gating system for Hub teaser elements
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** Decision 18 requires the Hub teaser additions to reuse "the exact permission check that already gates Tag Report access today." A direct audit of every Tag Report page/component/hook found no role or permission check anywhere — Tag Report is open to any authenticated org member today.
+**Decision:** The 5th KPI tile, Weekly Brief card, and Tag Groups strip render for all authenticated org members, matching Tag Report's actual current access model. No new permission system is introduced speculatively.
+**Alternatives considered:** Invent a VP/C-suite role check for this feature alone (rejected — would create a permission model Tag Report itself doesn't have, and TEAM.md's Build vs Reuse rule explicitly requires reusing what exists, not inventing new structure to satisfy a doc's assumption that turned out to be false).
+**Reversibility:** Easy — additive; a role check can be layered on later if a real role system is introduced platform-wide.
+
+---
+
+## Decision 25: benchmark_nps lives on org_profiles, not organizations
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** ROADMAP.md Phase 5 specifies `ALTER TABLE organizations ADD COLUMN benchmark_nps`. No `organizations` table exists anywhere in this codebase — org identity is Clerk-owned, represented as a bare `TEXT` org_id with no local table, confirmed by direct migration audit.
+**Decision:** Add `benchmark_nps INTEGER CHECK (benchmark_nps BETWEEN -100 AND 100)` to `org_profiles` (the existing per-org settings table; every existing column there is nullable or defaulted, so this is a safe non-locking addition).
+**Reversibility:** Easy — single nullable column.
+
+---
+
+## Decision 24: Citation-bearing org briefs ship behind a flag, defaulted off
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** Decision 16 item 1 makes shipping citation-bearing briefs (anything containing `source_insight_ids`) to production a hard, non-negotiable release gate until Tag Report's citation-erasure redaction hook (DESIGN.md §4.5 AC-3) is approved and wired in. A direct code audit (grep across `crystalos/` and `backend/src` for redaction/erasure logic near citations) confirms that hook does not exist anywhere — it is described in Tag Report's own docs as pending an unresolved business-stakeholder decision, not yet implemented.
+**Decision:** Build the full insight-consumption pipeline in `org_brief_graph.py` (headline-only grounding, `source_insight_ids` citation, `verify_and_score`) exactly as designed in Addendum 2, but gate it behind an environment flag `ORG_BRIEF_ENABLE_INSIGHT_CITATIONS` defaulting to `false`. With the flag off, `aggregate_org_metrics` skips the insight-retrieval query entirely and `synthesize_narrative` produces the numbers-only narrative. This ships real value now (weekly briefs, health scores, signal detection, brief archive) without violating the compliance gate, and flipping the flag is a one-line change once the redaction hook lands elsewhere.
+**Alternatives considered:** (a) Ship citation-bearing briefs now on the reasoning that we only store `headline` text and pointers, never raw verbatims, so the GDPR risk is lower than the gate implies — rejected, because Decision 16 defines "citation-bearing" as "containing `source_insight_ids`" full stop, not conditioned on whether raw quotes are present, and the instruction is explicit that this is non-negotiable. (b) Skip insight-consumption entirely until the hook ships — rejected, wastes the opportunity to have the code ready to flip on immediately.
+**Reversibility:** Easy — single flag flip once the upstream redaction hook exists.
+
+---
+
+## Decision 23: Anomaly alerts reuse alert_events; no new survey_anomalies table
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** ARCHITECTURE.md assumes a pre-existing `survey_anomalies` table. No such table exists. A direct audit instead found a complete, already-shipped alerting system (`alert_rules`/`alert_events`/`alert_subscriptions`/`alert_history`) with exactly the shape `AnomalyAlerts` needs: nullable `survey_id` (NULL = org-wide), `severity` (critical/warning/info/success), `status` (active/acknowledged/snoozed/resolved), and a `source` column (`'rule'|'crystal'|'system'`) already designed to accommodate AI-detected, rule-less alerts.
+**Decision:** `survey_health_summary.anomaly_count` counts `alert_events` rows with `status = 'active'` per survey. The new `org_signal_detector` skill writes its cross-survey signals into `alert_events` with `source = 'crystal'`, `rule_id = NULL`, and `survey_id` set only when a signal centers on one program (NULL for genuinely org-wide signals). `PATCH /api/org/dashboard/alerts/:id/acknowledge` updates `alert_events.status`. No new anomaly-storage table is created.
+**Rationale:** Per TEAM.md's Build vs Reuse rule — this table already covers the need, including the AI-detected/rule-less case the design explicitly wanted.
+**Reversibility:** Easy — purely additive rows into an existing table; no schema changes to `alert_events` required.
+
+---
+
+## Decision 22: Real-time layer uses SSE, not a new WebSocket stack; scheduled refresh uses the app-level scheduler, not pg_cron
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** ARCHITECTURE.md and ROADMAP.md Phase 3 specify a new `ws`-based `WebSocketServer` (`org-realtime.service.ts`) for the KPI live counter and anomaly alerts, and pg_cron for materialized view refresh schedules. A direct audit found: (a) no `ws` npm dependency and no `WebSocketServer` usage exists anywhere in the backend — all existing real-time push in this codebase is Server-Sent Events over Redis pub/sub (`backend/src/routes/notifications.ts`); (b) the local/prod Postgres image is a custom `pgvector/pgvector:pg16` build with no `pg_cron` extension installed, while a mature application-level scheduler already exists (`backend/src/scheduler/`, setInterval-based jobs) with multiple precedents (`docAutoApprove.ts`, `eventEngine/processor.ts`'s `cronTick`/`alertSweep`, a dedicated `scheduler` Docker service).
+**Decision:**
+1. KPI live counter and anomaly-alert real-time delivery (the two cases Decision 21 confirmed still need a live channel) are delivered via a new SSE route (`GET /api/org/dashboard/stream`) backed by a new Redis pub/sub channel (`org:{orgId}:events`), following the exact pattern already proven in `notifications.ts`. `useOrgDashboardLive.ts` wraps `EventSource`, not `WebSocket`.
+2. Materialized view refreshes (`org_metrics_daily` 15-min, `survey_health_summary` hourly, `org_metrics_weekly`/`org_topic_trends`/`org_health_score` daily) run from new jobs under `backend/src/scheduler/jobs/`, using the existing setInterval-based runner, executing `REFRESH MATERIALIZED VIEW CONCURRENTLY` over a plain pg client — not pg_cron.
+**Rationale:** Per TEAM.md's own Build vs Reuse rule and the same logic Decision 21 already applied to the manual-summary/compare/trust-score flows — building a second, parallel real-time transport (WebSocket) and a second, parallel scheduling mechanism (pg_cron) alongside working, proven equivalents that already exist in this codebase is exactly the kind of uncosted infrastructure duplication the team's own decision framework exists to prevent. This is a broader application of Decision 21's reasoning to the two real-time cases Decision 21 explicitly left in place, not a reversal of it.
+**Reversibility:** Easy — additive new route/channel/jobs; no schema impact. If genuine WebSocket bidirectional needs emerge later (none identified today), this can be layered on without touching the SSE path.
+
+---
+
 ## Decision 21: Live-update mechanism — resolved (closes an item open since the first design round)
 
 **Date:** 2026-07-01
