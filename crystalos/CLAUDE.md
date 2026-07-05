@@ -153,6 +153,26 @@ creation graph's revision loop).
 - `should_trigger_progressive_tier()` checks response count vs thresholds (10/40/100/250)
 - Redis dedup key `tier:{survey_id}:{tier}` with 30-day TTL prevents duplicate triggers
 - On threshold hit: calls backend `/api/insights/:id/generate` with `trigger='stream'`
+- **Response tagging sweep (added 2026-07-04)** — a SECOND, independent, much lighter trigger on the
+  same consumer: every `response_tagging_batch_size` new-response events (default `1` — tag every
+  response as it arrives; survey/org/platform-resolved via `resolve_response_tagging_batch_size`,
+  same precedence as `stream_response_threshold`), it calls `lib/response_tagging.py::tag_untagged_responses`
+  in-process (no HTTP round-trip, no full pipeline run) — sentiment/emotion/effort scoring +
+  existing-topic assignment (`lib/topic_registry.py::assign_batch_to_nearest`) for any response with
+  `ai_enriched_at IS NULL`. New-topic *discovery* (unassigned responses buffer into
+  `topic_candidates`, same table `node_cluster` reads) is ALSO self-serviced here once the buffer
+  crosses `TOPIC_DISCOVERY_CANDIDATE_THRESHOLD` (flat constant, default `25`, shared with
+  `node_cluster` so both "enough evidence for a new topic" checks agree) — `tag_untagged_responses`
+  clusters by embedding similarity, LLM-names the cluster (`tools/topics.py::discover_topics`),
+  inserts the centroid, and tags matching responses, without waiting for a future full pipeline run.
+  Only fires for a survey that already has at least one topic (`topic_registry.has_centroids`) — a
+  survey's very first topic set still only comes from the full pipeline's bootstrap run (whole-corpus
+  clustering), which a per-response sweep can't meaningfully replicate.
+  `scheduler.py::run_response_tagging_backlog_sweep`
+  (15-min tick, `ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP` default `true`) is the catch-up path for surveys
+  not currently receiving live traffic, or responses whose tagging previously failed (no retry-tracking
+  state needed — a failed attempt just leaves `ai_enriched_at` null, so both this sweep and the stream
+  trigger naturally retry it next time).
 
 ## Environment variables
 > **Full list:** `docs/ENV_VARS.md` (canonical). **Adding an `os.getenv("X")`? Add it there AND to the root `.env.example` in the same PR.** Advanced tunables live in `lib/constants.py`. Key ones below.

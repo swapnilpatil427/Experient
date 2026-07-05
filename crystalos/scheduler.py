@@ -17,6 +17,9 @@ Interval env vars:
   INSIGHT_INTERVAL_FREE_MIN   default: 120  (minutes between free-tier runs)
   INSIGHT_INTERVAL_PAID_MIN   default: 15   (minutes between paid-tier runs)
   SCHEDULER_POLL_SEC          default: env-aware (dev: 300s, prod: 3600s)
+  ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP  default: true (15-min backlog sweep for
+                                          untagged responses — see
+                                          run_response_tagging_backlog_sweep)
 """
 from __future__ import annotations
 
@@ -293,7 +296,6 @@ async def _get_current_response_count(survey_id: str) -> int:
         return 0
 
 
-_zombie_sweep_last_run: float = 0.0
 _ZOMBIE_SWEEP_INTERVAL_SEC = 300  # 5 minutes
 
 _org_aggregation_last_run: float = 0.0
@@ -314,7 +316,6 @@ _QUALITY_SLA_INTERVAL_SEC = 86400  # nightly
 _gap_cluster_last_run: float = 0.0
 _GAP_CLUSTER_INTERVAL_SEC = 604800  # weekly
 
-_cx_sla_breach_last_run: float = 0.0
 _CX_SLA_BREACH_INTERVAL_SEC = 300  # 5 minutes
 
 
@@ -850,11 +851,89 @@ async def run_retention_job() -> dict:
                 "error": str(exc)}
 
 
+# ── Response tagging backlog sweep (added 2026-07-04) ──────────────────────────
+# consumers/response_stream.py already tags each survey's responses as new ones
+# arrive (see lib/response_tagging.py, gated by response_tagging_batch_size). This
+# job is the safety net for the cases that path can't reach on its own: surveys
+# that aren't currently receiving live traffic (imported/bulk-loaded responses,
+# or a survey that's gone quiet), and any response whose scoring attempt
+# previously failed (it simply never got ai_enriched_at set, so it's still
+# selected here — no separate retry-tracking needed, same as the stream path).
+ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP: bool = os.getenv(
+    "ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP", "true",
+).lower() == "true"
+
+_response_tagging_backlog_last_run: float = 0.0
+_RESPONSE_TAGGING_BACKLOG_INTERVAL_SEC = 900  # 15 minutes
+
+# Cap how many distinct surveys get swept per tick — each one calls
+# tag_untagged_responses, which itself caps at RESPONSE_TAGGING_SWEEP_CAP
+# responses. Keeps one tick's total work bounded regardless of backlog size.
+RESPONSE_TAGGING_BACKLOG_MAX_SURVEYS_PER_TICK: int = int(
+    os.getenv("RESPONSE_TAGGING_BACKLOG_MAX_SURVEYS_PER_TICK", "20")
+)
+
+
+async def run_response_tagging_backlog_sweep() -> dict:
+    """Find surveys with untagged responses and run a tagging sweep for each.
+
+    Returns {"enabled": bool, "surveys_swept": int, "error"?: str}. Never raises.
+    """
+    if not ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP:
+        logger.debug("response_tagging_backlog_sweep_disabled")
+        return {"enabled": False, "surveys_swept": 0}
+
+    from crystalos.lib.response_tagging import tag_untagged_responses
+
+    surveys_swept = 0
+    try:
+        async with _pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT DISTINCT survey_id, org_id
+                       FROM responses
+                       WHERE ai_enriched_at IS NULL
+                       LIMIT %s""",
+                    (RESPONSE_TAGGING_BACKLOG_MAX_SURVEYS_PER_TICK,),
+                )
+                rows = await cur.fetchall()
+
+        for survey_id, org_id in rows:
+            try:
+                await tag_untagged_responses(str(survey_id), org_id)
+                surveys_swept += 1
+            except Exception as exc:
+                logger.warning("response_tagging_backlog_sweep_survey_failed",
+                                survey_id=survey_id, error=str(exc))
+            await asyncio.sleep(1)  # stagger — same rationale as the main survey loop below
+
+        if surveys_swept:
+            logger.info("response_tagging_backlog_sweep_done", surveys_swept=surveys_swept)
+        else:
+            logger.debug("response_tagging_backlog_sweep_noop")
+        return {"enabled": True, "surveys_swept": surveys_swept}
+    except Exception as exc:
+        logger.warning("response_tagging_backlog_sweep_failed", error=str(exc))
+        return {"enabled": True, "surveys_swept": surveys_swept, "error": str(exc)}
+
+
 async def run_scheduler_once() -> None:
-    """Run a single scheduler tick (useful for testing and inline embedding)."""
-    global _zombie_sweep_last_run, _org_aggregation_last_run, _sla_check_last_run, _skill_quality_last_run
-    global _feedback_rollup_last_run, _quality_sla_last_run, _gap_cluster_last_run, _cx_sla_breach_last_run
-    global _retention_last_run
+    """Run a single scheduler tick (useful for testing and inline embedding).
+
+    Fixed 2026-07-04: zombie sweep and the CX SLA-breach sweep used to be gated
+    here too, which meant neither could ever run faster than SCHEDULER_POLL_SEC —
+    invisible in dev/staging (POLL_SEC=300s, ≤ both jobs' own 5-min interval) but
+    a real bug in prod (POLL_SEC=3600s): the CX SLA-breach sweep is what escalates
+    a customer support case once it's breached its SLA (Slack alert + reassignment),
+    so nesting it here meant a breached case could sit unescalated for up to ~55
+    extra minutes beyond its documented 5-minute window. Both now run on their own
+    independent-cadence background loops (_run_zombie_sweep_loop /
+    _run_cx_sla_breach_loop, started from run_scheduler()) instead of being gated
+    by this function's own tick.
+    """
+    global _org_aggregation_last_run, _sla_check_last_run, _skill_quality_last_run
+    global _feedback_rollup_last_run, _quality_sla_last_run, _gap_cluster_last_run
+    global _retention_last_run, _response_tagging_backlog_last_run
 
     # Always clean up stale runs first so they don't block re-triggering.
     await _recover_stale_runs()
@@ -862,11 +941,6 @@ async def run_scheduler_once() -> None:
     await _auto_close_by_response_count()
 
     now = time.time()
-
-    # Zombie sweep runs every 5 minutes (not every poll tick)
-    if now - _zombie_sweep_last_run >= _ZOMBIE_SWEEP_INTERVAL_SEC:
-        await sweep_zombie_runs()
-        _zombie_sweep_last_run = now
 
     # Org aggregation runs hourly
     if now - _org_aggregation_last_run >= _ORG_AGGREGATION_INTERVAL_SEC:
@@ -899,15 +973,17 @@ async def run_scheduler_once() -> None:
         await _cluster_capability_gaps()
         _gap_cluster_last_run = now
 
-    # CX case SLA breach sweep runs every 5 minutes
-    if now - _cx_sla_breach_last_run >= _CX_SLA_BREACH_INTERVAL_SEC:
-        await _cx_sla_breach_sweep()
-        _cx_sla_breach_last_run = now
-
     # Nightly insight checkpoint retention/compaction (Phase 7; no-op unless enabled)
     if ENABLE_RETENTION_JOB and now - _retention_last_run >= _RETENTION_INTERVAL_SEC:
         await run_retention_job()
         _retention_last_run = now
+
+    # Response tagging backlog sweep runs every 15 minutes (catches surveys not
+    # currently receiving live traffic + any previously-failed tagging attempts)
+    if (ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP
+            and now - _response_tagging_backlog_last_run >= _RESPONSE_TAGGING_BACKLOG_INTERVAL_SEC):
+        await run_response_tagging_backlog_sweep()
+        _response_tagging_backlog_last_run = now
 
     surveys = await _get_surveys_due(INTERVAL_FREE_MIN)
     if surveys:
@@ -958,6 +1034,35 @@ async def run_scheduler_once() -> None:
         logger.debug("scheduler_idle")
 
 
+async def _run_zombie_sweep_loop() -> None:
+    """Independent-cadence background loop for sweep_zombie_runs — decoupled
+    (2026-07-04) from run_scheduler_once/SCHEDULER_POLL_SEC so it keeps its
+    documented 5-minute cadence even when POLL_SEC is much slower (prod: 3600s).
+    Runs forever; a single failed sweep is logged and retried next interval."""
+    while True:
+        try:
+            await sweep_zombie_runs()
+        except Exception as exc:
+            logger.error("zombie_sweep_loop_error", error=str(exc))
+        await asyncio.sleep(_ZOMBIE_SWEEP_INTERVAL_SEC)
+
+
+async def _run_cx_sla_breach_loop() -> None:
+    """Independent-cadence background loop for _cx_sla_breach_sweep — same fix
+    as _run_zombie_sweep_loop, but higher-stakes: this is what escalates a
+    customer support case once it's breached its SLA (Slack alert + case
+    reassignment). Nesting it inside run_scheduler_once meant a breached case
+    could sit unescalated for up to ~55 extra minutes beyond its documented
+    5-minute window in prod (POLL_SEC=3600s). Runs forever; a single failed
+    sweep is logged and retried next interval."""
+    while True:
+        try:
+            await _cx_sla_breach_sweep()
+        except Exception as exc:
+            logger.error("cx_sla_breach_loop_error", error=str(exc))
+        await asyncio.sleep(_CX_SLA_BREACH_INTERVAL_SEC)
+
+
 async def run_scheduler() -> None:
     """Main scheduler loop."""
     await init_pool()
@@ -967,6 +1072,11 @@ async def run_scheduler() -> None:
         interval_paid_min=INTERVAL_PAID_MIN,
         poll_sec=POLL_SEC,
     )
+
+    # Zombie sweep and CX SLA-breach escalation run on their own independent
+    # cadence, not gated by the (much slower in prod) survey-due-check loop below.
+    zombie_task = asyncio.create_task(_run_zombie_sweep_loop())
+    cx_sla_breach_task = asyncio.create_task(_run_cx_sla_breach_loop())
 
     try:
         while True:
@@ -984,6 +1094,9 @@ async def run_scheduler() -> None:
 
             await asyncio.sleep(POLL_SEC)
     finally:
+        zombie_task.cancel()
+        cx_sla_breach_task.cancel()
+        await asyncio.gather(zombie_task, cx_sla_breach_task, return_exceptions=True)
         await close_pool()
 
 

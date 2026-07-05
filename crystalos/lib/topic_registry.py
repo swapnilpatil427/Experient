@@ -17,11 +17,18 @@ from typing import Any
 
 import structlog
 
+from crystalos.lib.constants import TOPIC_ASSIGNMENT_THRESHOLD
+
 logger = structlog.get_logger()
 
 # Cosine similarity threshold: new responses with sim >= this are assigned to
 # the nearest existing topic. Responses below go into the candidate buffer.
-ASSIGNMENT_THRESHOLD = 0.72
+# Re-exported from lib.constants (fixed 2026-07-04) — this used to be a second,
+# independently-maintained literal that only matched constants.py's copy by
+# coincidence; changing one silently stopped applying to nearest-centroid
+# assignment. Keep the name ASSIGNMENT_THRESHOLD for backward compatibility
+# (existing imports/call sites use it as assign_batch_to_nearest's default param).
+ASSIGNMENT_THRESHOLD = TOPIC_ASSIGNMENT_THRESHOLD
 
 
 # ── Vector helpers ────────────────────────────────────────────────────────────

@@ -32,6 +32,9 @@ const baseEffective: Record<string, unknown> = {
   automated_insights_enabled: true,
   automated_report_generation_enabled: true,
   stream_response_threshold: 10,
+  response_tagging_batch_size: 1,
+  topic_discovery_candidate_threshold: 10,
+  topic_discovery_min_cluster_size: 5,
   report_regen_threshold: 25,
   prior_checkpoint_lookback: 5,
   prior_checkpoint_max_age_days: 90,
@@ -136,6 +139,116 @@ describe('InsightSettingsPage', () => {
     expect(sid).toBe('s1');
     // Only the changed key is sent — not the entire settings object.
     expect(patch).toEqual({ stream_response_threshold: 15 });
+  });
+
+  it('admin can edit response_tagging_batch_size independently of stream_response_threshold', async () => {
+    const api = buildApi();
+    vi.mocked(useApi).mockReturnValue(api);
+    const user = userEvent.setup();
+    renderPage();
+
+    const input = await screen.findByLabelText('surveyInsights.settings.responseTaggingBatchSize');
+    expect(input).not.toBeDisabled();
+    await user.clear(input);
+    await user.type(input, '5');
+
+    const save = screen.getByRole('button', { name: 'surveyInsights.settings.save' });
+    await waitFor(() => expect(save).not.toBeDisabled());
+    await user.click(save);
+
+    await waitFor(() => expect(vi.mocked(api.updateInsightSettings)).toHaveBeenCalled());
+    const [, patch] = vi.mocked(api.updateInsightSettings).mock.calls[0];
+    // Only the changed key is sent — stream_response_threshold (the full-report
+    // trigger) is untouched even though both fields live in the same section.
+    expect(patch).toEqual({ response_tagging_batch_size: 5 });
+  });
+
+  it('rejects response_tagging_batch_size above 10', async () => {
+    const api = buildApi();
+    vi.mocked(useApi).mockReturnValue(api);
+    const user = userEvent.setup();
+    renderPage();
+
+    const input = await screen.findByLabelText('surveyInsights.settings.responseTaggingBatchSize');
+    await user.clear(input);
+    await user.type(input, '11');
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    const save = screen.getByRole('button', { name: 'surveyInsights.settings.save' });
+    expect(save).toBeDisabled();
+    expect(vi.mocked(api.updateInsightSettings)).not.toHaveBeenCalled();
+  });
+
+  it('admin can edit topic_discovery_candidate_threshold', async () => {
+    const api = buildApi();
+    vi.mocked(useApi).mockReturnValue(api);
+    const user = userEvent.setup();
+    renderPage();
+
+    const input = await screen.findByLabelText('surveyInsights.settings.topicDiscoveryCandidateThreshold');
+    expect(input).not.toBeDisabled();
+    await user.clear(input);
+    await user.type(input, '30');
+
+    const save = screen.getByRole('button', { name: 'surveyInsights.settings.save' });
+    await waitFor(() => expect(save).not.toBeDisabled());
+    await user.click(save);
+
+    await waitFor(() => expect(vi.mocked(api.updateInsightSettings)).toHaveBeenCalled());
+    const [, patch] = vi.mocked(api.updateInsightSettings).mock.calls[0];
+    expect(patch).toEqual({ topic_discovery_candidate_threshold: 30 });
+  });
+
+  it('rejects topic_discovery_candidate_threshold below 5', async () => {
+    const api = buildApi();
+    vi.mocked(useApi).mockReturnValue(api);
+    const user = userEvent.setup();
+    renderPage();
+
+    const input = await screen.findByLabelText('surveyInsights.settings.topicDiscoveryCandidateThreshold');
+    await user.clear(input);
+    await user.type(input, '4');
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    const save = screen.getByRole('button', { name: 'surveyInsights.settings.save' });
+    expect(save).toBeDisabled();
+    expect(vi.mocked(api.updateInsightSettings)).not.toHaveBeenCalled();
+  });
+
+  it('admin can edit topic_discovery_min_cluster_size independently', async () => {
+    const api = buildApi();
+    vi.mocked(useApi).mockReturnValue(api);
+    const user = userEvent.setup();
+    renderPage();
+
+    const input = await screen.findByLabelText('surveyInsights.settings.topicDiscoveryMinClusterSize');
+    expect(input).not.toBeDisabled();
+    await user.clear(input);
+    await user.type(input, '8');
+
+    const save = screen.getByRole('button', { name: 'surveyInsights.settings.save' });
+    await waitFor(() => expect(save).not.toBeDisabled());
+    await user.click(save);
+
+    await waitFor(() => expect(vi.mocked(api.updateInsightSettings)).toHaveBeenCalled());
+    const [, patch] = vi.mocked(api.updateInsightSettings).mock.calls[0];
+    expect(patch).toEqual({ topic_discovery_min_cluster_size: 8 });
+  });
+
+  it('rejects topic_discovery_min_cluster_size above 20', async () => {
+    const api = buildApi();
+    vi.mocked(useApi).mockReturnValue(api);
+    const user = userEvent.setup();
+    renderPage();
+
+    const input = await screen.findByLabelText('surveyInsights.settings.topicDiscoveryMinClusterSize');
+    await user.clear(input);
+    await user.type(input, '21');
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    const save = screen.getByRole('button', { name: 'surveyInsights.settings.save' });
+    expect(save).toBeDisabled();
+    expect(vi.mocked(api.updateInsightSettings)).not.toHaveBeenCalled();
   });
 
   it('shows a validation error and blocks save when a value is out of range', async () => {

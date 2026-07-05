@@ -98,6 +98,12 @@ describe('GET /api/insights/:surveyId/settings', () => {
     expect(body.effective.prior_checkpoint_lookback).toBe(8);
     // platform constant where neither layer set it
     expect(body.effective.refresh_lookback_days).toBe(30);
+    // response_tagging_batch_size platform default (independent of stream_response_threshold)
+    expect(body.effective.response_tagging_batch_size).toBe(1);
+    // topic_discovery_candidate_threshold platform default is env-tiered (AGENTS_ENV
+    // unset in tests -> dev tier -> 10), mirroring crystalos/lib/constants.py
+    expect(body.effective.topic_discovery_candidate_threshold).toBe(10);
+    expect(body.effective.topic_discovery_min_cluster_size).toBe(5);
     expect(body.survey_overrides.stream_response_threshold).toBe(25);
     expect(body.org_defaults.prior_checkpoint_lookback).toBe(8);
     expect(typeof body.config_hash).toBe('string');
@@ -194,6 +200,119 @@ describe('PATCH /api/insights/:surveyId/settings', () => {
     const { status } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', { bogus_key: 1 });
     expect(status).toBe(400);
   });
+
+  // ── response_tagging_batch_size (2026-07-04) ──────────────────────────────
+  it('admin can update response_tagging_batch_size', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.startsWith('INSERT INTO survey_insight_settings')) {
+        return { rows: [{ response_tagging_batch_size: 5, config_version: 2 }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      response_tagging_batch_size: 5,
+    });
+    expect(status).toBe(200);
+    expect(body.survey_overrides.response_tagging_batch_size).toBe(5);
+  });
+
+  it('rejects response_tagging_batch_size above 10 with 400', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      return { rows: [] };
+    });
+    const { status } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      response_tagging_batch_size: 11,
+    });
+    expect(status).toBe(400);
+  });
+
+  it('rejects response_tagging_batch_size below 1 with 400', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      return { rows: [] };
+    });
+    const { status } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      response_tagging_batch_size: 0,
+    });
+    expect(status).toBe(400);
+  });
+
+  // ── topic_discovery_candidate_threshold / topic_discovery_min_cluster_size (2026-07-06) ──
+  it('admin can update topic_discovery_candidate_threshold', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.startsWith('INSERT INTO survey_insight_settings')) {
+        return { rows: [{ topic_discovery_candidate_threshold: 30, config_version: 2 }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      topic_discovery_candidate_threshold: 30,
+    });
+    expect(status).toBe(200);
+    expect(body.survey_overrides.topic_discovery_candidate_threshold).toBe(30);
+  });
+
+  it('rejects topic_discovery_candidate_threshold below 5 with 400', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      return { rows: [] };
+    });
+    const { status } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      topic_discovery_candidate_threshold: 4,
+    });
+    expect(status).toBe(400);
+  });
+
+  it('rejects topic_discovery_candidate_threshold above 100 with 400', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      return { rows: [] };
+    });
+    const { status } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      topic_discovery_candidate_threshold: 101,
+    });
+    expect(status).toBe(400);
+  });
+
+  it('admin can update topic_discovery_min_cluster_size independently of candidate_threshold', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.startsWith('INSERT INTO survey_insight_settings')) {
+        return { rows: [{ topic_discovery_min_cluster_size: 8, config_version: 2 }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      topic_discovery_min_cluster_size: 8,
+    });
+    expect(status).toBe(200);
+    expect(body.survey_overrides.topic_discovery_min_cluster_size).toBe(8);
+  });
+
+  it('rejects topic_discovery_min_cluster_size below 2 with 400', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      return { rows: [] };
+    });
+    const { status } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      topic_discovery_min_cluster_size: 1,
+    });
+    expect(status).toBe(400);
+  });
+
+  it('rejects topic_discovery_min_cluster_size above 20 with 400', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      return { rows: [] };
+    });
+    const { status } = await api(buildApp(), 'PATCH', '/api/insights/s1/settings', {
+      topic_discovery_min_cluster_size: 21,
+    });
+    expect(status).toBe(400);
+  });
 });
 
 describe('org insight defaults', () => {
@@ -239,6 +358,69 @@ describe('org insight defaults', () => {
 
   it('PATCH rejects out-of-range default with 400', async () => {
     const { status } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', { stream_response_threshold: 1 });
+    expect(status).toBe(400);
+  });
+
+  it('PATCH as admin upserts org-level response_tagging_batch_size', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.startsWith('INSERT INTO org_insight_defaults')) {
+        return { rows: [{ response_tagging_batch_size: 8, updated_by: 'u1' }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', {
+      response_tagging_batch_size: 8,
+    });
+    expect(status).toBe(200);
+    expect(body.defaults.response_tagging_batch_size).toBe(8);
+  });
+
+  it('PATCH rejects out-of-range org-level response_tagging_batch_size with 400', async () => {
+    const { status } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', {
+      response_tagging_batch_size: 20,
+    });
+    expect(status).toBe(400);
+  });
+
+  it('PATCH as admin upserts org-level topic_discovery_candidate_threshold', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.startsWith('INSERT INTO org_insight_defaults')) {
+        return { rows: [{ topic_discovery_candidate_threshold: 40, updated_by: 'u1' }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', {
+      topic_discovery_candidate_threshold: 40,
+    });
+    expect(status).toBe(200);
+    expect(body.defaults.topic_discovery_candidate_threshold).toBe(40);
+  });
+
+  it('PATCH rejects out-of-range org-level topic_discovery_candidate_threshold with 400', async () => {
+    const { status } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', {
+      topic_discovery_candidate_threshold: 200,
+    });
+    expect(status).toBe(400);
+  });
+
+  it('PATCH as admin upserts org-level topic_discovery_min_cluster_size', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.startsWith('INSERT INTO org_insight_defaults')) {
+        return { rows: [{ topic_discovery_min_cluster_size: 10, updated_by: 'u1' }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', {
+      topic_discovery_min_cluster_size: 10,
+    });
+    expect(status).toBe(200);
+    expect(body.defaults.topic_discovery_min_cluster_size).toBe(10);
+  });
+
+  it('PATCH rejects out-of-range org-level topic_discovery_min_cluster_size with 400', async () => {
+    const { status } = await api(buildApp(), 'PATCH', '/api/orgs/o1/insight-defaults', {
+      topic_discovery_min_cluster_size: 1,
+    });
     expect(status).toBe(400);
   });
 

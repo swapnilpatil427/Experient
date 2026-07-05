@@ -271,6 +271,130 @@ class TestNoTextGuards:
         assert result.get("topics") == []
 
 
+# ── TestNodeClusterIncrementalDiscoverySettings ───────────────────────────────
+# Fixed 2026-07-06: node_cluster's incremental new-topic-discovery path used to
+# read a flat TOPIC_DISCOVERY_CANDIDATE_THRESHOLD constant and hardcode
+# min_cluster_size=2 / threshold=TOPIC_ASSIGNMENT_THRESHOLD (0.72) — same as
+# nearest-centroid assignment. Both are now resolved per survey/org (shared
+# resolvers with lib/response_tagging.py) and discovery uses a stricter,
+# dedicated similarity threshold + a higher minimum cluster size.
+
+class _StubCursor:
+    """Minimal async cursor — no real rows needed since every topic_registry
+    call in these tests is mocked directly; this only backs the raw
+    conn.cursor() fetch for centroid_counts (returns nothing) and the implicit
+    conn.commit() node_cluster calls directly (not through topic_registry)."""
+
+    async def execute(self, *a, **kw):
+        return None
+
+    async def fetchall(self):
+        return []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _StubConn:
+    def cursor(self):
+        return _StubCursor()
+
+    async def commit(self):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _stub_pool():
+    conn = _StubConn()
+    pool = MagicMock()
+    pool.connection = MagicMock(return_value=conn)
+    return pool
+
+
+class TestNodeClusterIncrementalDiscoverySettings:
+    def _incremental_state(self, **overrides):
+        emb = [0.9, 0.1]
+        state = _make_state(
+            is_bootstrap=False,
+            new_response_ids={"r1"},
+            open_texts=[{"text": "Delivery was late", "response_id": "r1", "question_id": "q1"}],
+            embedded_texts=[{"response_id": "r1", "question_id": "q1", "text": "Delivery was late", "embedding": emb}],
+            absa_results=[{"response_id": "r1", "question_id": "q1", "text": "Delivery was late",
+                            "aspect": "shipping", "sentiment": "negative", "score": -0.6, "emotion": "frustration"}],
+        )
+        state.update(overrides)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_resolves_candidate_threshold_per_survey_org_not_flat_constant(self):
+        state = self._incremental_state()
+
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.graphs.insights._emit_event", new=AsyncMock()),
+            patch("crystalos.graphs.insights.db._pool_conn", return_value=_stub_pool()),
+            patch("crystalos.graphs.insights.topic_registry.assign_batch_to_nearest",
+                  new=AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.graphs.insights.topic_registry.update_centroids_welford_batch", new=AsyncMock()),
+            patch("crystalos.graphs.insights.topic_registry.add_candidates_batch", new=AsyncMock()),
+            patch("crystalos.graphs.insights.topic_registry.get_candidate_count", new=AsyncMock(return_value=3)),
+            patch(
+                "crystalos.lib.insight_settings.resolve_topic_discovery_candidate_threshold",
+                new=AsyncMock(return_value=25),
+            ) as threshold_mock,
+            patch("crystalos.graphs.insights.topic_registry.flush_candidates", new=AsyncMock()) as flush_mock,
+        ):
+            await node_cluster(state)
+
+        threshold_mock.assert_awaited_once_with("s1", "org-1")
+        flush_mock.assert_not_called()  # candidate_count=3 < resolved threshold=25
+
+    @pytest.mark.asyncio
+    async def test_flush_uses_discovery_similarity_threshold_and_resolved_min_cluster_size(self):
+        from crystalos.lib.constants import TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
+
+        state = self._incremental_state()
+
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.graphs.insights._emit_event", new=AsyncMock()),
+            patch("crystalos.graphs.insights.db._pool_conn", return_value=_stub_pool()),
+            patch("crystalos.graphs.insights.topic_registry.assign_batch_to_nearest",
+                  new=AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.graphs.insights.topic_registry.update_centroids_welford_batch", new=AsyncMock()),
+            patch("crystalos.graphs.insights.topic_registry.add_candidates_batch", new=AsyncMock()),
+            patch("crystalos.graphs.insights.topic_registry.get_candidate_count", new=AsyncMock(return_value=25)),
+            patch(
+                "crystalos.lib.insight_settings.resolve_topic_discovery_candidate_threshold",
+                new=AsyncMock(return_value=25),
+            ),
+            patch(
+                "crystalos.lib.insight_settings.resolve_topic_discovery_min_cluster_size",
+                new=AsyncMock(return_value=7),
+            ) as min_cluster_mock,
+            patch("crystalos.graphs.insights.topic_registry.flush_candidates", new=AsyncMock(return_value=[
+                {"response_id": "r1", "embedding": [0.9, 0.1]},
+            ])),
+            patch("crystalos.graphs.insights.cluster_texts", MagicMock(return_value=[])) as cluster_mock,
+        ):
+            await node_cluster(state)
+
+        min_cluster_mock.assert_awaited_once_with("s1", "org-1")
+        cluster_mock.assert_called_once()
+        _, kwargs = cluster_mock.call_args
+        assert kwargs["threshold"] == TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
+        assert kwargs["threshold"] != 0.72
+        assert kwargs["min_cluster_size"] == 7
+
+
 # ── TestHeartbeat ─────────────────────────────────────────────────────────────
 
 class TestHeartbeat:

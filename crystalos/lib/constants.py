@@ -111,6 +111,49 @@ MANUAL_REFRESH_MAX_DAILY = 3               # max manual refreshes per survey per
 DEFAULT_PRIOR_CHECKPOINT_LOOKBACK:        int = int(os.getenv("DEFAULT_PRIOR_CHECKPOINT_LOOKBACK",        "5"))
 DEFAULT_PRIOR_CHECKPOINT_MAX_AGE_DAYS:    int = int(os.getenv("DEFAULT_PRIOR_CHECKPOINT_MAX_AGE_DAYS",    "90"))
 DEFAULT_STREAM_THRESHOLD:                 int = int(os.getenv("DEFAULT_STREAM_THRESHOLD",                 "100"))
+# response_tagging_batch_size (04 §14 extension, added 2026-07-04) — how many new
+# response-stream events accumulate before the streaming consumer runs a lightweight
+# sentiment/emotion/effort/topic tagging sweep (see lib/response_tagging.py). Separate
+# from DEFAULT_STREAM_THRESHOLD, which still gates full report+checkpoint generation.
+DEFAULT_RESPONSE_TAGGING_BATCH_SIZE:      int = int(os.getenv("DEFAULT_RESPONSE_TAGGING_BATCH_SIZE",      "1"))
+# Safety ceiling on how many untagged responses a single tagging sweep call processes,
+# independent of response_tagging_batch_size (which only controls trigger cadence).
+# Keeps a large backlog sweep (scheduler catch-up, or a survey that's been silent for a
+# while) from doing unbounded work in one call — mirrors INGEST_NEW_RESPONSE_ABSA_CAP.
+RESPONSE_TAGGING_SWEEP_CAP:               int = int(os.getenv("RESPONSE_TAGGING_SWEEP_CAP",               "50"))
+# Candidate-buffer floor before a new topic gets clustered + LLM-named (was an
+# adaptive max(5, 3% of total responses) formula inline in node_cluster; simplified to
+# one flat number shared by node_cluster AND lib/response_tagging.py's lightweight
+# sweep, 2026-07-04 — clustering validity doesn't scale with survey size, so going
+# flat WRT survey size was correct. But this is still a cost/latency knob (how often
+# we pay for an LLM topic-naming call) like every sibling in the ingest section above,
+# so — fixed same day — it's env-tiered like they are, AND resolvable per survey/org
+# as a real setting (see lib/insight_settings.py::resolve_topic_discovery_candidate_
+# threshold); this constant is now only the platform-default floor of that resolution.
+if _ENV == "prod":
+    _TOPIC_DISCOVERY_CANDIDATE_DEFAULT = "30"   # matches the codebase's own n>=30 "reliable" bar
+elif _ENV == "staging":
+    _TOPIC_DISCOVERY_CANDIDATE_DEFAULT = "20"
+elif _ENV == "dev-paid":
+    _TOPIC_DISCOVERY_CANDIDATE_DEFAULT = "15"
+else:                                            # dev / local / test
+    _TOPIC_DISCOVERY_CANDIDATE_DEFAULT = "10"
+
+TOPIC_DISCOVERY_CANDIDATE_THRESHOLD:      int = int(os.getenv("TOPIC_DISCOVERY_CANDIDATE_THRESHOLD",      _TOPIC_DISCOVERY_CANDIDATE_DEFAULT))
+# Minimum size a candidate cluster must reach before it's promoted to a real,
+# permanently-stored, LLM-named topic — separate from the buffer-count floor above,
+# which only gates WHEN clustering runs, not how big the resulting cluster has to be.
+# Added 2026-07-04: a flush of 25+ candidates can fragment into several 2-item
+# clusters via cluster_texts's own min_cluster_size=2 default, and each one used to
+# get promoted regardless — below even this codebase's own "low confidence" floor
+# (n<10) elsewhere. Flat across all envs (a statistical validity floor, not a
+# cost/latency knob — unlike the candidate threshold above, there's no reason a
+# 2-item "topic" is more acceptable in dev than in prod). Also resolvable per
+# survey/org as a real setting — see resolve_topic_discovery_min_cluster_size.
+# Applies ONLY to incremental (post-bootstrap) discovery; bootstrap's exploratory
+# first pass keeps cluster_texts's default of 2 — there's no established topic set
+# to protect yet on a survey's very first run.
+DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE: int = int(os.getenv("DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE", "5"))
 DEFAULT_REPORT_REGEN_THRESHOLD:           int = int(os.getenv("DEFAULT_REPORT_REGEN_THRESHOLD",           "25"))
 DEFAULT_FULL_CHECKPOINT_THRESHOLD:        int = int(os.getenv("DEFAULT_FULL_CHECKPOINT_THRESHOLD",        "200"))
 DEFAULT_MEANINGFUL_DELTA_NPS_POINTS:    float = float(os.getenv("DEFAULT_MEANINGFUL_DELTA_NPS_POINTS",    "2.0"))
@@ -158,7 +201,18 @@ INSIGHT_PROFILES: frozenset[str] = frozenset({
 })
 
 # ── Topic clustering ──────────────────────────────────────────────────────────
+# Nearest-centroid ASSIGNMENT (matching a response to an EXISTING topic) compares
+# a raw embedding against a Welford running-mean centroid averaged over many prior
+# examples — low noise, and cheap to get wrong (just nudges an already-vetted
+# topic's centroid). New-topic DISCOVERY (forming a brand-new cluster from raw
+# individual embeddings) is noisier and expensive to get wrong — it mints a
+# permanent, LLM-named, customer-visible topic. These used to share one threshold
+# (both 0.72, by coincidence of one constant's value); split 2026-07-04 so
+# discovery can be more conservative than assignment, matching each operation's
+# actual error cost.
 TOPIC_ASSIGNMENT_THRESHOLD = 0.72          # cosine similarity threshold for topic assignment
+TOPIC_DISCOVERY_SIMILARITY_THRESHOLD = 0.80  # incremental (post-bootstrap) new-cluster formation only;
+                                              # bootstrap's exploratory first pass stays on TOPIC_ASSIGNMENT_THRESHOLD
 WINDOW_MIN_RESPONSES = {                   # min responses needed per window
     "all_time": 1,
     "last_30d": 10,

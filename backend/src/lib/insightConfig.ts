@@ -23,6 +23,24 @@ const envInt = (key: string, fallback: number): number => {
 };
 
 /**
+ * Same env-tiered ladder as crystalos/lib/constants.py::TOPIC_DISCOVERY_CANDIDATE_THRESHOLD
+ * (dev 10 / dev-paid 15 / staging 20 / prod 30), read from the same AGENTS_ENV var both
+ * services share (backend/src/index.ts already logs it at startup). Mirrored here so the
+ * "effective" value this backend shows in Settings UI matches what CrystalOS's resolver
+ * actually falls back to when neither survey nor org has configured this setting —
+ * without this, the UI would show a flat number that disagrees with the pipeline's
+ * real per-environment platform default.
+ */
+const topicDiscoveryCandidateThresholdDefault = (): number => {
+  switch (process.env.AGENTS_ENV) {
+    case 'prod':     return 30;
+    case 'staging':  return 20;
+    case 'dev-paid': return 15;
+    default:         return 10; // dev / local / unset
+  }
+};
+
+/**
  * Platform default constants for every insight setting. NULL at both the survey and
  * org layer falls through to these values. Keys here ARE the canonical setting keys
  * accepted by the PATCH endpoints (see schemas/insightSettings.ts).
@@ -32,6 +50,9 @@ export const INSIGHT_SETTING_DEFAULTS = {
   automated_insights_enabled:           true,
   automated_report_generation_enabled:  true,
   stream_response_threshold:            100,
+  response_tagging_batch_size:          1,
+  topic_discovery_candidate_threshold:  topicDiscoveryCandidateThresholdDefault(),
+  topic_discovery_min_cluster_size:     5,
   report_regen_threshold:               25,
   prior_checkpoint_lookback:            5,
   prior_checkpoint_max_age_days:        90,

@@ -188,13 +188,27 @@ unsigned only when neither is set.
 `DEFAULT_FULL_CHECKPOINT_THRESHOLD`, `DEFAULT_MEANINGFUL_DELTA_NPS_POINTS`, `DEFAULT_MEANINGFUL_DELTA_TOPIC_PCT`,
 `DEFAULT_MANUAL_EXPERT_SNAPSHOTS`, `DEFAULT_MANUAL_QUICK_SAMPLE`, `DEFAULT_MANUAL_QUICK_SNAPSHOTS`,
 `DEFAULT_MANUAL_QUICK_WINDOW_DAYS`, `DEFAULT_MANUAL_EXPERT_CHECKPOINT_LOOKBACK`, `DEFAULT_MANUAL_EXPERT_MAX_CORPUS`,
-`DEFAULT_MANUAL_EXPERT_FULL_CORPUS_CAP`, `DEFAULT_REFRESH_LOOKBACK_DAYS`, `DEFAULT_REFRESH_MIN_RESPONSE_COUNT`
+`DEFAULT_MANUAL_EXPERT_FULL_CORPUS_CAP`, `DEFAULT_REFRESH_LOOKBACK_DAYS`, `DEFAULT_REFRESH_MIN_RESPONSE_COUNT`,
+`DEFAULT_RESPONSE_TAGGING_BATCH_SIZE` (default `1` — how many new-response stream events accumulate before
+`consumers/response_stream.py` runs a lightweight sentiment/emotion/effort/topic tagging sweep,
+`lib/response_tagging.py::tag_untagged_responses`; independent of `DEFAULT_STREAM_THRESHOLD`, which still gates
+full report+checkpoint generation), `RESPONSE_TAGGING_SWEEP_CAP` (default `50` — safety ceiling on how many
+untagged responses a single tagging sweep call processes, independent of the batch-size trigger cadence above),
+`TOPIC_DISCOVERY_CANDIDATE_THRESHOLD` (default `25` — flat candidate-buffer floor before a new topic gets
+clustered + LLM-named; shared by `node_cluster` AND `lib/response_tagging.py::tag_untagged_responses` so both
+"enough evidence for a new topic" checks agree)
 (platform-constant fallbacks for the survey/org settings COALESCE merge), and `INSIGHT_CHECKPOINTS_V2_ENABLED`
 (default `true` — dual-write `insight_checkpoints_v2` alongside the legacy `survey_insight_checkpoints` table during migration).
+An explicit `INSIGHT_RESPONSE_TAGGING_BATCH_SIZE` env var (ops escape hatch, mirrors the existing but
+undocumented `INSIGHT_NEW_RESPONSE_THRESHOLD`) overrides `resolve_response_tagging_batch_size`'s survey/org/
+platform resolution outright.
 Insight Pipeline v2 (Phase 6/7): `CREDIT_COST_CUSTOM_BASE` (default `25` — base credit cost for a Custom Analysis run),
 `ENABLE_RETENTION_JOB` (default `false` — gate the nightly automated-checkpoint retention/compaction job in `scheduler.py`;
 dev no-op unless set to `true`), `RETENTION_BLOB_DROP_DAYS` (default `30` — grace days before a collapsed low-delta
-automated checkpoint's `report_blob_ref` is dropped).
+automated checkpoint's `report_blob_ref` is dropped), `ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP` (default `true` —
+gate the 15-min `run_response_tagging_backlog_sweep` job that catches untagged responses on surveys not
+currently receiving live stream traffic, or whose tagging previously failed), `RESPONSE_TAGGING_BACKLOG_MAX_SURVEYS_PER_TICK`
+(default `20` — cap on distinct surveys swept per tick).
 Tag Report (`crystalos/graphs/tag_report.py`, added 2026-07-02): `TAG_REPORT_DEFAULT_TARGET_N` (default `5` —
 survey-selection target before an org/tag override applies), `TAG_REPORT_CEILING_N` (default `20` — hard cap on
 surveys scanned regardless of overrides), `TAG_REPORT_BATCH_SIZE` (default `3` — surveys fetched per

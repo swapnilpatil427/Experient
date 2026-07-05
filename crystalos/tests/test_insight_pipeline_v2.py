@@ -337,6 +337,138 @@ class TestResolveStreamResponseThreshold:
         assert capsys.readouterr().out == ""
 
 
+class TestResolveTopicDiscoveryCandidateThreshold:
+    """resolve_topic_discovery_candidate_threshold — added 2026-07-06 so the
+    candidate-buffer floor before a new topic gets clustered+named is a real
+    per-survey/org-configurable setting instead of a flat platform constant.
+    Same precedence shape as resolve_stream_response_threshold: explicit
+    INSIGHT_TOPIC_DISCOVERY_CANDIDATE_THRESHOLD env override > survey row > org
+    row (non-null) > platform constant (env-tiered — see lib/constants.py)."""
+
+    def setup_method(self):
+        import os
+        self._env_backup = dict(os.environ)
+        os.environ.pop("INSIGHT_TOPIC_DISCOVERY_CANDIDATE_THRESHOLD", None)
+
+    def teardown_method(self):
+        import os
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+
+    @pytest.mark.asyncio
+    async def test_survey_row_wins(self):
+        async def fake_fetch(table, key_col, key_val):
+            if table == "survey_insight_settings":
+                return {"survey_id": "s1", "topic_discovery_candidate_threshold": 42}
+            return {"org_id": "org-1", "topic_discovery_candidate_threshold": 20}
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(side_effect=fake_fetch)):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_candidate_threshold
+            assert await resolve_topic_discovery_candidate_threshold("s1", "org-1") == 42
+
+    @pytest.mark.asyncio
+    async def test_org_row_wins_when_no_survey_row(self):
+        async def fake_fetch(table, key_col, key_val):
+            if table == "survey_insight_settings":
+                return None
+            return {"org_id": "org-1", "topic_discovery_candidate_threshold": 20}
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(side_effect=fake_fetch)):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_candidate_threshold
+            assert await resolve_topic_discovery_candidate_threshold("s1", "org-1") == 20
+
+    @pytest.mark.asyncio
+    async def test_org_row_with_null_falls_through_to_platform_default(self):
+        from crystalos.lib import constants as C
+        async def fake_fetch(table, key_col, key_val):
+            if table == "survey_insight_settings":
+                return None
+            return {"org_id": "org-1", "topic_discovery_candidate_threshold": None}
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(side_effect=fake_fetch)):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_candidate_threshold
+            assert await resolve_topic_discovery_candidate_threshold("s1", "org-1") == C.TOPIC_DISCOVERY_CANDIDATE_THRESHOLD
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_platform_default_when_neither_row_exists(self):
+        from crystalos.lib import constants as C
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(return_value=None)):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_candidate_threshold
+            assert await resolve_topic_discovery_candidate_threshold("s1", "org-1") == C.TOPIC_DISCOVERY_CANDIDATE_THRESHOLD
+
+    @pytest.mark.asyncio
+    async def test_env_override_wins_outright(self):
+        import os
+        os.environ["INSIGHT_TOPIC_DISCOVERY_CANDIDATE_THRESHOLD"] = "3"
+        fetch_mock = AsyncMock(return_value={"topic_discovery_candidate_threshold": 42})
+        with patch("crystalos.lib.insight_settings._fetch_row", new=fetch_mock):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_candidate_threshold
+            assert await resolve_topic_discovery_candidate_threshold("s1", "org-1") == 3
+        fetch_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_logs_fallback_to_console_in_dev(self, capsys):
+        import os
+        os.environ["AGENTS_ENV"] = "dev"
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(return_value=None)):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_candidate_threshold
+            await resolve_topic_discovery_candidate_threshold("s1", "org-1")
+        out = capsys.readouterr().out
+        assert "topic_discovery_candidate_threshold" in out
+        assert "s1" in out and "org-1" in out
+
+
+class TestResolveTopicDiscoveryMinClusterSize:
+    """resolve_topic_discovery_min_cluster_size — added 2026-07-06. Minimum size
+    a candidate cluster must reach before being promoted to a permanent topic —
+    separate resolver from the candidate-threshold one above, which only gates
+    WHEN clustering runs. Same precedence shape."""
+
+    def setup_method(self):
+        import os
+        self._env_backup = dict(os.environ)
+        os.environ.pop("INSIGHT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE", None)
+
+    def teardown_method(self):
+        import os
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+
+    @pytest.mark.asyncio
+    async def test_survey_row_wins(self):
+        async def fake_fetch(table, key_col, key_val):
+            if table == "survey_insight_settings":
+                return {"survey_id": "s1", "topic_discovery_min_cluster_size": 8}
+            return {"org_id": "org-1", "topic_discovery_min_cluster_size": 4}
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(side_effect=fake_fetch)):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_min_cluster_size
+            assert await resolve_topic_discovery_min_cluster_size("s1", "org-1") == 8
+
+    @pytest.mark.asyncio
+    async def test_org_row_wins_when_no_survey_row(self):
+        async def fake_fetch(table, key_col, key_val):
+            if table == "survey_insight_settings":
+                return None
+            return {"org_id": "org-1", "topic_discovery_min_cluster_size": 4}
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(side_effect=fake_fetch)):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_min_cluster_size
+            assert await resolve_topic_discovery_min_cluster_size("s1", "org-1") == 4
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_platform_default_when_neither_row_exists(self):
+        from crystalos.lib import constants as C
+        with patch("crystalos.lib.insight_settings._fetch_row", new=AsyncMock(return_value=None)):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_min_cluster_size
+            assert await resolve_topic_discovery_min_cluster_size("s1", "org-1") == C.DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE
+
+    @pytest.mark.asyncio
+    async def test_env_override_wins_outright(self):
+        import os
+        os.environ["INSIGHT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE"] = "9"
+        fetch_mock = AsyncMock(return_value={"topic_discovery_min_cluster_size": 4})
+        with patch("crystalos.lib.insight_settings._fetch_row", new=fetch_mock):
+            from crystalos.lib.insight_settings import resolve_topic_discovery_min_cluster_size
+            assert await resolve_topic_discovery_min_cluster_size("s1", "org-1") == 9
+        fetch_mock.assert_not_awaited()
+
+
 class TestCreditPreflight:
     def test_resolve_cost_from_settings(self):
         from crystalos.lib.insight_settings import resolve_credit_cost

@@ -77,6 +77,7 @@ from crystalos.lib.constants import (
     INSIGHT_CHECKPOINTS_V2_ENABLED,
     INSIGHT_PROFILE_AUTOMATED, INSIGHT_PROFILE_REFRESH,
     INSIGHT_PROFILE_MANUAL_EXPERT, INSIGHT_PROFILE_MANUAL_QUICK,
+    TOPIC_DISCOVERY_SIMILARITY_THRESHOLD,
 )
 
 
@@ -2127,6 +2128,21 @@ async def node_cluster(state: dict) -> dict:
     topic_assignments: dict[str, list[dict]] = {}  # topic_name → absa items
 
     try:
+        # Resolved BEFORE acquiring the connection below, not while holding it — each
+        # resolver opens its OWN connection internally (lib/insight_settings.py::
+        # _fetch_row), and doing that while already inside `async with
+        # db._pool_conn().connection()` doubles concurrent connection demand from this
+        # node alone. Harmless at low volume, but under real batch load (fixed
+        # 2026-07-06) it can exhaust the pool and cause a silent timeout that this
+        # node's own except-everything wrapper then swallows, falling back to
+        # bootstrap-style reclustering — i.e. topic tagging looking like it's simply
+        # not running.
+        from crystalos.lib.insight_settings import (
+            resolve_topic_discovery_candidate_threshold, resolve_topic_discovery_min_cluster_size,
+        )
+        flush_threshold = await resolve_topic_discovery_candidate_threshold(survey_id, org_id)
+        min_cluster_size = await resolve_topic_discovery_min_cluster_size(survey_id, org_id)
+
         async with db._pool_conn().connection() as conn:
             embeddings_by_rid: dict[str, list[float]] = {}
             for item in new_absa:
@@ -2158,9 +2174,10 @@ async def node_cluster(state: dict) -> dict:
             ]
             await topic_registry.add_candidates_batch(survey_id, org_id, cand_pairs, conn)
 
-            # Adaptive flush threshold: at least 5, or 3% of total survey responses
-            total_responses = len(state.get("responses", []))
-            flush_threshold = max(5, int(total_responses * 0.03))
+            # Candidate-buffer floor before a new topic gets clustered + named —
+            # resolved per survey/org/platform above (fixed 2026-07-06; was a flat
+            # constant), shared with lib/response_tagging.py's lightweight sweep so
+            # both "when is there enough evidence for a new topic" checks agree.
             candidate_count = await topic_registry.get_candidate_count(survey_id, conn)
 
             new_topic_clusters: list[dict] = []
@@ -2181,7 +2198,10 @@ async def node_cluster(state: dict) -> dict:
                         for a in absa_by_rid.get(rid, []):
                             cand_texts.append({**a, "embedding": emb})
                     if cand_texts:
-                        raw_new = cluster_texts(cand_texts, threshold=TOPIC_ASSIGNMENT_THRESHOLD, min_cluster_size=2)
+                        raw_new = cluster_texts(
+                            cand_texts, threshold=TOPIC_DISCOVERY_SIMILARITY_THRESHOLD,
+                            min_cluster_size=min_cluster_size,
+                        )
                         for i, raw in enumerate(raw_new):
                             new_topic_clusters.append(_make_cluster_from_items(
                                 len(topic_assignments) + i + 1,

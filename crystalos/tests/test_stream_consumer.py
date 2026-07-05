@@ -29,6 +29,11 @@ def _reset_batches():
     return defaultdict(lambda: {"org_id": "", "count": 0, "last_trigger": None})
 
 
+def _reset_tagging_batches():
+    """Return a fresh defaultdict matching the shape used by _tagging_batches."""
+    return defaultdict(lambda: {"org_id": "", "count": 0})
+
+
 # ---------------------------------------------------------------------------
 # TIME_THRESHOLD_MINUTES defaults by AGENTS_ENV (module-load-time computation)
 # ---------------------------------------------------------------------------
@@ -165,6 +170,251 @@ class TestShouldTriggerCountThreshold:
 
 
 # ---------------------------------------------------------------------------
+# _should_trigger_tagging — the response-tagging batch-size gate (2026-07-04)
+# ---------------------------------------------------------------------------
+
+class TestShouldTriggerTagging:
+    """response_tagging_batch_size gates a SEPARATE, much lighter-weight sweep
+    (lib.response_tagging.tag_untagged_responses) from the full-report threshold
+    above. Purely count-based — no time fallback, unlike _should_trigger."""
+
+    def setup_method(self):
+        self._patcher = patch(
+            "crystalos.lib.insight_settings.resolve_response_tagging_batch_size",
+            new=AsyncMock(return_value=3),
+        )
+        self._patcher.start()
+
+    def teardown_method(self):
+        self._patcher.stop()
+
+    @pytest.mark.asyncio
+    async def test_triggers_at_batch_size(self):
+        from crystalos.consumers import response_stream as rs
+
+        original = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
+        try:
+            rs._tagging_batches["survey-1"]["count"] = 3
+            assert await rs._should_trigger_tagging("survey-1") is True
+        finally:
+            rs._tagging_batches = original
+
+    @pytest.mark.asyncio
+    async def test_does_not_trigger_below_batch_size(self):
+        from crystalos.consumers import response_stream as rs
+
+        original = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
+        try:
+            rs._tagging_batches["survey-1"]["count"] = 2
+            assert await rs._should_trigger_tagging("survey-1") is False
+        finally:
+            rs._tagging_batches = original
+
+    @pytest.mark.asyncio
+    async def test_default_batch_size_of_one_triggers_on_first_event(self):
+        """The whole point of the default: every single response gets tagged
+        immediately, not batched."""
+        from crystalos.consumers import response_stream as rs
+        from crystalos.lib import insight_settings
+
+        with patch.object(insight_settings, "resolve_response_tagging_batch_size", new=AsyncMock(return_value=1)):
+            original = rs._tagging_batches
+            rs._tagging_batches = _reset_tagging_batches()
+            try:
+                rs._tagging_batches["survey-1"]["count"] = 1
+                assert await rs._should_trigger_tagging("survey-1") is True
+            finally:
+                rs._tagging_batches = original
+
+    @pytest.mark.asyncio
+    async def test_resolves_batch_size_using_the_tagging_batch_org_id(self):
+        from crystalos.consumers import response_stream as rs
+        from crystalos.lib import insight_settings
+
+        original = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
+        try:
+            rs._tagging_batches["survey-9"]["org_id"] = "org-42"
+            rs._tagging_batches["survey-9"]["count"] = 1
+            await rs._should_trigger_tagging("survey-9")
+            insight_settings.resolve_response_tagging_batch_size.assert_awaited_with("survey-9", "org-42")
+        finally:
+            rs._tagging_batches = original
+
+
+# ---------------------------------------------------------------------------
+# _run_tagging_sweep — counter bookkeeping around tag_untagged_responses
+# ---------------------------------------------------------------------------
+
+class TestRunTaggingSweep:
+    @pytest.mark.asyncio
+    async def test_subtracts_only_the_triggering_count_and_clears_pending(self):
+        from crystalos.consumers import response_stream as rs
+
+        original = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
+        rs._pending_tagging.add("survey-1")
+        try:
+            rs._tagging_batches["survey-1"]["count"] = 3
+            tag_mock = AsyncMock(return_value={"tagged": 3})
+            with patch("crystalos.lib.response_tagging.tag_untagged_responses", tag_mock):
+                # Simulate a new event arriving mid-sweep (after the count was
+                # captured but before tag_untagged_responses resolves) by bumping
+                # the counter inside the mock itself.
+                async def _side_effect(survey_id, org_id):
+                    rs._tagging_batches[survey_id]["count"] += 1
+                    return {"tagged": 3}
+                tag_mock.side_effect = _side_effect
+
+                await rs._run_tagging_sweep("survey-1", "org-1")
+
+            tag_mock.assert_awaited_once_with("survey-1", "org-1")
+            # 3 (triggering) + 1 (mid-flight) - 3 (subtracted) = 1 remaining
+            assert rs._tagging_batches["survey-1"]["count"] == 1
+            assert "survey-1" not in rs._pending_tagging
+        finally:
+            rs._tagging_batches = original
+            rs._pending_tagging.discard("survey-1")
+
+    @pytest.mark.asyncio
+    async def test_never_raises_even_if_tag_untagged_responses_errors(self):
+        """tag_untagged_responses already catches everything internally, but this
+        wrapper must never propagate even an unexpected exception — a stream
+        consumer task crashing would silently stop future tagging for that
+        survey."""
+        from crystalos.consumers import response_stream as rs
+
+        original = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
+        rs._pending_tagging.add("survey-1")
+        try:
+            rs._tagging_batches["survey-1"]["count"] = 1
+            with patch(
+                "crystalos.lib.response_tagging.tag_untagged_responses",
+                new=AsyncMock(side_effect=RuntimeError("unexpected")),
+            ):
+                await rs._run_tagging_sweep("survey-1", "org-1")  # must not raise
+            assert "survey-1" not in rs._pending_tagging
+        finally:
+            rs._tagging_batches = original
+            rs._pending_tagging.discard("survey-1")
+
+    @pytest.mark.asyncio
+    async def test_never_raises_and_clears_pending_even_if_the_import_itself_fails(self):
+        """Regression test for the exact bug fixed 2026-07-06: the import of
+        tag_untagged_responses used to sit BEFORE the try block. If the import
+        itself ever failed, the finally never ran, and _pending_tagging never
+        got cleared — the survey would be silently, permanently skipped by
+        every future response event with no error ever surfacing. Simulated
+        here by forcing the import machinery to raise ImportError."""
+        import sys
+        from crystalos.consumers import response_stream as rs
+
+        original = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
+        rs._pending_tagging.add("survey-1")
+        try:
+            rs._tagging_batches["survey-1"]["count"] = 1
+            with patch.dict(sys.modules, {"crystalos.lib.response_tagging": None}):
+                await rs._run_tagging_sweep("survey-1", "org-1")  # must not raise
+            assert "survey-1" not in rs._pending_tagging
+            assert rs._tagging_batches["survey-1"]["count"] == 0
+        finally:
+            rs._tagging_batches = original
+            rs._pending_tagging.discard("survey-1")
+
+
+# ---------------------------------------------------------------------------
+# Tagging sweep wired into the main consumer loop (Phase 2a)
+# ---------------------------------------------------------------------------
+
+class TestTaggingSweepConsumerLoopIntegration:
+    @pytest.mark.asyncio
+    async def test_tagging_counter_increments_alongside_report_counter(self):
+        from crystalos.consumers import response_stream as rs
+
+        original_batches = rs._batches
+        rs._batches = _reset_batches()
+        original_tagging_batches = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
+
+        events = [
+            {"survey_id": "s1", "org_id": "org1", "response_id": "r1"},
+            {"survey_id": "s1", "org_id": "org1", "response_id": "r2"},
+        ]
+
+        async def fake_consume(**kwargs):
+            yield events
+            return
+
+        with (
+            patch("crystalos.consumers.response_stream.consume_events", fake_consume),
+            patch("crystalos.consumers.response_stream._should_trigger", new=AsyncMock(return_value=False)),
+            patch("crystalos.consumers.response_stream._should_trigger_tagging", new=AsyncMock(return_value=False)),
+            patch("crystalos.consumers.response_stream._get_total_response_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.consumers.response_stream.should_trigger_progressive_tier", new=AsyncMock(return_value=None)),
+        ):
+            try:
+                await asyncio.wait_for(rs.run_response_stream_consumer(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+
+        try:
+            assert rs._batches["s1"]["count"] == 2
+            assert rs._tagging_batches["s1"]["count"] == 2
+            assert rs._tagging_batches["s1"]["org_id"] == "org1"
+        finally:
+            rs._batches = original_batches
+            rs._tagging_batches = original_tagging_batches
+
+    @pytest.mark.asyncio
+    async def test_tagging_sweep_fires_independently_of_report_trigger(self):
+        """The core design point: a tagging sweep must fire even when the full
+        report/checkpoint trigger does NOT (default batch size 1 vs. report
+        threshold 100 — these are never coupled)."""
+        from crystalos.consumers import response_stream as rs
+
+        original_batches = rs._batches
+        rs._batches = _reset_batches()
+        original_tagging_batches = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
+
+        event = {"survey_id": "s1", "org_id": "org1", "response_id": "r1"}
+
+        async def fake_consume(**kwargs):
+            yield [event]
+            return
+
+        sweep_called_for: list[tuple] = []
+
+        async def fake_sweep(survey_id: str, org_id: str) -> None:
+            sweep_called_for.append((survey_id, org_id))
+
+        with (
+            patch("crystalos.consumers.response_stream.consume_events", fake_consume),
+            patch("crystalos.consumers.response_stream._should_trigger", new=AsyncMock(return_value=False)),
+            patch("crystalos.consumers.response_stream._should_trigger_tagging", new=AsyncMock(return_value=True)),
+            patch("crystalos.consumers.response_stream._run_tagging_sweep", fake_sweep),
+            patch("crystalos.consumers.response_stream._get_total_response_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.consumers.response_stream.should_trigger_progressive_tier", new=AsyncMock(return_value=None)),
+        ):
+            try:
+                await asyncio.wait_for(rs.run_response_stream_consumer(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+
+        try:
+            await asyncio.sleep(0)
+            assert ("s1", "org1") in sweep_called_for
+        finally:
+            rs._batches = original_batches
+            rs._tagging_batches = original_tagging_batches
+            rs._pending_tagging.discard("s1")
+
+
+# ---------------------------------------------------------------------------
 # _should_trigger — time threshold
 # ---------------------------------------------------------------------------
 
@@ -260,6 +510,8 @@ class TestBatchAccumulation:
 
         original_batches = rs._batches
         rs._batches = _reset_batches()
+        original_tagging_batches = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
 
         events = [
             {"survey_id": "s1", "org_id": "org1", "response_id": "r1"},
@@ -275,9 +527,13 @@ class TestBatchAccumulation:
         async def fake_should_trigger(survey_id):
             return False
 
+        async def fake_should_trigger_tagging(survey_id):
+            return False
+
         with (
             patch("crystalos.consumers.response_stream.consume_events", fake_consume),
             patch("crystalos.consumers.response_stream._should_trigger", fake_should_trigger),
+            patch("crystalos.consumers.response_stream._should_trigger_tagging", fake_should_trigger_tagging),
             patch("crystalos.consumers.response_stream._get_total_response_count", new=AsyncMock(return_value=0)),
             patch("crystalos.consumers.response_stream.should_trigger_progressive_tier", new=AsyncMock(return_value=None)),
         ):
@@ -297,6 +553,7 @@ class TestBatchAccumulation:
             assert rs._batches["s2"]["org_id"] == "org2"
         finally:
             rs._batches = original_batches
+            rs._tagging_batches = original_tagging_batches
 
     @pytest.mark.asyncio
     async def test_trigger_called_when_threshold_reached(self):
@@ -304,6 +561,8 @@ class TestBatchAccumulation:
 
         original_batches = rs._batches
         rs._batches = _reset_batches()
+        original_tagging_batches = rs._tagging_batches
+        rs._tagging_batches = _reset_tagging_batches()
 
         # Pre-load a batch at threshold - 1
         rs._batches["s1"]["org_id"] = "org1"
@@ -321,9 +580,13 @@ class TestBatchAccumulation:
         async def fake_trigger(survey_id: str, org_id: str) -> None:
             trigger_called_for.append((survey_id, org_id))
 
+        async def fake_should_trigger_tagging(survey_id):
+            return False
+
         with (
             patch("crystalos.consumers.response_stream.consume_events", fake_consume),
             patch("crystalos.consumers.response_stream._trigger_insights", fake_trigger),
+            patch("crystalos.consumers.response_stream._should_trigger_tagging", fake_should_trigger_tagging),
             patch("crystalos.consumers.response_stream._get_survey_status", new=AsyncMock(return_value="active")),
             patch("crystalos.consumers.response_stream._get_total_response_count", new=AsyncMock(return_value=10)),
             patch("crystalos.consumers.response_stream.should_trigger_progressive_tier", new=AsyncMock(return_value=None)),
@@ -344,6 +607,7 @@ class TestBatchAccumulation:
             assert ("s1", "org1") in trigger_called_for
         finally:
             rs._batches = original_batches
+            rs._tagging_batches = original_tagging_batches
 
 
 # ---------------------------------------------------------------------------

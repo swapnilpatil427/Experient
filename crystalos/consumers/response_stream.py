@@ -2,23 +2,34 @@
 and triggers incremental insight generation when a threshold is met.
 
 Thresholds:
-  NEW_RESPONSE_THRESHOLD (per survey/org, resolved per event) — trigger after
-    N new responses. Resolved by lib.insight_settings.resolve_stream_response_
-    threshold(): survey-level Experience → Intelligence → Settings override →
-    org-level default → platform constant (DEFAULT_STREAM_THRESHOLD, currently
-    100). An explicit INSIGHT_NEW_RESPONSE_THRESHOLD env var still wins outright
-    as an ops escape hatch. Fixed 2026-07-04: this was previously a single
-    flat, env-var-only value shared by every survey org-wide, with no
-    connection to the same stream_response_threshold setting the UI already
-    exposed and node_resolve_context's own skip-run gate already honoured —
-    so configuring it in the UI silently did nothing for this consumer. When
-    neither a survey nor an org override exists, the platform-default fallback
-    is logged to the console in dev/dev-paid (see resolve_stream_response_
-    threshold's docstring) so it's never silently unclear why.
-  TIME_THRESHOLD_MINUTES — trigger if >= N minutes elapsed since last run (+ 1
-    new response). Unchanged by the above: still a flat, AGENTS_ENV-aware
+  NEW_RESPONSE_THRESHOLD (per survey/org, resolved per event) — trigger a FULL
+    report+checkpoint run after N new responses. Resolved by lib.insight_settings.
+    resolve_stream_response_threshold(): survey-level Experience → Intelligence →
+    Settings override → org-level default → platform constant
+    (DEFAULT_STREAM_THRESHOLD, currently 100). An explicit
+    INSIGHT_NEW_RESPONSE_THRESHOLD env var still wins outright as an ops escape
+    hatch. Fixed 2026-07-04: this was previously a single flat, env-var-only value
+    shared by every survey org-wide, with no connection to the same
+    stream_response_threshold setting the UI already exposed and
+    node_resolve_context's own skip-run gate already honoured — so configuring it
+    in the UI silently did nothing for this consumer. When neither a survey nor an
+    org override exists, the platform-default fallback is logged to the console in
+    dev/dev-paid (see resolve_stream_response_threshold's docstring) so it's never
+    silently unclear why.
+  TIME_THRESHOLD_MINUTES — trigger the full run if >= N minutes elapsed since last
+    run (+ 1 new response). Unchanged by the above: still a flat, AGENTS_ENV-aware
     env-var default (production: 5, dev/dev-paid: 1), since only the
     response-count threshold has a UI setting to defer to.
+  RESPONSE_TAGGING_BATCH_SIZE (per survey/org, resolved per event, added
+    2026-07-04) — a SECOND, independent, much lighter-weight trigger: after N new
+    responses, run lib.response_tagging.tag_untagged_responses() (sentiment/
+    emotion/effort scoring + existing-topic assignment for untagged responses —
+    NOT a full report/checkpoint run). Resolved by lib.insight_settings.
+    resolve_response_tagging_batch_size(), same survey → org → platform
+    precedence. Default 1 — tag every response as it arrives; high-frequency
+    surveys can raise this to batch up to 10. Completely independent counter from
+    NEW_RESPONSE_THRESHOLD above — a survey tags every response immediately by
+    default while still only generating a full report every 100 responses.
 
 The consumer runs as a long-lived asyncio task. Start it from the FastAPI lifespan
 or as a standalone process:
@@ -127,6 +138,56 @@ _batches: dict[str, dict] = defaultdict(lambda: {"org_id": "", "count": 0, "last
 # triggers when multiple events arrive in the same consumer batch and a
 # low/1-response threshold is configured for that survey)
 _pending_triggers: set[str] = set()
+
+# ── Response tagging (sentiment/emotion/effort/topic) — independent counter ────
+# Separate in-memory tracker from _batches above: this one gates the lightweight
+# per-response tagging sweep (lib.response_tagging.tag_untagged_responses), not
+# the full report/checkpoint pipeline. {survey_id: {"org_id": str, "count": int}}
+_tagging_batches: dict[str, dict] = defaultdict(lambda: {"org_id": "", "count": 0})
+
+# Surveys with a tagging sweep currently in-flight (same dedup rationale as
+# _pending_triggers — matters most at the default batch size of 1, where every
+# single event would otherwise try to fire its own sweep).
+_pending_tagging: set[str] = set()
+
+
+async def _should_trigger_tagging(survey_id: str) -> bool:
+    """Return True when enough new-response events have accumulated to run a
+    tagging sweep. Purely count-based (no time fallback) — at the default batch
+    size of 1 this fires on literally every event; higher batch sizes (high-
+    frequency surveys) simply wait for that many events, no different timing
+    behavior needed since the sweep itself always processes any backlog too."""
+    from crystalos.lib.insight_settings import resolve_response_tagging_batch_size
+
+    batch = _tagging_batches[survey_id]
+    batch_size = await resolve_response_tagging_batch_size(survey_id, batch["org_id"])
+    return batch["count"] >= batch_size
+
+
+async def _run_tagging_sweep(survey_id: str, org_id: str) -> None:
+    """Fire-and-forget wrapper around tag_untagged_responses — never raises (the
+    function itself already catches everything internally; this wrapper adds
+    counter reset + pending-set bookkeeping).
+
+    Fixed 2026-07-06: the import and triggered_count capture used to sit BEFORE
+    this try block. If either ever raised (e.g. a transient import error), the
+    finally below would never run — _pending_tagging.discard(survey_id) would
+    never happen, and that survey would be silently, permanently skipped by
+    every future event (`if survey_id in _pending_tagging: continue` in the main
+    loop) with no error ever surfacing. Everything that can raise is now inside
+    the try, so the finally is guaranteed to run regardless.
+    """
+    triggered_count = _tagging_batches[survey_id]["count"]
+    try:
+        from crystalos.lib.response_tagging import tag_untagged_responses
+        await tag_untagged_responses(survey_id, org_id)
+    except Exception as exc:  # pragma: no cover - tag_untagged_responses already catches internally
+        logger.error("response_tagging_sweep_unexpected_error", survey_id=survey_id, error=str(exc))
+    finally:
+        # Same "subtract only what triggered this run" pattern as _trigger_insights,
+        # so events that arrived mid-sweep still count toward the next one.
+        _tagging_batches[survey_id]["count"] = max(0, _tagging_batches[survey_id]["count"] - triggered_count)
+        _pending_tagging.discard(survey_id)
 
 
 async def _should_trigger(survey_id: str) -> bool:
@@ -366,14 +427,16 @@ async def run_response_stream_consumer() -> None:
     Retries indefinitely if Redis is unavailable — polls every 15s until Redis comes up.
     This prevents silent death when Redis starts after CrystalOS.
     """
-    from crystalos.lib.constants import DEFAULT_STREAM_THRESHOLD
+    from crystalos.lib.constants import DEFAULT_STREAM_THRESHOLD, DEFAULT_RESPONSE_TAGGING_BATCH_SIZE
 
     logger.info(
         "stream_consumer_started",
-        # new_response_threshold is resolved per survey/org on every event now
-        # (see resolve_stream_response_threshold) — this is just the platform
-        # fallback for visibility, not necessarily what any given survey uses.
+        # Both thresholds are resolved per survey/org on every event now (see
+        # resolve_stream_response_threshold / resolve_response_tagging_batch_size)
+        # — these are just the platform fallbacks for visibility, not necessarily
+        # what any given survey uses.
         platform_default_new_response_threshold=DEFAULT_STREAM_THRESHOLD,
+        platform_default_response_tagging_batch_size=DEFAULT_RESPONSE_TAGGING_BATCH_SIZE,
         time_threshold_minutes=TIME_THRESHOLD_MINUTES,
     )
 
@@ -393,9 +456,23 @@ async def run_response_stream_consumer() -> None:
                         continue
                     _batches[survey_id]["org_id"]  = org_id
                     _batches[survey_id]["count"]  += 1
+                    _tagging_batches[survey_id]["org_id"] = org_id
+                    _tagging_batches[survey_id]["count"] += 1
                     affected[survey_id] = org_id
 
-                # Phase 2: one trigger decision per affected survey.
+                # Phase 2a: tagging-sweep decision per affected survey — fully
+                # independent of the full-report trigger below (different counter,
+                # different threshold setting, no survey_status gate since tagging
+                # existing responses is cheap and useful regardless of whether the
+                # survey is still actively collecting).
+                for survey_id, org_id in affected.items():
+                    if survey_id in _pending_tagging:
+                        continue
+                    if await _should_trigger_tagging(survey_id):
+                        _pending_tagging.add(survey_id)
+                        asyncio.create_task(_run_tagging_sweep(survey_id, org_id))
+
+                # Phase 2b: one full-report trigger decision per affected survey.
                 for survey_id, org_id in affected.items():
                     if survey_id in _pending_triggers:
                         continue
