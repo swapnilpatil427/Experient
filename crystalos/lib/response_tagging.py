@@ -92,7 +92,7 @@ async def _fetch_untagged_responses(survey_id: str, org_id: str, limit: int, con
     sweep — no dead-letter table or retry counter needed."""
     async with conn.cursor() as cur:
         await cur.execute(
-            """SELECT id, answers, nps_score, csat_score, ces_score
+            """SELECT id, answers
                FROM responses
                WHERE survey_id = %s AND org_id = %s AND ai_enriched_at IS NULL
                ORDER BY submitted_at ASC

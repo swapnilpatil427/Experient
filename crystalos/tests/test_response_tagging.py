@@ -22,7 +22,13 @@ class _RespCursor:
 
     def __init__(self, untagged_rows=None, survey_row=("[]",), reconstruct_rows=None):
         self._untagged_rows = untagged_rows or []
-        self._untagged_desc = [("id",), ("answers",), ("nps_score",), ("csat_score",), ("ces_score",)]
+        # Matches the ACTUAL responses table (supabase/migrations/20240101000000_initial.sql)
+        # — id, answers only. Fixed 2026-07-05: this used to also list nps_score,
+        # csat_score, ces_score, which caused a real production failure
+        # ("column csat_score does not exist" — the table only ever had nps_score, and
+        # none of the three were even used downstream). Mocked-cursor tests never
+        # caught it because a mock doesn't validate column names against a real schema.
+        self._untagged_desc = [("id",), ("answers",)]
         self._survey_row = survey_row
         self._reconstruct_rows = reconstruct_rows or []
         self._reconstruct_desc = [("id",), ("answers",), ("ai_sentiment",), ("ai_sentiment_score",), ("ai_emotion",)]
@@ -91,7 +97,7 @@ def _open_text_survey():
 
 
 def _untagged_row(rid, text="This was a genuinely great experience overall"):
-    return (rid, [{"questionId": "q1", "value": text}], None, None, None)
+    return (rid, [{"questionId": "q1", "value": text}])
 
 
 _ABSA_CFG = {"batch_size": 10, "concurrency": 3, "cap": 100}
@@ -606,6 +612,28 @@ class TestNewTopicDiscoveryFlush:
 # ── Backlog / previously-failed catch-up (design invariant) ──────────────────
 
 class TestBacklogCatchup:
+    @pytest.mark.asyncio
+    async def test_untagged_query_only_selects_columns_that_exist_on_responses(self):
+        """Regression test for a real production failure (2026-07-05):
+        'column "csat_score" does not exist'. The responses table
+        (supabase/migrations/20240101000000_initial.sql) only has id, survey_id,
+        org_id, answers, nps_score, respondent_id, submitted_at — NOT
+        csat_score/ces_score (those live inside the answers JSONB, not as
+        top-level columns). This asserts the exact column list rather than just
+        'does it run', since a mocked cursor happily accepts nonexistent column
+        names — that's exactly how the original bug shipped unnoticed."""
+        cur = _RespCursor(untagged_rows=[])
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)):
+            await tag_untagged_responses("s1", "o1")
+
+        untagged_calls = [c for c in cur.execute_calls if "ai_enriched_at IS NULL" in c[0]]
+        assert len(untagged_calls) == 1
+        sql = untagged_calls[0][0]
+        assert "SELECT id, answers" in sql
+        assert "csat_score" not in sql
+        assert "ces_score" not in sql
+        assert "nps_score" not in sql
+
     @pytest.mark.asyncio
     async def test_query_selects_all_untagged_oldest_first_not_just_new_ones(self):
         """There is no separate 'new vs backlog' distinction — every sweep call
