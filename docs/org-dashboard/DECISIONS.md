@@ -4,6 +4,17 @@ Append-only. See `TEAM.md` for the entry format and escalation rules.
 
 ---
 
+## Decision 31: Full 7-persona production-readiness audit — 24 confirmed bugs fixed, 8 deferred with reasoning
+
+**Date:** 2026-07-06
+**Decision-maker:** Engineering, in response to a direct product request to review the feature "very carefully" for production readiness before real customers touch it.
+**Context:** A 7-persona expert panel (enterprise customer, mid-market/SMB customer, AI/ML engineer, professional services, marketing, sales, UX designer, product/platform engineer) each independently read the actual shipped code — not the design docs — and traced real behavior at realistic scale. This surfaced 24 confirmed, independently-verified bugs spanning AI correctness (raw survey UUIDs in customer-facing text, a failed narrative silently scoring as maximum trust, manual summaries never being verified due to a missing schema column), operational risk (a scheduler bug that could permanently prevent the weekly brief from ever auto-firing in a stable deployment, a confirmed Redis thundering-herd path, zero rollout control despite a proven gating pattern already existing elsewhere in the codebase), and UX correctness (a dead permalink, a null trust state rendering as if verified, broken/missing accessibility labels, unstyled dark-mode components).
+**Decision:** Fixed all 24 confirmed bugs across three parallel tracks (CrystalOS/AI, backend, frontend) plus one additional fix found during integration (a missing safety log for the citation-compliance flag). Full list and reasoning in `docs/org-dashboard/PRODUCTION_READINESS_AUDIT.md`. Explicitly deferred 8 items with written reasoning rather than silently dropping them — most significantly, a full incremental-refresh redesign of the materialized views (confirmed real and serious, but a correct fix requires verifying exactly what date range every downstream KPI needs against a live database, which this environment cannot provide; a rushed fix risks a worse, silent correctness regression than the current, at least honestly-documented, scale limitation).
+**Verification:** Backend suite 1364/1364 passing (1361 baseline + 3 new gate tests), `tsc` clean on both `app/` and `backend/`, CrystalOS graph compiles and imports cleanly, 6/6 new `org_brief_verify.py` tests passing, 3 EVALS.md cases hand-traced against the modified detector code with no change to documented expected outputs.
+**Reversibility:** Mixed. Most fixes are additive (new columns, new indexes, new middleware, new event types) and trivially reversible. The scheduler cadence change (daily→hourly for two jobs) and the plan-tier gate are the two with the broadest behavioral effect — both are env-var-controlled and can be reverted without a code change.
+
+---
+
 ## Decision 30: Brief Provenance Panel is the "trail" for org briefs — audit-surface disclosure rules apply, not the live card's suppression rules
 
 **Date:** 2026-07-05

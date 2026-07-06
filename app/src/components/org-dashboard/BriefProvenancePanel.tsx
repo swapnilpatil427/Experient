@@ -67,34 +67,34 @@ function WhatCrystalLookedAt({ detail }: { detail: OrgBriefDetail }) {
       </div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         <div>
-          <div className="text-[10px] text-gray-400">{t('orgDashboard.briefProvenance.dateRange')}</div>
+          <div className="text-[10px] text-on-surface-variant">{t('orgDashboard.briefProvenance.dateRange')}</div>
           <div className="text-sm font-semibold">{dateRangeLabel(snap.date_range_start, snap.date_range_end)}</div>
         </div>
         <div>
-          <div className="text-[10px] text-gray-400">{t('orgDashboard.briefProvenance.totalResponses')}</div>
+          <div className="text-[10px] text-on-surface-variant">{t('orgDashboard.briefProvenance.totalResponses')}</div>
           <div className="text-sm font-semibold tabular-nums">{snap.total_responses.toLocaleString()}</div>
         </div>
         <div>
-          <div className="text-[10px] text-gray-400">{t('orgDashboard.briefProvenance.activeSurveys')}</div>
+          <div className="text-[10px] text-on-surface-variant">{t('orgDashboard.briefProvenance.activeSurveys')}</div>
           <div className="text-sm font-semibold tabular-nums">{snap.active_surveys}</div>
         </div>
         <div>
-          <div className="text-[10px] text-gray-400">{t('orgDashboard.briefProvenance.avgNps')}</div>
+          <div className="text-[10px] text-on-surface-variant">{t('orgDashboard.briefProvenance.avgNps')}</div>
           <div className="text-sm font-semibold tabular-nums">
             {snap.avg_nps}
             {snap.nps_wow_delta != null && (
-              <span className="text-xs text-gray-400 ml-1">
+              <span className="text-xs text-on-surface-variant ml-1">
                 {t('orgDashboard.kpis.wowDelta', { sign: snap.nps_wow_delta >= 0 ? '+' : '', value: String(snap.nps_wow_delta) })}
               </span>
             )}
           </div>
         </div>
         <div>
-          <div className="text-[10px] text-gray-400">{t('orgDashboard.briefProvenance.avgSentiment')}</div>
+          <div className="text-[10px] text-on-surface-variant">{t('orgDashboard.briefProvenance.avgSentiment')}</div>
           <div className="text-sm font-semibold tabular-nums">
             {snap.avg_sentiment.toFixed(2)}
             {snap.sentiment_wow_delta != null && (
-              <span className="text-xs text-gray-400 ml-1">
+              <span className="text-xs text-on-surface-variant ml-1">
                 {t('orgDashboard.kpis.wowDelta', { sign: snap.sentiment_wow_delta >= 0 ? '+' : '', value: snap.sentiment_wow_delta.toFixed(2) })}
               </span>
             )}
@@ -103,25 +103,25 @@ function WhatCrystalLookedAt({ detail }: { detail: OrgBriefDetail }) {
       </div>
 
       {snap.no_comparable_prior_period && (
-        <p className="text-xs text-gray-400 mt-2">{t('orgDashboard.briefProvenance.noComparablePriorPeriod')}</p>
+        <p className="text-xs text-on-surface-variant mt-2">{t('orgDashboard.briefProvenance.noComparablePriorPeriod')}</p>
       )}
 
-      {snap.top_topics.length > 0 && (
+      {(snap.top_topics ?? []).length > 0 && (
         <div className="mt-3">
-          <div className="text-[10px] text-gray-400 mb-1">{t('orgDashboard.briefProvenance.topTopics')}</div>
+          <div className="text-[10px] text-on-surface-variant mb-1">{t('orgDashboard.briefProvenance.topTopics')}</div>
           <ul className="space-y-1">
-            {snap.top_topics.slice(0, 5).map((topic) => (
+            {(snap.top_topics ?? []).slice(0, 5).map((topic) => (
               <li key={topic.topic_label} className="flex items-center gap-2 text-sm">
                 <span
                   className="w-2 h-2 rounded-full flex-shrink-0"
                   style={{ background: topicSentimentDotColor(topic.avg_sentiment) }}
                   aria-hidden="true"
                 />
-                <span className="text-gray-800">{topic.topic_label}</span>
+                <span className="text-on-surface">{topic.topic_label}</span>
                 {topic.is_new_this_week && (
                   <span className="text-[10px] font-bold text-blue-500">{t('orgDashboard.briefProvenance.newThisWeek')}</span>
                 )}
-                <span className="text-xs text-gray-400 ml-auto tabular-nums">{topic.frequency}</span>
+                <span className="text-xs text-on-surface-variant ml-auto tabular-nums">{topic.frequency}</span>
               </li>
             ))}
           </ul>
@@ -139,7 +139,7 @@ function WhatCrystalRecommended({ detail }: { detail: OrgBriefDetail }) {
         <div className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mb-2">
           {t('orgDashboard.briefProvenance.whatCrystalRecommended')}
         </div>
-        <p className="text-sm text-gray-400">{t('orgDashboard.briefProvenance.noRecommendations')}</p>
+        <p className="text-sm text-on-surface-variant">{t('orgDashboard.briefProvenance.noRecommendations')}</p>
       </div>
     );
   }
@@ -162,10 +162,10 @@ function WhatCrystalRecommended({ detail }: { detail: OrgBriefDetail }) {
                     {rec.action}
                   </Link>
                 ) : (
-                  <span className="text-sm font-medium text-gray-800">{rec.action}</span>
+                  <span className="text-sm font-medium text-on-surface">{rec.action}</span>
                 )}
               </div>
-              <p className="text-sm text-gray-500 mt-0.5">{rec.rationale}</p>
+              <p className="text-sm text-on-surface-variant mt-0.5">{rec.rationale}</p>
             </div>
           </li>
         ))}
@@ -194,26 +194,26 @@ function TrustBreakdown({ detail }: { detail: OrgBriefDetail }) {
             getBriefDetail). Passing the raw 0-1 value through made every real score
             round down into the lowest tier regardless of actual trust level. */}
         <ConfidenceChip value={Math.round(pass12.score * 100)} />
-        <span className="text-xs text-gray-500">{t(verdictCopyKey(pass12.verdict))}</span>
+        <span className="text-xs text-on-surface-variant">{t(verdictCopyKey(pass12.verdict))}</span>
       </div>
       {pass12.issues.length > 0 && (
         <ul className="mt-2 space-y-1 list-disc list-inside">
           {pass12.issues.map((issue, i) => (
-            <li key={i} className="text-xs text-gray-500">{issue}</li>
+            <li key={i} className="text-xs text-on-surface-variant">{issue}</li>
           ))}
         </ul>
       )}
-      <p className="text-xs text-gray-400 mt-2">
+      <p className="text-xs text-on-surface-variant mt-2">
         {t('orgDashboard.briefProvenance.citedInsights', { n: String(trust.cited_insight_count) })}
       </p>
       {failures.length > 0 && (
         <div className="mt-3">
-          <div className="text-[10px] text-gray-400 mb-1">{t('orgDashboard.briefProvenance.flaggedClauses')}</div>
+          <div className="text-[10px] text-on-surface-variant mb-1">{t('orgDashboard.briefProvenance.flaggedClauses')}</div>
           <ul className="space-y-2">
             {failures.map((f, i) => (
               <li key={i} className="text-xs">
-                <span className="text-gray-700 italic">&ldquo;{f.clause}&rdquo;</span>
-                <span className="text-gray-400"> — {f.reason}</span>
+                <span className="text-on-surface italic">&ldquo;{f.clause}&rdquo;</span>
+                <span className="text-on-surface-variant"> — {f.reason}</span>
               </li>
             ))}
           </ul>
@@ -245,13 +245,13 @@ export function BriefProvenancePanel({ briefId }: { briefId: string }) {
   }
 
   return (
-    <div className="p-5 rounded-xl border border-outline-variant/20 mt-3 bg-white space-y-5">
+    <div className="p-5 rounded-xl border border-outline-variant/20 mt-3 bg-white space-y-5" data-org-dash-surface>
       {/* Generation source & model */}
       <div className="flex items-center gap-3 flex-wrap">
         <SourcePill source={detail.source} />
-        {detail.modelVersion && <span className="text-xs text-gray-500">{detail.modelVersion}</span>}
+        {detail.modelVersion && <span className="text-xs text-on-surface-variant">{detail.modelVersion}</span>}
         {relativeTime(detail.generatedAt) && (
-          <span className="text-xs text-gray-400">{t('orgDashboard.crystalBrief.lastUpdated', { time: relativeTime(detail.generatedAt) as string })}</span>
+          <span className="text-xs text-on-surface-variant">{t('orgDashboard.crystalBrief.lastUpdated', { time: relativeTime(detail.generatedAt) as string })}</span>
         )}
       </div>
 
@@ -260,7 +260,7 @@ export function BriefProvenancePanel({ briefId }: { briefId: string }) {
       <TrustBreakdown detail={detail} />
 
       {detail.parentCheckpointId && (
-        <p className="text-xs text-gray-400 flex items-center gap-1.5">
+        <p className="text-xs text-on-surface-variant flex items-center gap-1.5">
           <Icon name="link" size={12} />
           {t('orgDashboard.briefProvenance.lineageNote')}
         </p>

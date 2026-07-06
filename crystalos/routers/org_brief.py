@@ -6,11 +6,7 @@ POST /graphs/org-brief
   verify_and_score step (Decision 16, item 5 — deliberately NOT a graph node;
   see crystalos/lib/org_brief_verify.py's module docstring).
 
-Not registered in crystalos/main.py by this change — see
-crystalos/routers/ORG_BRIEF_REGISTRATION_TODO.md for the exact lines a
-separate integration pass should add (per IMPLEMENTATION_SPEC.md's file
-ownership: "Registration line in crystalos/main.py (single-line addition,
-coordinate).").
+Registered in crystalos/main.py (see the `_org_brief_router` include there).
 """
 from __future__ import annotations
 
@@ -67,8 +63,14 @@ async def generate_org_brief(
 
     brief_id = result.get("brief_id")
     if not brief_id:
-        logger.error("org_brief_graph_no_brief_id", org_id=body.org_id)
-        raise HTTPException(status_code=500, detail="org_brief_generation_failed")
+        publish_error = result.get("publish_error")
+        logger.error("org_brief_graph_no_brief_id", org_id=body.org_id, publish_error=publish_error)
+        detail = (
+            "org_brief_publish_aborted_empty_narrative"
+            if publish_error == "empty_narrative"
+            else "org_brief_generation_failed"
+        )
+        raise HTTPException(status_code=500, detail=detail)
 
     # Post-publish step (Decision 16 item 5) — runs synchronously, after the
     # row already exists. A failure here is logged but never surfaced as a

@@ -92,6 +92,28 @@ export function CrystalBriefCard({
   const showBroadFlag = brief.trustVerdict === 'fail';
   const showFlag = brief.trustVerdict === 'flag' || showBroadFlag;
 
+  // A `null` verdict is the real, common state immediately after publish,
+  // before the async post-publish verification step completes (Decision 21
+  // — "trust score arrives after the rest of the brief"). Previously this
+  // rendered identically to a verified `pass` (no chip at all) — no visual
+  // difference between "checked, fine" and "not checked yet."
+  //
+  // Heuristic: `trustScore` is null for exactly as long as `trustVerdict` is
+  // (both are written together by the same verification pass), so there's no
+  // separate "verification in progress" boolean to key off. 2 minutes is a
+  // generous multiple of the regenerate endpoint's own `estimatedSeconds`
+  // (up to 3 sequential LLM passes, see PRODUCTION_READINESS_AUDIT.md) — long
+  // enough to never flicker on a normal publish, short enough that a
+  // genuinely stuck/errored verification doesn't show a stale "still
+  // verifying" message forever. Past that window we fall back to today's
+  // behavior (no indicator) rather than invent an error state we can't
+  // reliably detect.
+  const VERIFICATION_GRACE_MS = 2 * 60_000;
+  const generatedAtMs = new Date(brief.generatedAt).getTime();
+  const verificationPending = brief.trustVerdict == null && brief.trustScore == null
+    && !Number.isNaN(generatedAtMs)
+    && (Date.now() - generatedAtMs) < VERIFICATION_GRACE_MS;
+
   return (
     <div
       className={`${cardBase} ${cardStyle}`}
@@ -110,6 +132,12 @@ export function CrystalBriefCard({
         <div className="mb-2 flex items-center gap-1.5 text-xs font-medium" style={{ color: '#b45309' }}>
           <Icon name="info" size={13} />
           {showBroadFlag ? t('orgDashboard.trust.earlyReadWhole') : t('orgDashboard.trust.earlyRead')}
+        </div>
+      )}
+      {!showFlag && verificationPending && (
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-on-surface-variant">
+          <Icon name="hourglass_top" size={13} />
+          {t('orgDashboard.trust.stillVerifying')}
         </div>
       )}
 

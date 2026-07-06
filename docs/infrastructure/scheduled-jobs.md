@@ -64,9 +64,9 @@ separately scalable, exposes `/health` + `/metrics`. Run with
 | `org-metrics-daily` | 15 min | `REFRESH MATERIALIZED VIEW CONCURRENTLY` on `org_metrics_daily` + `tag_metrics` (Command Center org-dashboard) | ✅ implemented |
 | `survey-health-summary` | hourly | `REFRESH MATERIALIZED VIEW CONCURRENTLY` on `survey_health_summary` (org-dashboard) | ✅ implemented |
 | `org-metrics-weekly` | daily | `REFRESH MATERIALIZED VIEW CONCURRENTLY` on `org_metrics_weekly` (org-dashboard) | ✅ implemented |
-| `org-topic-trends` | daily tick, self-gated to Monday UTC in-handler | `CALL compute_org_topic_trends()` (org-dashboard) | ✅ implemented |
+| `org-topic-trends` | hourly tick, self-gated to Monday UTC | `CALL compute_org_topic_trends()` (org-dashboard) | ✅ implemented |
 | `org-health-score` | daily | `CALL compute_all_org_health_scores()` (org-dashboard) | ✅ implemented |
-| `org-crystal-brief` | daily tick, env-tier-gated in-handler (Monday UTC only in staging/production; every tick in dev) | Auto-generates the weekly org Crystal Brief for eligible orgs (`>=3` surveys, `>=14` days of data) via CrystalOS; per-org sequential dispatch with error isolation (one org's failure never aborts the rest of the sweep) | ✅ implemented |
+| `org-crystal-brief` | hourly tick, env-tier-gated in-handler (Monday UTC only in staging/production; every tick in dev) | Auto-generates the weekly org Crystal Brief for eligible orgs (`>=3` surveys, `>=14` days of data) via CrystalOS; per-org sequential dispatch with error isolation (one org's failure never aborts the rest of the sweep) | ✅ implemented |
 
 The scheduler runs **N replicas with leader election** (Postgres advisory lock): exactly one
 executes jobs, standbys fail over automatically. `scheduler_is_leader` + `SchedulerNoLeader` alert.

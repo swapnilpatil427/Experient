@@ -35,7 +35,12 @@ function TagGroupCard({ tag }: { tag: TagMetric }) {
   return (
     <div
       className="p-4 rounded-xl border cursor-pointer transition-all duration-150 flex-shrink-0 w-full md:w-56 bg-white"
-      style={{ borderColor: 'color-mix(in srgb, var(--color-outline-variant) 20%, transparent)' }}
+      // Inline `border-color` always wins over any stylesheet rule (including
+      // war-room.css's `[data-org-dash-surface]` override), so the war-room
+      // value has to be threaded through as a CSS var-with-fallback here
+      // rather than relying on that selector alone for this element.
+      style={{ borderColor: 'var(--org-dash-card-border, color-mix(in srgb, var(--color-outline-variant) 20%, transparent))' }}
+      data-org-dash-surface
       onClick={() => setExpanded((v) => !v)}
       role="button"
       tabIndex={0}

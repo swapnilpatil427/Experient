@@ -15,9 +15,18 @@ ALTER TABLE org_profiles
 -- 'survey_creation' only; supabase/migrations/20240516000000_insights.sql dropped and
 -- recreated it as agent_runs_run_type_check with ('survey_creation','insight_generation') —
 -- no later migration has touched it) — do not guess the constraint name or value set.
+-- NOT VALID + a separate VALIDATE CONSTRAINT (Decision 16 item 9's own stated convention
+-- for exactly this situation): agent_runs is a hot table written on every survey-creation/
+-- insight-generation run platform-wide and may already hold production rows. A plain
+-- `ADD CONSTRAINT ... CHECK (...)` takes a full ACCESS EXCLUSIVE lock while validating
+-- every existing row. `NOT VALID` makes the ADD CONSTRAINT itself fast (it only briefly
+-- locks to register the constraint for new/updated rows); the subsequent VALIDATE
+-- CONSTRAINT then scans existing rows under a SHARE UPDATE EXCLUSIVE lock, which does not
+-- block concurrent reads or writes.
 ALTER TABLE agent_runs DROP CONSTRAINT IF EXISTS agent_runs_run_type_check;
 ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_run_type_check
-  CHECK (run_type IN ('survey_creation', 'insight_generation', 'org_brief_generation'));
+  CHECK (run_type IN ('survey_creation', 'insight_generation', 'org_brief_generation')) NOT VALID;
+ALTER TABLE agent_runs VALIDATE CONSTRAINT agent_runs_run_type_check;
 
 -- ROLLBACK:
 -- ALTER TABLE agent_runs DROP CONSTRAINT IF EXISTS agent_runs_run_type_check;

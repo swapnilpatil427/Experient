@@ -19,16 +19,20 @@
  * sent as a plain `data: {"type":...,"payload":...}` line with no `event:` field — never
  * `event: <type>`, which `onmessage` would silently never see.
  *
- * Scope (Decision 21 + Decision 22, and confirmed by app/src/types/orgDashboard.ts's
- * `OrgDashboardLiveEvent` union, which only has 2 members): this channel forwards
- * `response_received` and `anomaly_detected` only — the two "user is watching a number
- * change right now" cases. `crystal_brief_ready` / trust-score-ready notifications
- * deliberately ride the existing app-wide `/api/notifications/stream` instead (Decision
- * 21) — extending that stream's `useNotifications.ts` consumer is a separate, parallel
- * workstream per IMPLEMENTATION_SPEC.md's file ownership, not this channel's job. The
+ * Scope (Decision 21 + Decision 22, updated post-launch per
+ * docs/org-dashboard/PRODUCTION_READINESS_AUDIT.md "Regenerate gives no feedback"):
+ * this channel forwards `response_received`, `anomaly_detected`, and `crystal_brief_ready`.
+ * The doc comment previously here claimed `crystal_brief_ready` "rides the existing
+ * app-wide notification stream" — that was never actually wired up (nothing ever called
+ * `publishNotificationEvent`/`publishOrgEvent` with that type), which meant the
+ * "Regenerate" button's completion state was unobservable without a manual page reload.
+ * Fixed by publishing it on THIS channel instead — `POST /dashboard/crystal-brief/regenerate`
+ * (routes/org-dashboard.ts) publishes `{type: 'crystal_brief_ready', payload: {success,
+ * error?}}` once the fire-and-forget `agentsClient.triggerOrgBrief` call resolves or
+ * rejects. No new transport needed: same `org:{orgId}:events` channel, same unnamed
+ * `data:` framing `useOrgDashboardLive.ts`'s `onmessage` already parses. The
  * `OrgEvent`/`publishOrgEvent` types below stay generic (any `type: string`) so a future,
- * explicitly-decided event can reuse this same transport without a contract change —
- * but nothing in this codebase should publish anything other than the two above today.
+ * explicitly-decided event can reuse this same transport without a contract change.
  *
  * Integration note: call `registerOrgDashboardStream(app)` once from index.ts — see the
  * comment block atop routes/org-dashboard.ts for the exact line to add.
@@ -46,7 +50,7 @@ function orgEventsChannel(orgId: string): string {
 }
 
 export interface OrgEvent {
-  type: 'response_received' | 'anomaly_detected' | string;
+  type: 'response_received' | 'anomaly_detected' | 'crystal_brief_ready' | string;
   payload: unknown;
 }
 

@@ -86,7 +86,7 @@ export function CheckpointDiffPanel({ currentId, previousId }: { currentId: stri
   const isMobile = bp === 'mobile';
 
   return (
-    <div className="p-5 rounded-xl border border-outline-variant/20 mt-3 bg-white">
+    <div className="p-5 rounded-xl border border-outline-variant/20 mt-3 bg-white" data-org-dash-surface>
       {isMobile ? (
         <div className="space-y-3">
           <SideCard eyebrow={t('orgDashboard.checkpointDiff.previous')} side={result.previous} />

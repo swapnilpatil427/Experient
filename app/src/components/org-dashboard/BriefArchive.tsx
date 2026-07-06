@@ -7,7 +7,6 @@
 // users to misread a "manual" badge as a risk signal).
 
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Icon } from '../Icon';
 import { Button } from '@/components/ui/button';
 import { useTranslation } from '../../lib/i18n';
@@ -46,9 +45,6 @@ function BriefEntry({ entry }: { entry: BriefHistoryEntry }) {
         <div className="mt-2 pl-1 pb-4">
           <p className="text-sm text-gray-800 leading-relaxed">{entry.briefText}</p>
           <div className="flex items-center gap-3 mt-2">
-            <Link to={`/app/experience/org/summary/${entry.id}`} className="text-xs font-medium text-indigo-600 hover:underline">
-              {t('orgDashboard.briefArchive.viewAsPage')}
-            </Link>
             {entry.parentCheckpointId && (
               <button
                 type="button"

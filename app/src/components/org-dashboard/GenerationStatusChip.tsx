@@ -57,30 +57,41 @@ export function GenerationStatusChip({
   }, [state]);
 
   const isSpinning = state === 'in-progress' || state === 'reconnecting' || state === 'timeout';
-  const textColor = state === 'reconnecting' ? 'text-amber-600'
-    : state === 'timeout' ? 'text-on-surface-variant'
-    : state === 'failure' ? ''
-    : 'text-[#8329c8]';
+  // `--org-dash-gen-*` vars are only ever defined (war-room.css, scoped to
+  // `[data-org-dash-generation-chip]`) under War Room Mode — the fallback
+  // here is what renders in ordinary light mode, so this single style object
+  // covers both themes without a `text-*` utility class, since a plain
+  // Tailwind class's literal color can never be overridden by a var-based
+  // stylesheet rule once a component also carries an inline color.
+  const textStyle = state === 'reconnecting' ? { color: 'var(--org-dash-gen-warn, #d97706)' }
+    : state === 'timeout' ? undefined // already a theme token (text-on-surface-variant), no change needed
+    : state === 'failure' ? { color: 'var(--org-dash-gen-fail, #b41340)' }
+    : { color: 'var(--org-dash-gen-accent, #8329c8)' };
+  const textClass = state === 'timeout' ? 'text-on-surface-variant' : '';
 
   return (
     <div
       className="inline-flex items-center gap-2.5 px-3 py-2 rounded-full"
-      style={{ background: 'rgba(131,41,200,0.08)', border: '1px solid rgba(131,41,200,0.18)' }}
+      data-org-dash-generation-chip
+      style={{
+        background: 'var(--org-dash-gen-bg, rgba(131,41,200,0.08))',
+        border: '1px solid var(--org-dash-gen-border, rgba(131,41,200,0.18))',
+      }}
     >
       {state === 'failure' ? (
-        <Icon name="error_outline" size={16} style={{ color: '#b41340' }} />
+        <Icon name="error_outline" size={16} style={textStyle} />
       ) : (
         <CrystalMotif spinning={isSpinning && !prefersReducedMotion} />
       )}
 
       {state === 'failure' ? (
-        <button type="button" onClick={onRetry} className="text-xs font-semibold underline-offset-2 hover:underline" style={{ color: '#b41340' }}>
+        <button type="button" onClick={onRetry} className="text-xs font-semibold underline-offset-2 hover:underline" style={textStyle}>
           {t('orgDashboard.generationStatus.failure')}
         </button>
       ) : state === 'reconnecting' ? (
-        <span className={`text-xs font-semibold ${textColor}`}>{t('orgDashboard.generationStatus.reconnecting')}</span>
+        <span className={`text-xs font-semibold ${textClass}`} style={textStyle}>{t('orgDashboard.generationStatus.reconnecting')}</span>
       ) : state === 'timeout' ? (
-        <span className={`text-xs font-semibold ${textColor}`}>{t('orgDashboard.generationStatus.timeout')}</span>
+        <span className={`text-xs font-semibold ${textClass}`} style={textStyle}>{t('orgDashboard.generationStatus.timeout')}</span>
       ) : (
         <AnimatePresence mode="wait">
           <motion.span
@@ -89,7 +100,8 @@ export function GenerationStatusChip({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className={`text-xs font-semibold ${textColor}`}
+            className={`text-xs font-semibold ${textClass}`}
+            style={textStyle}
           >
             {t(ROTATING_KEYS[rotatingIdx])}
           </motion.span>

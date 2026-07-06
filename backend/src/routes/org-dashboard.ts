@@ -19,12 +19,14 @@
  *
  * ─────────────────────────────────────────────────────────────────────────────────
  *
- * Per Decision 26 (docs/org-dashboard/DECISIONS.md): no new role-gating system — every
- * route here is `requireAuth` only, matching Tag Report's actual current access model
- * (open to any authenticated org member).
+ * Per Decision 26 (docs/org-dashboard/DECISIONS.md): no new PER-USER role-gating system —
+ * every authenticated org member sees the same view, matching Tag Report's access model.
+ * This is unrelated to the PER-ORG plan-tier gate and kill switch added below (see
+ * PRODUCTION_READINESS_AUDIT.md "No rollout control") — those gate the whole feature by
+ * org (plan tier / support override), not by which user within an eligible org is asking.
  */
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
 import { query } from '../lib/db';
@@ -35,10 +37,54 @@ import { resolveOrgSummaryCost } from '../lib/orgSummaryCost';
 import * as agentsClient from '../lib/agentsClient';
 import { transitionAlert } from '../lib/alertEngine';
 import { orgMetricsService, checkOrgBriefEligibility } from '../services/org-metrics.service';
+import { publishOrgEvent } from '../services/org-realtime.service';
+import { publishNotificationEvent } from '../lib/notificationEvents';
+import { resolveOrgPlanTier, meetsPlanTier, upgradeRequiredMessage } from '../lib/planGating';
+import type { PlanTier } from '../lib/creditPlans';
 import logger from '../lib/logger';
 
 const router = express.Router();
 router.use(requireAuth);
+
+// ── Rollout control (docs/org-dashboard/PRODUCTION_READINESS_AUDIT.md "No rollout
+//    control (plan-tier gating)") ─────────────────────────────────────────────────
+// Applied as router-level middleware (not per-route) so it's centralized and can't be
+// forgotten on a new endpoint added later. Reuses the proven plan-tier gating pattern
+// already used elsewhere in this codebase (`lib/planGating.ts`, used by
+// `lib/workflowRegistry.ts` to gate workflow triggers) rather than inventing a second
+// gating mechanism. Matches ROADMAP.md Phase 5's "first 10% of Growth and Growth+ orgs"
+// soft-launch intent — everything on this router requires at least the Growth plan.
+const COMMAND_CENTER_MIN_TIER: PlanTier = 'growth';
+
+router.use(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    // Per-org kill switch — separate from the plan-tier gate below. Lets support
+    // disable Command Center for one specific problem customer without a redeploy and
+    // without affecting any other org (supabase/migrations/
+    // 20260706000004_org_profiles_command_center_kill_switch.sql). Distinct message
+    // from the plan-tier gate below so support can tell the two apart in logs/screenshots.
+    const { rows: killSwitchRows } = await query<{ command_center_disabled: boolean | null }>(
+      `SELECT command_center_disabled FROM org_profiles WHERE org_id = $1`,
+      [req.orgId],
+    ).catch(() => ({ rows: [] }));
+    if (killSwitchRows[0]?.command_center_disabled) {
+      clientError(res, 403, 'Command Center has been temporarily disabled for your organization. Contact support for details.');
+      return;
+    }
+
+    // Plan-tier gate. `resolveOrgPlanTier`/`meetsPlanTier`/`upgradeRequiredMessage` are
+    // the exact same functions `routes/workflows.ts` already uses for trigger-type
+    // gating — reused here rather than reinventing the check or the response copy.
+    const orgTier = await resolveOrgPlanTier(req.orgId);
+    if (!meetsPlanTier(orgTier, COMMAND_CENTER_MIN_TIER)) {
+      clientError(res, 403, upgradeRequiredMessage('command_center', COMMAND_CENTER_MIN_TIER));
+      return;
+    }
+    next();
+  } catch (err: unknown) {
+    serverError(res, err instanceof Error ? err : new Error(String(err)), { endpoint: 'org_dashboard_plan_gate' });
+  }
+});
 
 // ── Config (env-overridable, matching the rest of this codebase's convention —
 //    see routes/insights.ts's REFRESH_DAILY_LIMIT / routes/survey-groups.ts's
@@ -250,19 +296,17 @@ router.get('/dashboard/crystal-brief', async (req: Request, res: Response): Prom
   try {
     const [cached, eligibility] = await Promise.all([
       orgMetricsService.getLatestCrystalBrief(req.orgId),
-      // Additive field — real eligibility ("≥3 surveys AND ≥2 weeks of data", matching
+      // Real eligibility ("≥3 surveys AND ≥2 weeks of data", matching
       // orgDashboard.crystalBrief.notEnoughData's copy) computed live, not from the
       // brief-payload cache, so it reflects the org's *current* survey/response state
       // even if the cached brief itself is stale.
       checkOrgBriefEligibility(req.orgId),
     ]);
-    // Merge onto the brief object only when one exists — the frontend's `CrystalBriefCard`
-    // (OrgTrendsPage.tsx) reads `brief?.minDataMet` off this exact response and treats a
-    // falsy top-level value as "no brief yet" (`if (!brief) { ...empty state... }`).
-    // Spreading `minDataMet` onto a `null` value here would turn that falsy `null` into a
-    // truthy-but-incomplete object and break that check — so the no-brief-yet case is left
-    // as `null`, byte-identical to pre-existing behavior.
-    res.json(cached.value === null ? null : { ...cached.value, minDataMet: eligibility.eligible });
+    // `minDataMet` is ALWAYS a sibling of `brief`, never merged onto it — the previous
+    // shape returned bare `null` when no brief existed yet (the exact case where the
+    // "why no brief" messaging matters most), making that messaging unreachable. `brief`
+    // stays `null` when none exists; `minDataMet` is always present regardless.
+    res.json({ brief: cached.value, minDataMet: eligibility.eligible });
   } catch (err: unknown) {
     serverError(res, err instanceof Error ? err : new Error(String(err)), { endpoint: 'org_dashboard_crystal_brief' });
   }
@@ -297,18 +341,22 @@ router.post('/dashboard/crystal-brief/regenerate', async (req: Request, res: Res
 
     // CrystalOS's org-brief endpoint is synchronous on its side (awaits the full graph +
     // verify_and_score) — this backend call is fired in the background so the HTTP
-    // response below stays fast; the brief lands in org_crystal_briefs directly (Decision
-    // 21: "brief ready" delivery rides the existing app-wide notification stream, a
-    // separate parallel workstream — not this endpoint's or org-realtime.service.ts's job).
+    // response below stays fast; the brief lands in org_crystal_briefs directly. Completion
+    // (success or failure) is published on the org's SSE channel as `crystal_brief_ready`
+    // (org-realtime.service.ts) — the frontend's "regenerating" state and brief data can't
+    // otherwise ever update without a manual page reload, since a 202 + estimatedSeconds
+    // alone gives no actual completion signal.
     agentsClient.triggerOrgBrief({
       orgId: req.orgId, dateRangeStart: start, dateRangeEnd: end,
       periodType: 'weekly', requestedBy: req.userId,
     }).then(() => {
       query("UPDATE agent_runs SET status='completed', completed_at=NOW() WHERE id=$1", [runId]).catch(() => {});
       orgMetricsService.invalidateCrystalBrief(req.orgId).catch(() => {});
+      publishOrgEvent(req.orgId, { type: 'crystal_brief_ready', payload: { success: true } }).catch(() => {});
     }).catch((err: unknown) => {
       logger.error({ err: (err as Error).message, orgId: req.orgId, runId }, 'org_dashboard:brief_regenerate:agents_error');
       query("UPDATE agent_runs SET status='failed', completed_at=NOW() WHERE id=$1", [runId]).catch(() => {});
+      publishOrgEvent(req.orgId, { type: 'crystal_brief_ready', payload: { success: false, error: (err as Error).message } }).catch(() => {});
     });
 
     res.status(202).json({ jobId: runId, estimatedSeconds: ORG_BRIEF_REGENERATE_ESTIMATED_SECONDS });
@@ -424,12 +472,43 @@ router.post('/dashboard/summaries', validate(summaryRequestSchema), async (req: 
     // CrystalOS's org-brief endpoint (period_type='custom') writes brief_text/status
     // directly onto this org_custom_summaries row on success — this call only needs to
     // mark the row 'failed' if the dispatch itself fails (network/5xx/timeout).
+    //
+    // Completion notification: per Decision 21, manual-summary completion rides the
+    // app-wide notification_events/SSE stream as `org_summary_ready` (already declared
+    // as the expected type on the frontend — `ORG_DASHBOARD_NOTIFICATION_TYPES.SUMMARY_READY`
+    // in app/src/hooks/useNotifications.ts — but nothing backend-side ever actually
+    // published it, the same class of gap Fix 3 closed for the Regenerate button).
+    // `triggerOrgCustomSummary` awaits CrystalOS's synchronous graph run (mirrors
+    // `triggerOrgBrief`), so its resolution/rejection here is a real completion signal,
+    // not a fire-and-dispatch guess.
     agentsClient.triggerOrgCustomSummary({
       orgId: req.orgId, dateRangeStart, dateRangeEnd, requestedBy: req.userId,
+    }).then(() => {
+      publishNotificationEvent({
+        type: 'org_summary_ready',
+        orgId: req.orgId,
+        targetUserIds: [req.userId],
+        entityType: 'org_custom_summary',
+        entityId: summary.id,
+        title: 'Your custom summary is ready',
+        body: `Crystal finished your summary for ${dateRangeStart} – ${dateRangeEnd}.`,
+        payload: { summaryId: summary.id, success: true },
+      }).catch(() => {});
     }).catch((err: unknown) => {
       logger.error({ err: (err as Error).message, runId, summaryId: summary.id }, 'org_dashboard:summaries:agents_error');
       query("UPDATE agent_runs SET status='failed', completed_at=NOW() WHERE id=$1", [runId]).catch(() => {});
       query("UPDATE org_custom_summaries SET status='failed', error_message=$2 WHERE id=$1", [summary.id, 'Failed to dispatch to CrystalOS']).catch(() => {});
+      publishNotificationEvent({
+        type: 'org_summary_ready',
+        orgId: req.orgId,
+        targetUserIds: [req.userId],
+        entityType: 'org_custom_summary',
+        entityId: summary.id,
+        priority: 'high',
+        title: 'Your custom summary failed to generate',
+        body: 'Crystal was unable to generate your custom summary. Please try again.',
+        payload: { summaryId: summary.id, success: false, error: (err as Error).message },
+      }).catch(() => {});
     });
 
     logger.info({ orgId: req.orgId, runId, summaryId: summary.id, cost, responseCount, label: label ?? null }, 'org_dashboard:summaries:started');

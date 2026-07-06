@@ -139,10 +139,12 @@ export function GlassCard({
   className = '',
   style,
   children,
+  ariaLabel,
 }: {
   className?: string;
   style?: React.CSSProperties;
   children: React.ReactNode;
+  ariaLabel?: string;
 }) {
   return (
     <div
@@ -152,6 +154,7 @@ export function GlassCard({
         border: '1px solid rgba(255,255,255,0.6)',
         ...style,
       }}
+      aria-label={ariaLabel}
     >
       {children}
     </div>

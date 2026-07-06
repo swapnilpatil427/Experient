@@ -397,6 +397,7 @@ export function ExperienceHubPage() {
       <WeeklyBriefTeaserCard
         orgName={orgDashboardData?.org?.name ?? t('experience.hub.hero.tagline')}
         brief={orgDashboardData?.crystalBrief ?? null}
+        minDataMet={orgDashboardData?.briefMinDataMet}
         loading={orgDashboardLoading}
         error={orgDashboardError}
         onAskFollowUp={() => openCrystal(t('orgDashboard.crystalBrief.followUpQuery'), { focused_brief_id: orgDashboardData?.crystalBrief?.id })}

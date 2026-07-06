@@ -10,7 +10,7 @@
 //   useCheckpointCompare — GET .../briefs/:id/compare/:otherId (lazy, fetched on click)
 //   useOrgSummaries      — manual summary generator: preview/create/list
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApi } from './useApi';
 import { useFetch } from './useExperience';
 import type {
@@ -18,6 +18,10 @@ import type {
   SummaryPreviewRequest, TrendRange,
 } from '../types/orgDashboard';
 
+// `OrgDashboardPayload` carries `briefMinDataMet` as a plain sibling field
+// (see types/orgDashboard.ts) — this hook is a verbatim passthrough of the
+// payload, so callers (e.g. `ExperienceHubPage.tsx`) already get it via
+// `data?.briefMinDataMet` with no unwrapping needed here.
 export function useOrgDashboard() {
   const api = useApi();
   const fetcher = useCallback(() => api.getOrgDashboard(), [api]);
@@ -42,16 +46,63 @@ export function useOrgCrystalBrief() {
   const result = useFetch(fetcher);
 
   const [regenerating, setRegenerating] = useState(false);
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearFallbackTimer = useCallback(() => {
+    if (fallbackTimerRef.current) {
+      clearTimeout(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
+  }, []);
+
+  // Call once the real `crystal_brief_ready` SSE event arrives (see
+  // `OrgTrendsPage.tsx`'s `handleLiveEvent`) — this is the ONLY thing that
+  // should normally clear `regenerating`. Exposed separately from
+  // `regenerate()` itself since the SSE event arrives on a different hook
+  // (`useOrgDashboardLive`) than this one.
+  const completeRegeneration = useCallback(() => {
+    clearFallbackTimer();
+    setRegenerating(false);
+  }, [clearFallbackTimer]);
+
   const regenerate = useCallback(async () => {
     setRegenerating(true);
+    clearFallbackTimer();
     try {
-      return await api.regenerateOrgCrystalBrief();
-    } finally {
+      const res = await api.regenerateOrgCrystalBrief();
+      // The 202 response itself is not completion — per the confirmed review
+      // finding, `regenerating` must stay true until the real
+      // `crystal_brief_ready` SSE event arrives. But the SSE connection can
+      // drop (falls back to 2-minute polling, per useOrgDashboardLive.ts) so
+      // this timer is a fallback-only safety net, not the primary signal:
+      // `estimatedSeconds` (Crystal's own estimate for up to 3 sequential
+      // LLM passes) plus a generous 15s margin for request/publish latency.
+      clearFallbackTimer();
+      fallbackTimerRef.current = setTimeout(() => {
+        fallbackTimerRef.current = null;
+        setRegenerating(false);
+      }, (res.estimatedSeconds + 15) * 1000);
+      return res;
+    } catch (err) {
+      clearFallbackTimer();
       setRegenerating(false);
+      throw err;
     }
-  }, [api]);
+  }, [api, clearFallbackTimer]);
 
-  return { ...result, regenerating, regenerate };
+  useEffect(() => clearFallbackTimer, [clearFallbackTimer]);
+
+  return {
+    ...result,
+    data: result.data?.brief ?? null,
+    // Defaults `true` (matching `CrystalBriefCard`'s own prop default) while
+    // the wrapper hasn't loaded yet — read directly from the wrapper's
+    // sibling field, never from inside `data`, per the new response shape.
+    minDataMet: result.data?.minDataMet ?? true,
+    regenerating,
+    regenerate,
+    completeRegeneration,
+  };
 }
 
 export function useOrgBriefArchive(pageSize = 10) {

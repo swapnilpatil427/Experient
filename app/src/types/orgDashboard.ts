@@ -89,10 +89,16 @@ export interface CrystalBrief {
   trustVerdict?: TrustVerdict | null;
   trustScore?: number | null; // 0-100, only meaningful with a hover/expand — never shown as a raw label
   parentCheckpointId?: string | null; // null => "Compare to previous" never renders
-  // Real eligibility check ("Crystal needs at least 2 weeks of data from 3
-  // programs") — added by the Backend Engineer alongside the rest of this
-  // object on `GET /api/org/dashboard/crystal-brief`. Drives
-  // `CrystalBriefCard`'s/`WeeklyBriefTeaserCard`'s `minDataMet` empty-state copy.
+}
+
+// `GET /api/org/dashboard/crystal-brief`'s actual response shape — ALWAYS this
+// wrapper, never a bare `CrystalBrief` and never bare `null`. Eligibility
+// ("Crystal needs at least 2 weeks of data from 3 programs") is a sibling of
+// `brief`, not a field nested inside it, because it must be knowable even
+// when `brief` itself is null (the common "no brief yet" case) — drives
+// `CrystalBriefCard`'s/`WeeklyBriefTeaserCard`'s `minDataMet` empty-state copy.
+export interface CrystalBriefResponse {
+  brief: CrystalBrief | null;
   minDataMet: boolean;
 }
 
@@ -101,6 +107,9 @@ export interface OrgDashboardPayload {
   healthScore: OrgHealthScore;
   kpis: OrgDashboardKpis;
   crystalBrief: CrystalBrief | null;
+  // Sibling of `crystalBrief` for the same reason as `CrystalBriefResponse`
+  // above — must be knowable even when `crystalBrief` is null.
+  briefMinDataMet: boolean;
   dataFreshnessAt: string;
 }
 
@@ -291,7 +300,11 @@ export interface OrgBriefInputSnapshot {
   responses_wow_delta: number | null;
   sentiment_wow_delta: number | null;
   active_surveys: number;
-  top_topics: OrgBriefTopTopicSnapshot[];
+  // Weekly-brief-only field — custom-range (manual) summaries never populate
+  // this, so it must be treated as absent, not just empty. Confirmed crash
+  // site: `BriefProvenancePanel.tsx`'s `WhatCrystalLookedAt` unconditionally
+  // accessed `.length` on this before this fix.
+  top_topics?: OrgBriefTopTopicSnapshot[];
   no_comparable_prior_period: boolean;
 }
 
@@ -406,8 +419,16 @@ export interface OrgLiveResponseReceivedPayload {
 
 export interface OrgLiveAnomalyDetectedPayload extends OrgAlert {}
 
+// Real completion signal for the "Regenerate" button — previously a bare 202
+// with no further feedback (see `useOrgCrystalBrief`'s `regenerate()`).
+export interface OrgLiveCrystalBriefReadyPayload {
+  success: boolean;
+  error?: string;
+}
+
 export type OrgDashboardLiveEvent =
   | { type: 'response_received'; payload: OrgLiveResponseReceivedPayload }
-  | { type: 'anomaly_detected'; payload: OrgLiveAnomalyDetectedPayload };
+  | { type: 'anomaly_detected'; payload: OrgLiveAnomalyDetectedPayload }
+  | { type: 'crystal_brief_ready'; payload: OrgLiveCrystalBriefReadyPayload };
 
 export type OrgDashboardConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'polling' | 'disconnected';

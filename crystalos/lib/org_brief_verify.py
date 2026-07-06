@@ -78,6 +78,27 @@ async def verify_and_score(
 
     source_insight_ids = source_insight_ids or []
 
+    # Belt-and-suspenders (Fix 2): publish_brief should now never persist an
+    # empty narrative in the first place, but any other future caller of this
+    # function with an empty/whitespace-only narrative must still never be
+    # scored as the maximum-trust "pass" verdict — immediately fail closed
+    # without running the normal numeric-grounding pass at all.
+    if not narrative or not narrative.strip():
+        logger.error("org_brief_verify_empty_narrative", brief_id=brief_id, table=table)
+        trust_json = {
+            "pass_1_2_numeric_and_llm_grounding": {
+                "score": 0.0,
+                "verdict": "fail",
+                "issues": ["empty_or_missing_narrative"],
+                "deterministic_score": None,
+                "llm_score": None,
+            },
+            "pass_3_grounding_completeness": {"grounding_failures": []},
+            "cited_insight_count": 0,
+        }
+        await _write_verification_result(table, brief_id, 0.0, "fail", trust_json)
+        return 0.0, "fail", trust_json
+
     supporting_data: dict[str, Any] = {
         "input_snapshot": input_snapshot,
         "org_signals": org_signals,
@@ -216,7 +237,16 @@ async def _grounding_completeness_check(
         )
     except Exception as exc:
         logger.warning("org_brief_grounding_completeness_failed", error=str(exc))
-        return []
+        # Fail CLOSED, matching pass 1/2's convention (score_insight's own
+        # caller defaults to verdict="flag" on exception) — a check that
+        # couldn't run must never look identical to a check that ran clean.
+        # This sentinel finding degrades verify_and_score's overall verdict
+        # from "pass" to "flag" via the existing `grounding_failures and
+        # verdict == "pass"` rule below, without touching that aggregation logic.
+        return [{
+            "clause": "<verification unavailable>",
+            "reason": "grounding_completeness_check_failed_to_run",
+        }]
 
     failures: list[dict] = []
     for i, clause in enumerate(output.untraceable_clauses):

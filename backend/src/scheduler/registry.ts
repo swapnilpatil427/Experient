@@ -118,11 +118,17 @@ export const JOBS: Job[] = [
     handler: orgMetricsWeekly,
   },
   {
-    // Weekly (Monday) — the registry has no day-of-week primitive, so this ticks daily and
-    // self-gates to Monday UTC inside the handler (org-dashboard).
+    // Weekly (Monday) — the registry has no day-of-week primitive, so this ticks hourly and
+    // self-gates to Monday UTC inside the handler (org-dashboard). Hourly, not daily: a daily
+    // interval is a relative check (`now - lastRun >= 24h`) anchored to whenever the process
+    // last restarted (in-memory `lastRun`, reset to 0 on restart) — on a stable, long-running
+    // deployment that can permanently lock the "is it Monday" check onto the wrong day-of-week
+    // forever. Hourly gives ~24 chances to land inside any Monday's 24h window regardless of
+    // restart timing. compute_org_topic_trends() is idempotent within a calendar week
+    // (deletes+reinserts that week's rows), so the extra non-Monday ticks are cheap no-ops.
     name: 'org-topic-trends',
     description: 'CALL compute_org_topic_trends() — self-gates to Monday UTC inside the handler.',
-    intervalSec: intSec('JOB_ORG_TOPIC_TRENDS_SEC', 86_400), // daily tick, Monday-gated handler
+    intervalSec: intSec('JOB_ORG_TOPIC_TRENDS_SEC', 3_600), // hourly tick, Monday-gated handler (was daily — see Decision N in DECISIONS.md)
     enabled: flag('JOB_ORG_TOPIC_TRENDS', true),
     handler: orgTopicTrends,
   },
@@ -136,10 +142,11 @@ export const JOBS: Job[] = [
   {
     // Weekly (Monday) in production/staging; every tick in dev (org-dashboard's own
     // deliberate dev-only faster refresh cadence — see orgCrystalBrief.job.ts's header).
-    // Ticks daily like org-topic-trends; the handler self-gates on environment tier.
+    // Ticks hourly (see org-topic-trends's comment above for why daily is unsafe); the
+    // handler self-gates on environment tier.
     name: 'org-crystal-brief',
     description: 'Auto-generate the weekly org Crystal Brief for eligible orgs (>=3 surveys, >=14 days of data). Weekly (Monday UTC) in prod/staging; every tick in dev.',
-    intervalSec: intSec('JOB_ORG_CRYSTAL_BRIEF_SEC', 86_400), // daily tick, env-tier-gated handler
+    intervalSec: intSec('JOB_ORG_CRYSTAL_BRIEF_SEC', 3_600), // hourly tick, env-tier-gated handler (was daily — see Decision N)
     enabled: flag('JOB_ORG_CRYSTAL_BRIEF', true),
     handler: orgCrystalBrief,
   },

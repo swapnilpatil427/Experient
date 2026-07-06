@@ -39,12 +39,17 @@ function relativeTime(iso: string): string {
 }
 
 export function WeeklyBriefTeaserCard({
-  orgName, brief, loading, error, onAskFollowUp, onRetry,
+  orgName, brief, loading, error, minDataMet = true, onAskFollowUp, onRetry,
 }: {
   orgName: string;
   brief: CrystalBrief | null;
   loading: boolean;
   error?: string | null;
+  // Real eligibility check ("Crystal needs at least 2 weeks of data from 3
+  // programs") — matches `CrystalBriefCard`'s own default/convention. Without
+  // this, the Hub's empty state was a permanent, unexplained "Crystal hasn't
+  // written a brief yet" for any org below the eligibility bar, forever.
+  minDataMet?: boolean;
   onAskFollowUp: () => void;
   onRetry?: () => void;
 }) {
@@ -78,7 +83,12 @@ export function WeeklyBriefTeaserCard({
       <div className={cardClass} style={cardShadow}>
         <div className="flex items-center gap-2">
           <Icon name="auto_awesome" size={24} style={{ color: 'var(--color-outline-variant)' }} />
-          <span className="text-xs text-on-surface-variant">{t('orgDashboard.crystalBrief.empty')}</span>
+          <div>
+            <span className="text-xs text-on-surface-variant block">{t('orgDashboard.crystalBrief.empty')}</span>
+            {!minDataMet && (
+              <span className="text-xs text-on-surface-variant/80 block mt-0.5">{t('orgDashboard.crystalBrief.notEnoughData')}</span>
+            )}
+          </div>
         </div>
       </div>
     );

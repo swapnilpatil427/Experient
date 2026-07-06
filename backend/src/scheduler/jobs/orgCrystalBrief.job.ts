@@ -10,8 +10,16 @@ import { currentIsoWeekRange } from '../../routes/org-dashboard';
  *
  * The scheduler registry (backend/src/scheduler/registry.ts) is a pure fixed-interval
  * scheduler with no day-of-week primitive, so — mirroring orgTopicTrends.job.ts's own
- * "tick daily, self-gate to Monday UTC inside the handler" pattern — this job is
- * registered on a daily tick and self-gates based on environment tier:
+ * "tick hourly, self-gate to Monday UTC inside the handler" pattern — this job is
+ * registered on an HOURLY tick and self-gates based on environment tier. Hourly, not
+ * daily: the registry's due-check is a pure relative interval (`now - lastRun >=
+ * intervalSec*1000`) anchored to in-memory `lastRun`, which resets to 0 on every process
+ * restart. A 24h interval would anchor the "is it Monday" check to restart time, and on a
+ * stable, long-running deployment could permanently lock onto the wrong day-of-week
+ * forever (see orgTopicTrends.job.ts's header for the full explanation — same bug, same
+ * fix). Ticking hourly gives ~24 chances to land inside any Monday's 24h window regardless
+ * of restart timing; this job's per-org existence check (below) makes extra ticks within
+ * the same week harmless no-ops (idempotent per (org_id, date_range_start)):
  *
  *   - production / staging: only proceed past the gate on Monday UTC (real weekly
  *     cadence — one brief per org per ISO week, matching `org_crystal_briefs`'

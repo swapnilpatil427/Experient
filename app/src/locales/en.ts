@@ -5273,6 +5273,17 @@ const en = {
     healthScore: {
       label:    'Org Health Score',
       ariaLabel: 'Organization health score: {score} out of 100. Status: {status}. 30-day trend: {trend}.',
+      // No real trend data exists yet (org-metrics.service.ts's health-score
+      // history is always `[]` today — a documented backend gap) — used
+      // whenever there's nothing real to report, instead of interpolating an
+      // empty string into `ariaLabel` above (the confirmed bug: a broken-
+      // sounding "...30-day trend: .").
+      ariaLabelNoTrend: 'Organization health score: {score} out of 100. Status: {status}.',
+      trend: {
+        up:     'Trending up',
+        down:   'Trending down',
+        stable: 'Stable',
+      },
       breakdown: {
         nps:              'NPS',
         sentiment:        'Sentiment',
@@ -5294,6 +5305,17 @@ const en = {
         stable:    'Stable',
         declining: 'Declining',
       },
+      // DESIGN.md's "Screen Reader aria-label Patterns" section, verbatim.
+      // `activeSurveysNoDelta` covers `activeSurveysDelta` being absent
+      // (the backend never populates it today) without interpolating a
+      // missing value into a "Change: ... this month" clause.
+      ariaLabels: {
+        activeSurveys:         'Total active surveys: {count}. Change: {delta} this month.',
+        activeSurveysNoDelta:  'Total active surveys: {count}.',
+        totalResponses:        'Total responses: {count}. Responses today: {today}.',
+        orgNps:                'Organization NPS: {score}. Week over week change: {delta} points.',
+        avgSentiment:          'Average sentiment: {score} out of 100. Trend: {trend}.',
+      },
     },
     crystalBrief: {
       title:                 "Crystal's Weekly Brief",
@@ -5308,6 +5330,7 @@ const en = {
       retry:                 'Retry',
       readMore:              'Read more',
       regenerate:            'Regenerate',
+      regenerateFailed:      "Crystal couldn't finish this brief — try again",
       ariaLabel:             "Crystal's weekly brief for the week of {dateRange}",
     },
     trust: {
@@ -5315,6 +5338,7 @@ const en = {
       earlyRead:      'Early read — based on limited data so far',
       earlyReadWhole: "Crystal's early read — some of this week's data is still being verified",
       howSure:        'How sure is Crystal?',
+      stillVerifying: 'Still verifying…',
     },
     alerts: {
       title:         'Program Alerts',
@@ -5383,7 +5407,6 @@ const en = {
       manualPill:        'Custom Summary',
       requestedBy:       'Requested by {name}',
       compareToPrevious: 'Compare to previous',
-      viewAsPage:        'View as page',
       viewProvenance:    'How was this generated?',
     },
     briefProvenance: {

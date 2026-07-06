@@ -22,15 +22,20 @@ export interface KpiTileProps {
   sparkBars?: number[];
   sparkColor?: string;
   loading?: boolean;
+  ariaLabel?: string;
 }
 
 export function KpiTile({
   label, value, valueColor, unit, ci, ciPosition, sample,
-  icon, iconColor, sparkBars, sparkColor, loading,
+  icon, iconColor, sparkBars, sparkColor, loading, ariaLabel,
 }: KpiTileProps) {
   if (loading) return <div className="h-[112px] rounded-2xl bg-surface-container animate-pulse" />;
   return (
-    <GlassCard className="p-5" style={{ boxShadow: '0 10px 30px -10px rgba(0,0,0,0.08), inset 0 2px 4px rgba(255,255,255,0.80)' }}>
+    <GlassCard
+      className="p-5"
+      style={{ boxShadow: '0 10px 30px -10px rgba(0,0,0,0.08), inset 0 2px 4px rgba(255,255,255,0.80)' }}
+      ariaLabel={ariaLabel}
+    >
       <div className="flex items-start justify-between mb-2.5">
         <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
           style={{ background: `${iconColor}18` }}>

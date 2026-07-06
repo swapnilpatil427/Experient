@@ -61,7 +61,10 @@ export function OrgTrendsPage() {
   // ── Command Center data ────────────────────────────────────────────────────
   const { data: dashboard, loading: dashboardLoading, error: dashboardError, refetch: refetchDashboard } = useOrgDashboard();
   const { data: healthDetail, loading: healthLoading } = useOrgHealthScore();
-  const { data: brief, loading: briefLoading, error: briefError, regenerate, regenerating } = useOrgCrystalBrief();
+  const {
+    data: brief, loading: briefLoading, error: briefError, minDataMet, regenerate, regenerating,
+    completeRegeneration, refetch: refetchBrief,
+  } = useOrgCrystalBrief();
   const { data: trends, loading: trendsLoading } = useOrgTrends('30d');
   const programs = useOrgPrograms();
   const alerts = useOrgAlerts();
@@ -71,17 +74,40 @@ export function OrgTrendsPage() {
   const [healthBreakdownOpen, setHealthBreakdownOpen] = useState(false);
   const [generatorOpen, setGeneratorOpen] = useState(false);
   const [generationState, setGenerationState] = useState<GenerationStatusState | null>(null);
+  const [regenerateError, setRegenerateError] = useState<string | null>(null);
+
+  // Alerts that arrived via the live SSE channel in the last few seconds —
+  // drives `AnomalyAlerts`'s slide-in/pulse "this just happened" treatment.
+  // 3s window matches `SeverityBar`'s own `org-dash-severity-pulse 1.5s * 2`
+  // animation total runtime, so the highlight never outlives its own pulse.
+  const NEW_ALERT_HIGHLIGHT_MS = 3000;
+  const [newAlertIds, setNewAlertIds] = useState<Set<string>>(new Set());
 
   const handleLiveEvent = useCallback((evt: OrgDashboardLiveEvent) => {
     if (evt.type === 'anomaly_detected') {
       alerts.prependLive(evt.payload);
+      const id = evt.payload.id;
+      setNewAlertIds((prev) => new Set(prev).add(id));
+      setTimeout(() => {
+        setNewAlertIds((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }, NEW_ALERT_HIGHLIGHT_MS);
+    }
+    if (evt.type === 'crystal_brief_ready') {
+      completeRegeneration();
+      refetchDashboard();
+      refetchBrief();
+      setRegenerateError(evt.payload.success ? null : t('orgDashboard.crystalBrief.regenerateFailed'));
     }
     // 'response_received' KPI counter updates are cosmetic-only here; the
     // canonical KPI values still come from `useOrgDashboard`'s payload, per
     // this page's read-mostly design — a full-fidelity live counter splice
     // is a fast-follow once the backend stream ships.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alerts.prependLive]);
+  }, [alerts.prependLive, completeRegeneration, refetchDashboard, refetchBrief, t]);
 
   const { connectionStatus } = useOrgDashboardLive(handleLiveEvent);
 
@@ -98,6 +124,25 @@ export function OrgTrendsPage() {
 
   const healthTotal = dashboard?.healthScore?.total ?? healthDetail?.totalScore ?? null;
   const healthStatus = healthDetail?.status ?? null;
+
+  // `healthDetail.history` is currently always `[]` (org-metrics.service.ts's
+  // `getHealthScore` — no time-series table exists yet, a documented backend
+  // gap out of this pass's scope). Rather than hardcode an empty-string
+  // `trend` interpolation (the confirmed bug — "...30-day trend: ." read to
+  // screen readers), compute a real direction whenever history is actually
+  // populated and fall back to a trend-free sentence otherwise, so the
+  // aria-label stays grammatically complete either way and starts working
+  // for free once that backend gap closes.
+  const healthHistory = healthDetail?.history ?? [];
+  const healthTrendLabel = healthHistory.length >= 2
+    ? (() => {
+      const last = healthHistory[healthHistory.length - 1].totalScore;
+      const prev = healthHistory[healthHistory.length - 2].totalScore;
+      if (last > prev) return t('orgDashboard.healthScore.trend.up');
+      if (last < prev) return t('orgDashboard.healthScore.trend.down');
+      return t('orgDashboard.healthScore.trend.stable');
+    })()
+    : null;
 
   const kpis = dashboard?.kpis ?? null;
 
@@ -166,7 +211,9 @@ export function OrgTrendsPage() {
               <>
                 <span className="text-3xl font-black tabular-nums" style={{ color: healthStatusColor(healthStatus).text }}
                   data-org-dash-health-glow
-                  aria-label={t('orgDashboard.healthScore.ariaLabel', { score: String(healthTotal), status: t(`orgDashboard.health.${healthStatus}`), trend: '' })}
+                  aria-label={healthTrendLabel
+                    ? t('orgDashboard.healthScore.ariaLabel', { score: String(healthTotal), status: t(`orgDashboard.health.${healthStatus}`), trend: healthTrendLabel })
+                    : t('orgDashboard.healthScore.ariaLabelNoTrend', { score: String(healthTotal), status: t(`orgDashboard.health.${healthStatus}`) })}
                 >
                   {healthTotal}
                 </span>
@@ -193,8 +240,14 @@ export function OrgTrendsPage() {
 
       {/* ── Crystal Brief (full) ─────────────────────────────────────────────── */}
       <section>
-        <div className="flex items-center justify-end mb-2">
-          <button type="button" onClick={regenerate} disabled={regenerating} className="text-xs font-medium text-indigo-600 hover:underline disabled:opacity-50">
+        <div className="flex items-center justify-end gap-2 mb-2">
+          {regenerateError && <span className="text-xs text-[#b41340]">{regenerateError}</span>}
+          <button
+            type="button"
+            onClick={() => { setRegenerateError(null); regenerate().catch(() => setRegenerateError(t('orgDashboard.crystalBrief.regenerateFailed'))); }}
+            disabled={regenerating}
+            className="text-xs font-medium text-indigo-600 hover:underline disabled:opacity-50"
+          >
             {t('orgDashboard.crystalBrief.regenerate')}
           </button>
         </div>
@@ -202,7 +255,7 @@ export function OrgTrendsPage() {
           brief={brief}
           loading={briefLoading}
           error={briefError}
-          minDataMet={brief?.minDataMet}
+          minDataMet={minDataMet}
           onRetry={refetchDashboard}
           onAskFollowUp={handleAskFollowUp}
         />
@@ -232,17 +285,29 @@ export function OrgTrendsPage() {
           <KpiTile
             label={t('orgDashboard.kpis.activeSurveys')} value={String(kpis.activeSurveys)}
             icon="dynamic_form" iconColor="var(--color-tertiary)" loading={dashboardLoading}
+            ariaLabel={kpis.activeSurveysDelta != null
+              ? t('orgDashboard.kpis.ariaLabels.activeSurveys', {
+                count: String(kpis.activeSurveys),
+                delta: `${kpis.activeSurveysDelta >= 0 ? '+' : ''}${kpis.activeSurveysDelta}`,
+              })
+              : t('orgDashboard.kpis.ariaLabels.activeSurveysNoDelta', { count: String(kpis.activeSurveys) })}
           />
           <KpiTile
             label={t('orgDashboard.kpis.totalResponses')} value={kpis.totalResponses.toLocaleString()}
             unit={t('orgDashboard.kpis.responsesToday', { count: String(kpis.responsesToday) })}
             icon="people" iconColor="#059669" loading={dashboardLoading}
+            ariaLabel={t('orgDashboard.kpis.ariaLabels.totalResponses', {
+              count: String(kpis.totalResponses), today: String(kpis.responsesToday),
+            })}
           />
           <KpiTile
             label={t('orgDashboard.kpis.orgNps')} value={kpis.avgNps > 0 ? `+${kpis.avgNps}` : String(kpis.avgNps)}
             valueColor={kpis.avgNps > 30 ? '#059669' : kpis.avgNps >= 0 ? '#d97706' : '#b41340'}
             unit={t('orgDashboard.kpis.wowDelta', { sign: kpis.npsWowDelta >= 0 ? '+' : '', value: String(kpis.npsWowDelta) })}
             icon="sentiment_satisfied" iconColor="var(--color-primary)" loading={dashboardLoading}
+            ariaLabel={t('orgDashboard.kpis.ariaLabels.orgNps', {
+              score: String(kpis.avgNps), delta: String(kpis.npsWowDelta),
+            })}
           />
           <KpiTile
             label={t('orgDashboard.kpis.avgSentiment')}
@@ -250,6 +315,10 @@ export function OrgTrendsPage() {
             valueColor={kpis.sentimentTrend === 'improving' ? '#059669' : kpis.sentimentTrend === 'declining' ? '#b41340' : '#6b7280'}
             unit={t('orgDashboard.kpis.sentimentOutOf100', { value: String(Math.round(((kpis.avgSentiment + 1) / 2) * 100)) })}
             icon="mood" iconColor="var(--color-secondary)" loading={dashboardLoading}
+            ariaLabel={t('orgDashboard.kpis.ariaLabels.avgSentiment', {
+              score: String(Math.round(((kpis.avgSentiment + 1) / 2) * 100)),
+              trend: t(`orgDashboard.kpis.sentimentTrend.${kpis.sentimentTrend}`),
+            })}
           />
         </section>
       )}
@@ -280,6 +349,7 @@ export function OrgTrendsPage() {
             totalUnresolved={alerts.totalUnresolved}
             onAcknowledge={alerts.acknowledge}
             acknowledging={alerts.acknowledging}
+            newAlertIds={Array.from(newAlertIds)}
           />
         </div>
       </section>

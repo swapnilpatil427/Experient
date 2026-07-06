@@ -31,6 +31,28 @@
   --source-scheduled: #818CF8;
   --source-manual:    #A78BFA;
 
+  /* Re-point the app-wide "on-surface" text tokens (index.css's `@theme`
+     block — `--color-on-surface`/`--color-on-surface-variant`, static, no
+     dark variant of their own) at this file's dark palette. Scoped entirely
+     under `[data-theme='war-room']`, which only ever exists on the Command
+     Center page root, so this cannot affect `text-on-surface*` usage
+     anywhere else in the app. Without this, `text-on-surface-variant` etc.
+     look identical in War Room Mode to light mode — the literal fix for
+     Production Readiness Audit's "standardize hardcoded grays onto the
+     token classes already used elsewhere in these files" only actually
+     repaints once this override exists. */
+  --color-on-surface:         var(--text-primary);
+  --color-on-surface-variant: var(--text-secondary);
+  --color-outline-variant:    color-mix(in srgb, var(--text-secondary) 35%, transparent);
+
+  /* Generic card border override for components whose border color is set
+     inline (`style={{ borderColor: ... }}`) rather than via a Tailwind
+     class — inline styles always beat stylesheet rules, so those
+     components thread this var through their own inline style with a
+     light-mode fallback instead of relying on `[data-org-dash-surface]`
+     alone (see `TagGroupsStrip.tsx`). */
+  --org-dash-card-border: var(--bg-surface-2);
+
   background: var(--bg-primary);
   color: var(--text-primary);
 }
@@ -96,4 +118,16 @@
 /* Toggle fade transition, per DESIGN.md's Toggle animation spec */
 [data-org-dash-theme-fade] {
   transition: opacity 150ms ease;
+}
+
+/* GenerationStatusChip — no suitable existing token for its purple/amber
+   accents (they're one-off hex values, not part of the app-wide theme), so
+   this re-points the chip's own CSS vars (consumed via `var(--x, fallback)`
+   in its inline styles) at this file's existing accent tokens. */
+[data-theme='war-room'] [data-org-dash-generation-chip] {
+  --org-dash-gen-bg:     color-mix(in srgb, var(--accent-indigo) 14%, transparent);
+  --org-dash-gen-border: color-mix(in srgb, var(--accent-indigo) 32%, transparent);
+  --org-dash-gen-accent: var(--accent-indigo);
+  --org-dash-gen-warn:   var(--accent-amber);
+  --org-dash-gen-fail:   var(--accent-red);
 }

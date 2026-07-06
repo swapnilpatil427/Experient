@@ -35,7 +35,7 @@ import type {
   OrgTopicsResponse, OrgTopicBreakdown, OrgAlertsResponse, OrgHealthScoreDetail,
   BriefsResponse, CheckpointComparisonResult, TagMetricsResponse,
   SummaryPreviewRequest, SummaryPreviewResponse, CreateSummaryRequest,
-  CreateSummaryResponse, OrgSummary, CrystalBrief, TrendRange, TrendGranularity,
+  CreateSummaryResponse, OrgSummary, CrystalBriefResponse, TrendRange, TrendGranularity,
   OrgBriefDetail,
 } from '../types/orgDashboard';
 
@@ -2483,8 +2483,11 @@ export function createApiClient(getToken: GetToken) {
       return res.data;
     },
 
-    getOrgCrystalBrief: async (): Promise<CrystalBrief & { inputSnapshot?: object | null }> => {
-      const res = await http.get<CrystalBrief & { inputSnapshot?: object | null }>('/api/org/dashboard/crystal-brief');
+    // Always `{ brief, minDataMet }` — never a bare brief, never bare `null`
+    // (see docs/org-dashboard/PRODUCTION_READINESS_AUDIT.md, "GET
+    // /dashboard/crystal-brief" fix).
+    getOrgCrystalBrief: async (): Promise<CrystalBriefResponse> => {
+      const res = await http.get<CrystalBriefResponse>('/api/org/dashboard/crystal-brief');
       return res.data;
     },
 

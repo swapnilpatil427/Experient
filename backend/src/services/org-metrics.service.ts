@@ -54,6 +54,14 @@ export interface Cached<T> {
 
 const inFlightRefresh = new Set<string>();
 
+// Cold-miss / Redis-down coalescing: `inFlightRefresh` above only guards the async
+// background-refresh path (triggered at 80% TTL when Redis IS healthy) — it does nothing
+// for the cold-miss/Redis-down fallback below, where every concurrent request for the
+// same key independently hit `fetcher()` (a thundering-herd risk against Postgres on a
+// popular key during a cold cache or a Redis outage). This map lets concurrent callers
+// for the SAME key share one live `fetcher()` call instead of each issuing their own.
+const inFlightColdFetch = new Map<string, Promise<unknown>>();
+
 /** Kicks a background recompute+repopulate for `key`; de-duped per key, never awaited by callers. */
 function refreshInBackground<T>(key: string, ttlSec: number, fetcher: () => Promise<T>): void {
   if (inFlightRefresh.has(key)) return;
@@ -94,7 +102,16 @@ async function cachedFetch<T>(key: string, ttlSec: number, fetcher: () => Promis
       logger.warn({ err: (err as Error).message, key }, 'org-metrics:cache_read_failed');
     }
   }
-  const value = await fetcher();
+  // Cold path (cache miss or Redis down): coalesce concurrent misses for the same key so
+  // only one live `fetcher()` call happens per key at a time, no matter how many
+  // concurrent requests arrive while it's in flight.
+  const existing = inFlightColdFetch.get(key) as Promise<T> | undefined;
+  const valuePromise = existing ?? (() => {
+    const p = fetcher().finally(() => inFlightColdFetch.delete(key));
+    inFlightColdFetch.set(key, p);
+    return p;
+  })();
+  const value = await valuePromise;
   const cachedAt = Date.now();
   if (redis && redis.status === 'ready') {
     const envelope: CacheEnvelope<T> = { value, cachedAt };
@@ -154,6 +171,13 @@ export interface DashboardPayload {
     sentimentTrend: 'improving' | 'stable' | 'declining';
   };
   crystalBrief: CrystalBriefSummary | null;
+  // Sibling of `crystalBrief`, never merged onto it — same real eligibility check
+  // ("≥3 surveys AND ≥2 weeks of data") GET /dashboard/crystal-brief exposes as
+  // `minDataMet`. Computed fresh on every payload fetch (see fetchDashboardPayload),
+  // not cached separately, so it can never go stale independently of the rest of this
+  // cached payload. Without this, the Hub's "why no brief yet" messaging had no
+  // eligibility signal available to it at all when reading the /dashboard payload.
+  briefMinDataMet: boolean;
   // NOTE: no dataFreshnessAt field here — the route layer takes it from the generic
   // cache envelope's `Cached<T>.dataFreshnessAt` (the time this payload was actually
   // computed), which is also what every other cached() method on this service relies
@@ -495,6 +519,7 @@ export class OrgMetricsService {
       { rows: briefRows },
       { rows: todayRows },
       { rows: totalRows },
+      briefEligibility,
     ] = await Promise.all([
       query(`SELECT org_id, brand_name FROM org_profiles WHERE org_id = $1`, [orgId]).catch(() => ({ rows: [] })),
       query(`SELECT * FROM org_health_score WHERE org_id = $1`, [orgId]),
@@ -503,6 +528,7 @@ export class OrgMetricsService {
       query(`SELECT * FROM org_crystal_briefs WHERE org_id = $1 ORDER BY date_range_start DESC LIMIT 1`, [orgId]),
       query<{ count: number }>(`SELECT COUNT(*)::int AS count FROM responses WHERE org_id = $1 AND submitted_at >= CURRENT_DATE`, [orgId]),
       query<{ count: number }>(`SELECT COUNT(*)::int AS count FROM responses WHERE org_id = $1`, [orgId]),
+      checkOrgBriefEligibility(orgId),
     ]);
 
     const profile = profileRows[0] as { org_id: string; brand_name?: string } | undefined;
@@ -547,6 +573,7 @@ export class OrgMetricsService {
         sentimentTrend: classifySentimentTrend(sentimentWowDelta),
       },
       crystalBrief: brief ? mapCrystalBriefRow(brief) : null,
+      briefMinDataMet: briefEligibility.eligible,
     };
   }
 

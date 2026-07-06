@@ -19,10 +19,24 @@
  *   - PATCH /api/org/dashboard/alerts/:id/acknowledge — updates alert_events.status
  *   - checkOrgBriefEligibility (services/org-metrics.service.ts) — real "≥3 surveys AND
  *     ≥2 weeks of data" eligibility check backing GET /crystal-brief's `minDataMet` field
- *   - GET  /api/org/dashboard/crystal-brief — response includes the new `minDataMet` field;
- *     stays byte-identical `null` (not an incomplete object) when no brief exists yet
+ *   - GET  /api/org/dashboard/crystal-brief — response is always `{brief, minDataMet}`;
+ *     `brief` stays `null` when none exists, `minDataMet` is always present regardless
  *   - GET  /api/org/dashboard/briefs/:briefId — provenance/trail detail; 404s (never leaks)
  *     for a brief id that exists but belongs to a different org
+ *   - Plan-tier gate (Fix 9, PRODUCTION_READINESS_AUDIT.md) — 403 for a sub-Growth org,
+ *     pass-through for Growth+; per-org `command_center_disabled` kill switch — 403
+ *     regardless of plan tier
+ *
+ * Test-fixture note: the router-level plan-tier-gate middleware issues its own
+ * `org_profiles` reads (`plan_tier` / `command_center_disabled`) ahead of every route
+ * handler. Rather than making every existing test's inline `dbQuery` mock aware of two
+ * more queries it has nothing to do with (and risking a collision — e.g. the dashboard
+ * payload test's own `sql.includes('FROM org_profiles')` branch, which answers a
+ * *different* org_profiles query), `buildApp({planTier, commandCenterDisabled})` accepts
+ * two explicit options (defaulting to `'growth'` / `false, i.e. gate passes) and answers
+ * the gate's exact queries directly, unconditionally, before ever delegating to the
+ * test's own `dbQuery`. Tests exercising the gate itself (below) pass explicit
+ * `planTier`/`commandCenterDisabled` overrides instead of reaching into `dbQuery` for it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRequire } from 'node:module';
@@ -39,6 +53,10 @@ const DB_PATH      = _require.resolve(resolve(__dirname, '../lib/db'));
 const ROUTER_PATH  = _require.resolve(resolve(__dirname, '../routes/org-dashboard'));
 const SERVICE_PATH = _require.resolve(resolve(__dirname, '../services/org-metrics.service'));
 const ALERT_PATH   = _require.resolve(resolve(__dirname, '../lib/alertEngine'));
+// Router-level plan-tier gate (Fix 9) — same stale-require-cache risk as SERVICE_PATH/
+// ALERT_PATH above: planGating.ts captures its own `require('./db')` binding at first
+// require time, so it must also be force-refreshed before each app build.
+const PLAN_GATING_PATH = _require.resolve(resolve(__dirname, '../lib/planGating'));
 
 let dbQuery;
 
@@ -53,7 +71,7 @@ function fakeMod(id, exports) {
  *   real gate behavior rather than a permanently-bypassed stub.
  */
 function buildApp(opts = {}) {
-  const { requireHeader = false } = opts;
+  const { requireHeader = false, planTier = 'growth', commandCenterDisabled = false } = opts;
 
   _require.cache[AUTH_PATH] = fakeMod(AUTH_PATH, {
     requireAuth: requireHeader
@@ -70,10 +88,23 @@ function buildApp(opts = {}) {
         },
     DEV_MODE: false,
   });
+  // Answer the router-level plan-tier-gate middleware's own two queries directly
+  // (see the file header note above) — unconditionally, before ever delegating to the
+  // test's own `dbQuery`, so there's no risk of colliding with an unrelated
+  // `org_profiles` query a given test's mock already handles.
+  const dbQueryWithGate = async (sql, params) => {
+    if (sql.includes('SELECT command_center_disabled FROM org_profiles')) {
+      return { rows: [{ command_center_disabled: commandCenterDisabled }] };
+    }
+    if (sql.includes('SELECT plan_tier FROM org_profiles')) {
+      return { rows: [{ plan_tier: planTier }] };
+    }
+    return dbQuery(sql, params);
+  };
   _require.cache[DB_PATH] = fakeMod(DB_PATH, {
-    query: dbQuery,
+    query: dbQueryWithGate,
     pool: {},
-    default: { query: dbQuery },
+    default: { query: dbQueryWithGate },
   });
 
   // Force a fresh require of the router AND the service modules it delegates to — these
@@ -83,6 +114,7 @@ function buildApp(opts = {}) {
   delete _require.cache[ROUTER_PATH];
   delete _require.cache[SERVICE_PATH];
   delete _require.cache[ALERT_PATH];
+  delete _require.cache[PLAN_GATING_PATH];
 
   const router = _require(ROUTER_PATH);
   const app = express();
@@ -325,7 +357,7 @@ describe('checkOrgBriefEligibility (services/org-metrics.service.ts)', () => {
 });
 
 describe('GET /api/org/dashboard/crystal-brief', () => {
-  it('includes the new minDataMet field, computed from real eligibility, alongside the brief', async () => {
+  it('returns {brief, minDataMet} — minDataMet computed from real eligibility, as a sibling of brief', async () => {
     const twentyDaysAgo = new Date(Date.now() - 20 * 86_400_000).toISOString();
     dbQuery = vi.fn(async (sql) => {
       if (sql.includes('FROM org_crystal_briefs WHERE org_id')) {
@@ -345,11 +377,11 @@ describe('GET /api/org/dashboard/crystal-brief', () => {
     const body = res.json();
 
     expect(res.statusCode).toBe(200);
-    expect(body.id).toBe('brief-1');
+    expect(body.brief.id).toBe('brief-1');
     expect(body.minDataMet).toBe(true);
   });
 
-  it('stays exactly null (not an incomplete object) when no brief has been generated yet', async () => {
+  it('brief stays exactly null (not an incomplete object) when no brief has been generated yet, but minDataMet is still present', async () => {
     dbQuery = vi.fn(async (sql) => {
       if (sql.includes('FROM org_crystal_briefs WHERE org_id')) return { rows: [] };
       if (sql.includes('earliest_submitted_at')) return { rows: [{ survey_count: 1, earliest_submitted_at: null }] };
@@ -358,11 +390,57 @@ describe('GET /api/org/dashboard/crystal-brief', () => {
     const app = buildApp();
 
     const res = await inject(app, { method: 'GET', url: '/api/org/dashboard/crystal-brief' });
+    const body = res.json();
 
     expect(res.statusCode).toBe(200);
-    // Must stay `null` (byte-identical to pre-existing behavior), not `{ minDataMet: false }` —
-    // the frontend's CrystalBriefCard treats a falsy top-level value as "no brief yet".
-    expect(res.json()).toBeNull();
+    // `brief` must stay `null` — the exact case where the "why no brief" messaging
+    // matters most — while `minDataMet` (here false: 1 survey, no data yet) is always a
+    // sibling field, never bundled onto a value that can be null.
+    expect(body).toEqual({ brief: null, minDataMet: false });
+  });
+});
+
+describe('Command Center rollout control (plan-tier gate + per-org kill switch)', () => {
+  it('returns 403 with an upgrade-required message for an org below the Growth plan tier', async () => {
+    dbQuery = vi.fn(async () => ({ rows: [] }));
+    const app = buildApp({ planTier: 'free' });
+
+    const res = await inject(app, { method: 'GET', url: '/api/org/dashboard' });
+    const body = res.json();
+
+    expect(res.statusCode).toBe(403);
+    expect(body.error).toMatch(/growth/i);
+    expect(body.error).toMatch(/upgrade/i);
+    // The gate must reject before any dashboard-payload query runs.
+    expect(dbQuery).not.toHaveBeenCalled();
+  });
+
+  it('passes through (no 403) for an org on the Growth plan tier or higher', async () => {
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM surveys')) return { rows: [{ count: 0 }] };
+      return { rows: [] };
+    });
+    const app = buildApp({ planTier: 'enterprise' });
+
+    const res = await inject(app, { method: 'GET', url: '/api/org/dashboard' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ error: 'NO_SURVEYS' });
+  });
+
+  it('returns a distinct 403 for a Growth+ org with command_center_disabled set, even though its plan tier would otherwise pass', async () => {
+    dbQuery = vi.fn(async () => ({ rows: [] }));
+    const app = buildApp({ planTier: 'enterprise', commandCenterDisabled: true });
+
+    const res = await inject(app, { method: 'GET', url: '/api/org/dashboard' });
+    const body = res.json();
+
+    expect(res.statusCode).toBe(403);
+    // Distinct copy from the plan-tier message above so support can tell the two apart.
+    expect(body.error).toMatch(/disabled/i);
+    expect(body.error).not.toMatch(/upgrade/i);
+    // The kill switch must reject before the plan-tier check or any dashboard query runs.
+    expect(dbQuery).not.toHaveBeenCalled();
   });
 });
 
