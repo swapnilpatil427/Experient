@@ -102,7 +102,7 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
         "report_headline": ModelConfig("google/gemma-4-31b-it:free",                   max_tokens=4000, temperature=0.1,  context_window=262_144),
 
         # Kimi K2.6 — Long-context synthetic response generation
-        "response_gen":    ModelConfig("moonshotai/kimi-k2.6:free",                    max_tokens=6000, temperature=0.7,  context_window=262_144),
+        "response_gen":    ModelConfig("moonshotai/kimi-k2.6:free",                    max_tokens=8000, temperature=0.7,  context_window=262_144),
 
         # NVIDIA Nemotron Nano — Smallest/fastest for tiny-output verification
         "insight_verify":  ModelConfig("nvidia/nemotron-nano-9b-v2:free",              max_tokens=300,  temperature=0.0,  context_window=128_000),
@@ -146,7 +146,7 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
         "report_headline": ModelConfig("google/gemini-2.5-flash",    max_tokens=5000,  temperature=0.1,  context_window=1_000_000),
         "crystal":         ModelConfig("google/gemini-2.5-flash",    max_tokens=1500,  temperature=0.3,  context_window=1_000_000),
         "copilot":         ModelConfig("google/gemini-2.5-flash",    max_tokens=3000,  temperature=0.3,  context_window=1_000_000),
-        "response_gen":    ModelConfig("google/gemini-2.5-flash",    max_tokens=8000,  temperature=0.8,  context_window=1_000_000),
+        "response_gen":    ModelConfig("google/gemini-2.5-flash",    max_tokens=12000,  temperature=0.8,  context_window=1_000_000),
 
         # Tier C — Gemini 2.0 Flash: fast structured validators + ABSA
         # absa_concurrency=5, batch=25, cap=250 for dev-paid throughput
@@ -191,7 +191,7 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
         "skip-logic":      ModelConfig("google/gemini-2.5-flash",  max_tokens=4000,  temperature=0.1, context_window=1_000_000),
         "copilot":         ModelConfig("google/gemini-2.5-flash",  max_tokens=2000,  temperature=0.3, context_window=1_000_000),
         "crystal":         ModelConfig("google/gemini-2.5-flash",  max_tokens=1500,  temperature=0.3, context_window=1_000_000),
-        "response_gen":    ModelConfig("google/gemini-2.5-flash",  max_tokens=8000,  temperature=0.8, context_window=1_000_000),
+        "response_gen":    ModelConfig("google/gemini-2.5-flash",  max_tokens=12000,  temperature=0.8, context_window=1_000_000),
         "report_headline": ModelConfig("google/gemini-2.5-flash",  max_tokens=5000,  temperature=0.1, context_window=1_000_000),
 
         # ABSA via insight_narrate — staging: concurrency=8, batch=25, cap=500
@@ -290,7 +290,7 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
         ),
         "response_gen":    ModelConfig(
             "google/gemini-2.5-flash",     # Diverse XM persona generation — $0.15/1M
-            max_tokens=8000,
+            max_tokens=12000,
             temperature=0.8,
             context_window=1_000_000,
         ),
