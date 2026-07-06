@@ -176,6 +176,76 @@ describe('TopicsAnalysisPage — Backfill Tagging', () => {
     );
   });
 
+  it('does not auto-dismiss the completion banner and lets the user dismiss it manually', async () => {
+    // Regression test (2026-07-13, independent customer-review finding — the
+    // single highest-priority UX gap found): the completion banner used to
+    // auto-hide after 6 seconds, so a customer who glanced away could never
+    // learn that responses were quarantined. It must persist until dismissed.
+    const api = setupMocks({
+      getRun: vi.fn().mockResolvedValue({
+        id: 'run-1', status: 'completed',
+        stream_events: [{ event: 'backfill_progress', data: { total_untagged: 100, processed: 100, quarantined: 0 } }],
+      }),
+    });
+    renderPage();
+
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { fireEvent.click(backfillButton()); });
+    await act(async () => { await Promise.resolve(); });
+
+    const dismissBtn = screen.getByLabelText('topicsAnalysis.backfillDismiss');
+    expect(dismissBtn).toBeInTheDocument();
+
+    // Time passing alone must not clear it (no auto-dismiss timer).
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(screen.getByLabelText('topicsAnalysis.backfillDismiss')).toBeInTheDocument();
+
+    // Explicit dismiss does clear it.
+    await act(async () => { fireEvent.click(dismissBtn); });
+    expect(screen.queryByLabelText('topicsAnalysis.backfillDismiss')).not.toBeInTheDocument();
+  });
+
+  it('does not start a job or charge credits when the backend reports nothing to backfill', async () => {
+    const api = setupMocks({
+      triggerTopicBackfill: vi.fn().mockResolvedValue({ status: 'nothing_to_backfill' }),
+    });
+    renderPage();
+
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { fireEvent.click(backfillButton()); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(api.getRun).not.toHaveBeenCalled();
+    expect(mockT).toHaveBeenCalledWith('topicsAnalysis.backfillNothingToDo');
+  });
+
+  it('discloses the bootstrap gap and offers a way to generate the first report', async () => {
+    // Regression test for the highest-severity finding from the independent
+    // backend/customer review: a survey with zero existing topics can never
+    // get its first topic set from this job alone (only the full pipeline
+    // bootstraps topics). The completion state must say so and offer a way
+    // forward, not silently imply topic tagging is done.
+    const api = setupMocks({
+      getRun: vi.fn().mockResolvedValue({
+        id: 'run-1', status: 'completed',
+        stream_events: [{
+          event: 'backfill_progress',
+          data: { total_untagged: 50, processed: 50, quarantined: 0, bootstrap_pending: true },
+        }],
+      }),
+    });
+    renderPage();
+
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { fireEvent.click(backfillButton()); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(mockT).toHaveBeenCalledWith('topicsAnalysis.backfillBootstrapPending');
+    const generateBtn = screen.getByText('topicsAnalysis.backfillGenerateReport');
+    await act(async () => { fireEvent.click(generateBtn); });
+    expect(api.triggerInsightGeneration).toHaveBeenCalledWith('s1');
+  });
+
   it('does nothing when no survey is selected', async () => {
     const api = setupMocks();
     renderPage('');

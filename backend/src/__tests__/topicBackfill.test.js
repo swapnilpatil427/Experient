@@ -68,6 +68,7 @@ beforeEach(() => {
   dbQuery = vi.fn(async (text) => {
     if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
     if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+    if (text.includes('untagged_count')) return { rows: [{ untagged_count: 5000 }] };
     if (text.startsWith('INSERT INTO agent_runs')) return { rows: [{ id: 'run-1' }] };
     return { rows: [] };
   });
@@ -135,6 +136,7 @@ describe('POST /api/insights/:surveyId/topics/backfill', () => {
         preCheckCalls += 1;
         return preCheckCalls === 1 ? { rows: [] } : { rows: [{ id: 'run-winner' }] };
       }
+      if (text.includes('untagged_count')) return { rows: [{ untagged_count: 5000 }] };
       if (text.startsWith('INSERT INTO agent_runs')) throw conflictErr;
       return { rows: [] };
     });
@@ -144,6 +146,25 @@ describe('POST /api/insights/:surveyId/topics/backfill', () => {
     expect(body.run_id).toBe('run-winner');
     expect(triggerBackfillSpy).not.toHaveBeenCalled();
     expect(debitCreditsSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips starting a job and charging credits when nothing is untagged', async () => {
+    // Regression test (2026-07-13, independent sales/product review finding):
+    // without this, a customer double-checking "did everything already get
+    // tagged?" pays the full flat cost for an instant no-op every time.
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+      if (text.includes('untagged_count')) return { rows: [{ untagged_count: 0 }] };
+      return { rows: [] };
+    });
+
+    const { status, body } = await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
+    expect(status).toBe(200);
+    expect(body.status).toBe('nothing_to_backfill');
+    expect(triggerBackfillSpy).not.toHaveBeenCalled();
+    expect(debitCreditsSpy).not.toHaveBeenCalled();
+    expect(dbQuery.mock.calls.some(c => c[0].startsWith('INSERT INTO agent_runs'))).toBe(false);
   });
 
   it('404 when survey not found', async () => {

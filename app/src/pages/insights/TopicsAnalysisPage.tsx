@@ -118,7 +118,7 @@ export function TopicsAnalysisPage() {
   type BackfillStatus = 'idle' | 'running' | 'completed' | 'failed';
   const [backfillRunId, setBackfillRunId] = useState<string | null>(null);
   const [backfillStatus, setBackfillStatus] = useState<BackfillStatus>('idle');
-  const [backfillProgress, setBackfillProgress] = useState<{ total: number; processed: number; quarantined: number } | null>(null);
+  const [backfillProgress, setBackfillProgress] = useState<{ total: number; processed: number; quarantined: number; bootstrapPending: boolean } | null>(null);
   const [backfillError, setBackfillError] = useState<string | null>(null);
 
   // Resume: if a backfill job is already running for this survey (started
@@ -156,12 +156,13 @@ export function TopicsAnalysisPage() {
         const events = run.stream_events ?? [];
         const latest = [...events].reverse().find(
           (e) => e.event === 'backfill_progress' || e.event === 'backfill_started',
-        ) as { data?: { total_untagged?: number; processed?: number; quarantined?: number } } | undefined;
+        ) as { data?: { total_untagged?: number; processed?: number; quarantined?: number; bootstrap_pending?: boolean } } | undefined;
         if (latest?.data) {
           setBackfillProgress({
-            total:       Number(latest.data.total_untagged ?? 0),
-            processed:   Number(latest.data.processed ?? 0),
-            quarantined: Number(latest.data.quarantined ?? 0),
+            total:            Number(latest.data.total_untagged ?? 0),
+            processed:        Number(latest.data.processed ?? 0),
+            quarantined:      Number(latest.data.quarantined ?? 0),
+            bootstrapPending: Boolean(latest.data.bootstrap_pending),
           });
         }
         if (run.status !== 'running') {
@@ -178,18 +179,22 @@ export function TopicsAnalysisPage() {
     return () => { cancelled = true; clearInterval(interval); };
   }, [backfillRunId, backfillStatus, api, loadHierarchy]);
 
-  // Auto-reset the terminal state after a few seconds so the button is
-  // clickable again for a future backfill.
-  useEffect(() => {
-    if (backfillStatus !== 'completed' && backfillStatus !== 'failed') return;
-    const timer = setTimeout(() => {
-      setBackfillStatus('idle');
-      setBackfillRunId(null);
-      setBackfillProgress(null);
-      setBackfillError(null);
-    }, 6000);
-    return () => clearTimeout(timer);
-  }, [backfillStatus]);
+  // Deliberately NO auto-dismiss timer here (fixed 2026-07-13, independent
+  // customer review finding — the single highest-priority UX gap found): the
+  // completion banner is the ONLY place a quarantined-response count is ever
+  // shown, and a 6-second self-erasing message meant a customer who glanced
+  // away, switched tabs, or wasn't watching when the job finished would never
+  // learn that any responses were skipped. The banner now persists until the
+  // user explicitly dismisses it (dismissBackfillBanner below) or starts a
+  // new backfill. The button itself is already re-clickable in 'completed'/
+  // 'failed' states (see disabled prop below), so nothing is blocked by
+  // leaving it visible.
+  const dismissBackfillBanner = useCallback(() => {
+    setBackfillStatus('idle');
+    setBackfillRunId(null);
+    setBackfillProgress(null);
+    setBackfillError(null);
+  }, []);
 
   const handleBackfillTagging = useCallback(async () => {
     if (!surveyId || backfillStatus === 'running') return;
@@ -198,6 +203,15 @@ export function TopicsAnalysisPage() {
     setBackfillStatus('running');
     try {
       const res = await api.triggerTopicBackfill(surveyId);
+      if (res.status === 'nothing_to_backfill' || !res.run_id) {
+        // Nothing was untagged — the backend skips starting (and charging
+        // for) a job entirely. Show the same "complete" shape with zero
+        // counts rather than leaving the button stuck in a spinner with
+        // no run to poll.
+        setBackfillProgress({ total: 0, processed: 0, quarantined: 0, bootstrapPending: false });
+        setBackfillStatus('completed');
+        return;
+      }
       setBackfillRunId(res.run_id);
     } catch (err) {
       setBackfillStatus('failed');
@@ -455,14 +469,16 @@ export function TopicsAnalysisPage() {
                 total:     backfillProgress?.total ?? 0,
               })}
               {backfillStatus === 'completed' && (
-                (backfillProgress?.quarantined ?? 0) > 0
-                  ? t('topicsAnalysis.backfillCompleteWithQuarantine', {
-                      processed:   backfillProgress?.processed ?? 0,
-                      quarantined: backfillProgress?.quarantined ?? 0,
-                    })
-                  : t('topicsAnalysis.backfillCompleteDetail', {
-                      processed: backfillProgress?.processed ?? 0,
-                    })
+                backfillProgress?.total === 0
+                  ? t('topicsAnalysis.backfillNothingToDo')
+                  : (backfillProgress?.quarantined ?? 0) > 0
+                    ? t('topicsAnalysis.backfillCompleteWithQuarantine', {
+                        processed:   backfillProgress?.processed ?? 0,
+                        quarantined: backfillProgress?.quarantined ?? 0,
+                      })
+                    : t('topicsAnalysis.backfillCompleteDetail', {
+                        processed: backfillProgress?.processed ?? 0,
+                      })
               )}
               {backfillStatus === 'failed' && (backfillError || t('topicsAnalysis.backfillFailed'))}
             </p>
@@ -472,7 +488,26 @@ export function TopicsAnalysisPage() {
                 <p className="text-xs text-muted-foreground mt-1">{t('topicsAnalysis.backfillNavigateAwayHint')}</p>
               </>
             )}
+            {backfillStatus === 'completed' && backfillProgress?.bootstrapPending && (
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                <p className="text-xs text-muted-foreground">{t('topicsAnalysis.backfillBootstrapPending')}</p>
+                <Button variant="outline" size="sm" className="gap-1 h-7 text-xs" onClick={handleGenerate}>
+                  <Icon name="auto_awesome" size={12} />
+                  {t('topicsAnalysis.backfillGenerateReport')}
+                </Button>
+              </div>
+            )}
           </div>
+          {backfillStatus !== 'running' && (
+            <button
+              type="button"
+              onClick={dismissBackfillBanner}
+              aria-label={t('topicsAnalysis.backfillDismiss')}
+              className="flex-shrink-0 rounded-full p-1 hover:bg-black/5 transition-colors"
+            >
+              <Icon name="close" size={16} style={{ color: 'var(--color-on-surface-variant, #6b7280)' }} />
+            </button>
+          )}
         </div>
       )}
 

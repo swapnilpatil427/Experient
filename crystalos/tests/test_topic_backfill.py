@@ -15,9 +15,10 @@ from crystalos.lib.topic_backfill import run_topic_backfill, _MAX_NO_PROGRESS_CH
 # chunk without needing a real database.
 
 class _BackfillCursor:
-    def __init__(self, remaining_sequence, run_status="running"):
+    def __init__(self, remaining_sequence, run_status="running", has_topics=True):
         self._remaining_sequence = list(remaining_sequence)
         self._run_status = run_status
+        self._has_topics = has_topics
         self._last_fetchone = None
 
     async def execute(self, sql, params=None):
@@ -26,6 +27,8 @@ class _BackfillCursor:
             self._last_fetchone = (value,)
         elif "SELECT status FROM agent_runs" in sql:
             self._last_fetchone = (self._run_status,)
+        elif "survey_topic_centroids" in sql:
+            self._last_fetchone = (1,) if self._has_topics else None
 
     async def fetchone(self):
         return self._last_fetchone
@@ -55,8 +58,8 @@ class _BackfillConn:
         return False
 
 
-def _backfill_pool(remaining_sequence, run_status="running"):
-    cur = _BackfillCursor(remaining_sequence, run_status)
+def _backfill_pool(remaining_sequence, run_status="running", has_topics=True):
+    cur = _BackfillCursor(remaining_sequence, run_status, has_topics)
     conn = _BackfillConn(cur)
     pool = MagicMock()
     pool.connection = MagicMock(return_value=conn)
@@ -261,6 +264,81 @@ class TestHonestCompletionReporting:
         complete_events = _events_of_type(conn, "backfill_complete")
         assert complete_events[0]["data"]["quarantined"] == 7
         assert complete_events[0]["data"]["processed"] == 93
+
+
+# ── Bootstrap-gap disclosure ────────────────────────────────────────────────────
+# The single highest-severity finding from the independent customer/backend
+# review (2026-07-13): this job can only ASSIGN/discover topics once a survey
+# already has at least one — a survey's first-ever topic set only comes from
+# the full pipeline's bootstrap run, which the platform only auto-triggers for
+# active/paused surveys. A closed/draft survey a customer just imported
+# historical responses into would never get topics through this job alone,
+# which used to still report "Backfill complete" with no signal that topics
+# structurally could not have been produced.
+
+class TestBootstrapGapDisclosure:
+    @pytest.mark.asyncio
+    async def test_flags_bootstrap_pending_when_survey_has_no_topics_yet(self):
+        pool, conn = _backfill_pool(remaining_sequence=[50, 0], has_topics=False)
+        tag_mock = AsyncMock(return_value=_chunk(tagged=50))
+
+        with (
+            patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.topic_backfill.tag_untagged_responses", tag_mock),
+            patch("crystalos.lib.topic_backfill.asyncio.sleep", AsyncMock()),
+        ):
+            await run_topic_backfill("run-1", "s1", "o1")
+
+        started = _events_of_type(conn, "backfill_started")
+        complete = _events_of_type(conn, "backfill_complete")
+        assert started[0]["data"]["bootstrap_pending"] is True
+        assert complete[0]["data"]["bootstrap_pending"] is True
+
+    @pytest.mark.asyncio
+    async def test_does_not_flag_bootstrap_pending_when_topics_already_exist(self):
+        pool, conn = _backfill_pool(remaining_sequence=[50, 0], has_topics=True)
+        tag_mock = AsyncMock(return_value=_chunk(tagged=50))
+
+        with (
+            patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.topic_backfill.tag_untagged_responses", tag_mock),
+            patch("crystalos.lib.topic_backfill.asyncio.sleep", AsyncMock()),
+        ):
+            await run_topic_backfill("run-1", "s1", "o1")
+
+        complete = _events_of_type(conn, "backfill_complete")
+        assert complete[0]["data"]["bootstrap_pending"] is False
+
+    @pytest.mark.asyncio
+    async def test_flags_bootstrap_pending_even_on_the_zero_backlog_fast_path(self):
+        """A closed survey with zero UNTAGGED responses (everything already has
+        sentiment/emotion from a prior sweep, but never got topics) must still
+        be flagged — the zero-backlog early return is a real, common way to
+        reach this state, not just the multi-chunk path."""
+        pool, conn = _backfill_pool(remaining_sequence=[0], has_topics=False)
+        tag_mock = AsyncMock()
+
+        with (
+            patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.topic_backfill.tag_untagged_responses", tag_mock),
+        ):
+            await run_topic_backfill("run-1", "s1", "o1")
+
+        tag_mock.assert_not_called()
+        complete = _events_of_type(conn, "backfill_complete")
+        assert complete[0]["data"]["bootstrap_pending"] is True
+
+    @pytest.mark.asyncio
+    async def test_has_topics_check_failure_fails_open_and_does_not_crash_the_job(self):
+        """A transient error checking has_centroids must not block or mislabel
+        a real run — fail open (treat as "has topics") rather than raising."""
+        from crystalos.lib.topic_backfill import _has_topics_yet
+
+        pool = MagicMock()
+        pool.connection = MagicMock(side_effect=RuntimeError("pool exhausted"))
+        with patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool):
+            result = await _has_topics_yet("s1")
+        assert result is True
 
 
 # ── Unexpected exception ───────────────────────────────────────────────────────

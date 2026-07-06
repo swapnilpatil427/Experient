@@ -34,6 +34,7 @@ import json
 import time
 
 from crystalos.lib import db
+from crystalos.lib import topic_registry
 from crystalos.lib.logger import logger
 from crystalos.lib.constants import RESPONSE_TAGGING_SWEEP_CAP, MAX_RESPONSE_TAGGING_ATTEMPTS
 from crystalos.lib.response_tagging import tag_untagged_responses
@@ -96,6 +97,29 @@ async def _get_run_status(run_id: str) -> str | None:
         return None
 
 
+async def _has_topics_yet(survey_id: str) -> bool:
+    """Whether this survey has ANY existing topic centroid.
+
+    Fixed 2026-07-13 (independent XM-customer/backend review): the lightweight
+    sweep this job drives (``tag_untagged_responses``) can only ASSIGN to
+    existing topics or discover incremental new ones once at least one topic
+    already exists — a survey's very FIRST topic set only ever comes from the
+    full insight pipeline's bootstrap run (whole-corpus clustering). For a
+    survey that will never automatically reach that bootstrap (e.g. a
+    closed/draft survey a customer just imported historical responses into —
+    the stream/scheduler bootstrap triggers both require an active/paused
+    survey), this job used to happily tag sentiment/emotion/effort, report
+    "Backfill complete," and leave topics permanently empty with no signal
+    anything was incomplete — a silent, misleading success. Checked once up
+    front so ``run_topic_backfill`` can flag this honestly instead."""
+    try:
+        async with db._pool_conn().connection() as conn:
+            return await topic_registry.has_centroids(survey_id, conn)
+    except Exception as exc:
+        logger.warning("topic_backfill_has_topics_check_failed", survey_id=survey_id, error=str(exc))
+        return True  # fail open: don't block/mislabel a real run over a transient check failure
+
+
 async def _count_untagged(survey_id: str, org_id: str) -> int:
     try:
         async with db._pool_conn().connection() as conn:
@@ -156,6 +180,20 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
     let a customer trust topic/NPS-driver analysis built on data that's
     missing real responses with no visible signal that anything was skipped.
 
+    Bootstrap-gap disclosure (fixed 2026-07-13, independent customer/backend
+    review finding — the single highest-severity gap found): this job can
+    only ASSIGN to or incrementally discover topics once a survey already has
+    at least one. A survey's first-ever topic set only ever comes from the
+    full insight pipeline's bootstrap run, which the platform only triggers
+    automatically for active/paused surveys. A closed or draft survey (e.g.
+    one a customer just imported historical responses into) will therefore
+    NEVER get topics through this job alone — it used to still tag sentiment/
+    emotion/effort, report "Backfill complete," and leave topics permanently,
+    silently empty. ``bootstrap_pending`` is now checked once up front and
+    included in every emitted event so the frontend can say so honestly
+    instead of implying topic tagging finished when it structurally couldn't
+    have started.
+
     Never raises — this is started via ``asyncio.create_task`` with no
     awaiter, so an uncaught exception would otherwise only surface as an
     "unhandled task exception" log line, leaving the ``agent_runs`` row
@@ -163,11 +201,16 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
     Catching everything here gives the user an immediate, accurate result.
     """
     total_at_start = await _count_untagged(survey_id, org_id)
-    await _emit_event(run_id, "backfill_started", {"total_untagged": total_at_start})
+    bootstrap_pending = not await _has_topics_yet(survey_id)
+    await _emit_event(run_id, "backfill_started", {
+        "total_untagged": total_at_start, "bootstrap_pending": bootstrap_pending,
+    })
 
     if total_at_start == 0:
         await _mark_run(run_id, "completed")
-        await _emit_event(run_id, "backfill_complete", {"total_untagged": 0, "processed": 0, "quarantined": 0})
+        await _emit_event(run_id, "backfill_complete", {
+            "total_untagged": 0, "processed": 0, "quarantined": 0, "bootstrap_pending": bootstrap_pending,
+        })
         return
 
     processed = 0
@@ -202,12 +245,14 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
                 "remaining":         remaining,
                 "topics_assigned":   chunk_result["topics_assigned"],
                 "topics_discovered": chunk_result["topics_discovered"],
+                "bootstrap_pending": bootstrap_pending,
             })
 
             if remaining == 0:
                 await _mark_run(run_id, "completed")
                 await _emit_event(run_id, "backfill_complete", {
                     "total_untagged": total_at_start, "processed": processed, "quarantined": quarantined_total,
+                    "bootstrap_pending": bootstrap_pending,
                 })
                 return
 

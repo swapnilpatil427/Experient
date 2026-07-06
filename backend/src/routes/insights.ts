@@ -708,6 +708,20 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
       return;
     }
 
+    // Don't charge (or start a job at all) when there's nothing to do — fixed
+    // 2026-07-13, independent sales/product review finding. Without this, a
+    // customer double-checking "did everything already get tagged?" pays the
+    // full flat cost for an instant no-op every time.
+    const { rows: [{ untagged_count: untaggedCount }] } = await query(
+      `SELECT COUNT(*)::int AS untagged_count FROM responses
+       WHERE survey_id = $1 AND org_id = $2 AND ai_enriched_at IS NULL`,
+      [surveyId, req.orgId],
+    ) as { rows: { untagged_count: number }[] };
+    if (untaggedCount === 0) {
+      res.status(200).json({ status: 'nothing_to_backfill' });
+      return;
+    }
+
     const check = await checkCredits(req.orgId, CREDIT_COSTS.topic_backfill, 'topic_backfill');
     if (!check.ok) {
       res.status(402).json({

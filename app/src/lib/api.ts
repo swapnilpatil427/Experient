@@ -1635,10 +1635,15 @@ export function createApiClient(getToken: GetToken) {
     // SAME generic agent_runs polling mechanism every other run type uses
     // (getRun below) — no bespoke progress channel.
 
-    /** Start a backfill job. 202 → { run_id, status: 'started' }. Throws ManualRunError on 402/429. */
-    triggerTopicBackfill: async (surveyId: string): Promise<{ run_id: string; status: string }> => {
+    /**
+     * Start a backfill job. 202 → { run_id, status: 'started' }. If there's
+     * nothing untagged for this survey, the backend skips starting a job (and
+     * charging credits) entirely → 200 { status: 'nothing_to_backfill' } with
+     * no run_id. Throws ManualRunError on 402/429.
+     */
+    triggerTopicBackfill: async (surveyId: string): Promise<{ run_id?: string; status: string }> => {
       try {
-        const res = await rawHttp.post<{ run_id: string; status: string }>(
+        const res = await rawHttp.post<{ run_id?: string; status: string }>(
           `/api/insights/${surveyId}/topics/backfill`,
         );
         return res.data;
