@@ -3974,7 +3974,7 @@ const en = {
   topicsAnalysis: {
     pageTitle: 'Topics Analysis',
     pageSubtitle: 'Explore themes and topics discovered across your survey responses.',
-    breadcrumbInsights: 'Insights',
+    breadcrumbExperience: 'Experience',
     breadcrumbTopics: 'Topics',
     askCrystal: 'Ask Crystal',
     selectSurveyTitle: 'Select a survey to explore topics',

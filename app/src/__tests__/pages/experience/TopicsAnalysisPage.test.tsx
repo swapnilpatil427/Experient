@@ -42,7 +42,7 @@ vi.mock('../../../pages/insights/components/ImpactScatterChart', () => ({
 import { useApi }     from '../../../hooks/useApi';
 import { useSurveys } from '../../../hooks/useSurveys';
 import { ManualRunError } from '../../../lib/api';
-import { TopicsAnalysisPage } from '../../../pages/insights/TopicsAnalysisPage';
+import { TopicsAnalysisPage } from '../../../pages/experience/TopicsAnalysisPage';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ function setupMocks(apiOverrides: Record<string, unknown> = {}) {
 
 function renderPage(query = '?survey=s1') {
   return render(
-    <MemoryRouter initialEntries={[`/app/insights/topics${query}`]}>
+    <MemoryRouter initialEntries={[`/app/experience/topics${query}`]}>
       <TopicsAnalysisPage />
     </MemoryRouter>,
   );
@@ -217,6 +217,27 @@ describe('TopicsAnalysisPage — Backfill Tagging', () => {
 
     expect(api.getRun).not.toHaveBeenCalled();
     expect(mockT).toHaveBeenCalledWith('topicsAnalysis.backfillNothingToDo');
+  });
+
+  it('discloses the bootstrap gap instead of "already tagged" when nothing is untagged but topics were never bootstrapped', async () => {
+    // Regression test for the false-positive "Everything is already tagged"
+    // bug: ai_enriched_at (sentiment/emotion done) being fully caught up does
+    // NOT mean topics were ever assigned — the backend's nothing_to_backfill
+    // response carries bootstrap_pending for exactly this case, and the page
+    // must show the bootstrap-specific message (and the "Generate report"
+    // action), not the generic "nothing to catch up" copy.
+    const api = setupMocks({
+      triggerTopicBackfill: vi.fn().mockResolvedValue({ status: 'nothing_to_backfill', bootstrap_pending: true }),
+    });
+    renderPage();
+
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { fireEvent.click(backfillButton()); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(api.getRun).not.toHaveBeenCalled();
+    expect(mockT).toHaveBeenCalledWith('topicsAnalysis.backfillBootstrapPending');
+    expect(screen.getByText('topicsAnalysis.backfillGenerateReport')).toBeInTheDocument();
   });
 
   it('discloses the bootstrap gap and offers a way to generate the first report', async () => {

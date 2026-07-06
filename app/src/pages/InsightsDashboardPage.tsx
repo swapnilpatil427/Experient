@@ -310,8 +310,8 @@ export function InsightsDashboardPage() {
               size="sm"
               onClick={() => {
                 const dest = focusSurveyId
-                  ? `${ROUTES.INSIGHTS_TOPICS}?survey=${focusSurveyId}`
-                  : ROUTES.INSIGHTS_TOPICS;
+                  ? `${ROUTES.EXPERIENCE_TOPICS}?survey=${focusSurveyId}`
+                  : ROUTES.EXPERIENCE_TOPICS;
                 navigate(dest);
               }}
               className="text-xs h-auto py-2 px-3 gap-1.5"

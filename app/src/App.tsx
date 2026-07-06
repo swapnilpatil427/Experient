@@ -11,7 +11,6 @@ import { ResponseDashboardPage } from './pages/ResponseDashboardPage';
 import { SurveyInsightsPage }    from './pages/SurveyInsightsPage';
 import { SampleResponsesPage }  from './pages/SampleResponsesPage';
 import { InsightsDashboardPage } from './pages/InsightsDashboardPage';
-import { TopicsAnalysisPage } from './pages/insights/TopicsAnalysisPage';
 import { InsightTrailPage } from './pages/insights/InsightTrailPage';
 import { InsightReportPage } from './pages/insights/InsightReportPage';
 import { InsightSettingsPage } from './pages/insights/InsightSettingsPage';
@@ -36,6 +35,7 @@ import { PrismConnectPage } from './pages/prism/PrismConnectPage';
 import { PrismJobPage } from './pages/prism/PrismJobPage';
 import { PrismJobsPage } from './pages/prism/PrismJobsPage';
 import { ExperienceHubPage } from './pages/experience/ExperienceHubPage';
+import { TopicsAnalysisPage } from './pages/experience/TopicsAnalysisPage';
 import { SurveyIntelligencePage } from './pages/experience/SurveyIntelligencePage';
 import { SurveyReportPage } from './pages/experience/SurveyReportPage';
 import { TopicAnalysisHubPage } from './pages/experience/TopicAnalysisHubPage';
@@ -124,7 +124,6 @@ export default function App() {
             <Route path={ROUTES.SURVEY_INSIGHTS}    element={<ErrorBoundary inline><SurveyInsightsPage /></ErrorBoundary>} />
             <Route path={ROUTES.SAMPLE_RESPONSES}   element={<ErrorBoundary inline><SampleResponsesPage /></ErrorBoundary>} />
             <Route path={ROUTES.INSIGHTS}           element={<ErrorBoundary inline><InsightsDashboardPage /></ErrorBoundary>} />
-            <Route path={ROUTES.INSIGHTS_TOPICS}    element={<ErrorBoundary inline><TopicsAnalysisPage /></ErrorBoundary>} />
             <Route path={ROUTES.INSIGHT_TRAIL}      element={<ErrorBoundary inline><InsightTrailPage /></ErrorBoundary>} />
             <Route path={ROUTES.INSIGHT_REPORT}     element={<ErrorBoundary inline><InsightReportPage /></ErrorBoundary>} />
             <Route path={ROUTES.INSIGHT_SETTINGS}   element={<ErrorBoundary inline><InsightSettingsPage /></ErrorBoundary>} />
@@ -151,6 +150,7 @@ export default function App() {
             <Route path={ROUTES.PRISM_JOBS}    element={<ErrorBoundary inline><PrismJobsPage /></ErrorBoundary>} />
             <Route path={ROUTES.PRISM_JOB}     element={<ErrorBoundary inline><PrismJobPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE}              element={<ErrorBoundary inline><ExperienceHubPage /></ErrorBoundary>} />
+            <Route path={ROUTES.EXPERIENCE_TOPICS}       element={<ErrorBoundary inline><TopicsAnalysisPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_ORG_TRENDS}   element={<ErrorBoundary inline><OrgTrendsPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY}       element={<ErrorBoundary inline><SurveyIntelligencePage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY_REPORT} element={<ErrorBoundary inline><SurveyReportPage /></ErrorBoundary>} />

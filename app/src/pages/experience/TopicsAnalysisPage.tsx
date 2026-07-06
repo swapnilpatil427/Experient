@@ -1,9 +1,15 @@
-// TopicsAnalysisPage — /app/insights/topics?survey=ID&topic=ID&window=all_time|30d|7d
+// TopicsAnalysisPage — /app/experience/topics?survey=ID&topic=ID&window=all_time|30d|7d
 //
 // Three modes:
 //   • No survey selected  → nudge to pick survey
 //   • surveyId, no topic  → overview (hierarchy tree + scatter chart)
 //   • surveyId + topicId  → deep-dive (TopicDetailPanel)
+//
+// Lives under pages/experience/ (moved from pages/insights/) but still pulls
+// its hierarchy/detail/chart components and GlassCard from pages/insights/ —
+// those are shared across several insights pages (see pages/experience/
+// SurveyReportPage.tsx, TopicAnalysisHubPage.tsx etc. for the same
+// cross-folder import pattern), not duplicated here.
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -20,10 +26,10 @@ import { Button } from '@/components/ui/button';
 import { SurveyScopePicker } from '../../components/SurveyScopePicker';
 import { Progress } from '@/components/ui/progress';
 import { ManualRunError } from '../../lib/api';
-import { GlassCard } from './shared';
-import { TopicHierarchyTree, type ThemeGroup } from './components/TopicHierarchyTree';
-import { TopicDetailPanel } from './components/TopicDetailPanel';
-import { ImpactScatterChart } from './components/ImpactScatterChart';
+import { GlassCard } from '../insights/shared';
+import { TopicHierarchyTree, type ThemeGroup } from '../insights/components/TopicHierarchyTree';
+import { TopicDetailPanel } from '../insights/components/TopicDetailPanel';
+import { ImpactScatterChart } from '../insights/components/ImpactScatterChart';
 import type { SurveyTopic, TopicDetail, TopicVerbatim, TopicTheme } from '../../types';
 
 // ── Time window constants ──────────────────────────────────────────────────────
@@ -207,8 +213,11 @@ export function TopicsAnalysisPage() {
         // Nothing was untagged — the backend skips starting (and charging
         // for) a job entirely. Show the same "complete" shape with zero
         // counts rather than leaving the button stuck in a spinner with
-        // no run to poll.
-        setBackfillProgress({ total: 0, processed: 0, quarantined: 0, bootstrapPending: false });
+        // no run to poll. bootstrap_pending (fully sentiment-tagged, but the
+        // survey has never had its first topic-bootstrap run) must carry
+        // through here — hardcoding it false is what caused "Everything is
+        // already tagged" to show even when topics were never assigned.
+        setBackfillProgress({ total: 0, processed: 0, quarantined: 0, bootstrapPending: Boolean(res.bootstrap_pending) });
         setBackfillStatus('completed');
         return;
       }
@@ -347,8 +356,8 @@ export function TopicsAnalysisPage() {
   // ── Breadcrumbs ──────────────────────────────────────────────────────────
   const crumbs = useMemo(() => {
     const base = [
-      { label: t('topicsAnalysis.breadcrumbInsights'), path: ROUTES.INSIGHTS },
-      { label: t('topicsAnalysis.breadcrumbTopics'),   path: ROUTES.INSIGHTS_TOPICS },
+      { label: t('topicsAnalysis.breadcrumbExperience'), path: ROUTES.EXPERIENCE },
+      { label: t('topicsAnalysis.breadcrumbTopics'),     path: ROUTES.EXPERIENCE_TOPICS },
     ];
     if (selectedTopicId && detailTopic) {
       return [...base, { label: detailTopic.name }];
@@ -470,7 +479,14 @@ export function TopicsAnalysisPage() {
               })}
               {backfillStatus === 'completed' && (
                 backfillProgress?.total === 0
-                  ? t('topicsAnalysis.backfillNothingToDo')
+                  ? (backfillProgress?.bootstrapPending
+                      // Sentiment/emotion tagging is done, but this survey has
+                      // never had its first topic-bootstrap run — "Everything
+                      // is already tagged" would be false here (topics were
+                      // never assigned), so use the bootstrap-specific copy
+                      // instead of the generic "nothing to catch up" message.
+                      ? t('topicsAnalysis.backfillBootstrapPending')
+                      : t('topicsAnalysis.backfillNothingToDo'))
                   : (backfillProgress?.quarantined ?? 0) > 0
                     ? t('topicsAnalysis.backfillCompleteWithQuarantine', {
                         processed:   backfillProgress?.processed ?? 0,
@@ -490,7 +506,11 @@ export function TopicsAnalysisPage() {
             )}
             {backfillStatus === 'completed' && backfillProgress?.bootstrapPending && (
               <div className="flex items-center gap-2 mt-2 flex-wrap">
-                <p className="text-xs text-muted-foreground">{t('topicsAnalysis.backfillBootstrapPending')}</p>
+                {/* total === 0 already shows this exact copy as the primary
+                    message above — don't repeat it, just surface the action. */}
+                {backfillProgress.total !== 0 && (
+                  <p className="text-xs text-muted-foreground">{t('topicsAnalysis.backfillBootstrapPending')}</p>
+                )}
                 <Button variant="outline" size="sm" className="gap-1 h-7 text-xs" onClick={handleGenerate}>
                   <Icon name="auto_awesome" size={12} />
                   {t('topicsAnalysis.backfillGenerateReport')}

@@ -718,7 +718,21 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
       [surveyId, req.orgId],
     ) as { rows: { untagged_count: number }[] };
     if (untaggedCount === 0) {
-      res.status(200).json({ status: 'nothing_to_backfill' });
+      // ai_enriched_at IS NULL only tracks sentiment/emotion/effort scoring —
+      // it says nothing about whether topics were ever assigned. This job can
+      // only ASSIGN to an existing topic centroid; a survey's first-ever topic
+      // set only comes from the full insight pipeline's bootstrap run (see
+      // crystalos/lib/topic_backfill.py::_has_topics_yet). Without this check,
+      // a survey that's fully sentiment-tagged but never bootstrapped (e.g. a
+      // closed/draft survey imported with historical responses) short-circuits
+      // here BEFORE run_topic_backfill's own bootstrap_pending disclosure ever
+      // runs, so the frontend reports "everything is already tagged" while
+      // every response's topics are still permanently empty.
+      const { rows: centroidRows } = await query(
+        `SELECT 1 FROM survey_topic_centroids WHERE survey_id = $1 AND org_id = $2 LIMIT 1`,
+        [surveyId, req.orgId],
+      );
+      res.status(200).json({ status: 'nothing_to_backfill', bootstrap_pending: centroidRows.length === 0 });
       return;
     }
 

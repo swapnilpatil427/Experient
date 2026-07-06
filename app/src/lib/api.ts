@@ -1638,12 +1638,17 @@ export function createApiClient(getToken: GetToken) {
     /**
      * Start a backfill job. 202 → { run_id, status: 'started' }. If there's
      * nothing untagged for this survey, the backend skips starting a job (and
-     * charging credits) entirely → 200 { status: 'nothing_to_backfill' } with
-     * no run_id. Throws ManualRunError on 402/429.
+     * charging credits) entirely → 200 { status: 'nothing_to_backfill',
+     * bootstrap_pending } with no run_id. `bootstrap_pending` is true when the
+     * survey has never had its first topic-bootstrap run (no topic centroids
+     * yet) — sentiment/emotion tagging can be fully complete while topics are
+     * still permanently unassigned, so this must be surfaced separately from
+     * "nothing_to_backfill" rather than folded into it. Throws ManualRunError
+     * on 402/429.
      */
-    triggerTopicBackfill: async (surveyId: string): Promise<{ run_id?: string; status: string }> => {
+    triggerTopicBackfill: async (surveyId: string): Promise<{ run_id?: string; status: string; bootstrap_pending?: boolean }> => {
       try {
-        const res = await rawHttp.post<{ run_id?: string; status: string }>(
+        const res = await rawHttp.post<{ run_id?: string; status: string; bootstrap_pending?: boolean }>(
           `/api/insights/${surveyId}/topics/backfill`,
         );
         return res.data;

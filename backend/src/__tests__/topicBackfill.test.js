@@ -172,23 +172,49 @@ describe('POST /api/insights/:surveyId/topics/backfill', () => {
     expect(debitCreditsSpy).not.toHaveBeenCalled();
   });
 
-  it('skips starting a job and charging credits when nothing is untagged', async () => {
+  it('skips starting a job and charging credits when nothing is untagged, and flags bootstrap_pending when the survey has no topic centroids yet', async () => {
     // Regression test (2026-07-13, independent sales/product review finding):
     // without this, a customer double-checking "did everything already get
     // tagged?" pays the full flat cost for an instant no-op every time.
+    //
+    // Also a regression test for the false-positive "everything is already
+    // tagged" bug: ai_enriched_at IS NULL only tracks sentiment/emotion/effort
+    // scoring, not whether topics were ever assigned. A survey that's fully
+    // sentiment-tagged but has never had its first topic-bootstrap run (no
+    // survey_topic_centroids row) must surface bootstrap_pending:true here —
+    // otherwise this pre-check short-circuits BEFORE CrystalOS's own
+    // bootstrap_pending disclosure (topic_backfill.py::_has_topics_yet) ever
+    // runs, and the frontend wrongly reports full completion.
     dbQuery = vi.fn(async (text) => {
       if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
       if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
       if (text.includes('untagged_count')) return { rows: [{ untagged_count: 0 }] };
+      if (text.includes('FROM survey_topic_centroids')) return { rows: [] };
       return { rows: [] };
     });
 
     const { status, body } = await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
     expect(status).toBe(200);
     expect(body.status).toBe('nothing_to_backfill');
+    expect(body.bootstrap_pending).toBe(true);
     expect(triggerBackfillSpy).not.toHaveBeenCalled();
     expect(debitCreditsSpy).not.toHaveBeenCalled();
     expect(dbQuery.mock.calls.some(c => c[0].startsWith('INSERT INTO agent_runs'))).toBe(false);
+  });
+
+  it('does not flag bootstrap_pending when nothing is untagged AND the survey already has topic centroids', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+      if (text.includes('untagged_count')) return { rows: [{ untagged_count: 0 }] };
+      if (text.includes('FROM survey_topic_centroids')) return { rows: [{ 1: 1 }] };
+      return { rows: [] };
+    });
+
+    const { status, body } = await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
+    expect(status).toBe(200);
+    expect(body.status).toBe('nothing_to_backfill');
+    expect(body.bootstrap_pending).toBe(false);
   });
 
   it('404 when survey not found', async () => {
