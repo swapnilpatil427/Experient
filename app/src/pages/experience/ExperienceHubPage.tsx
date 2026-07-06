@@ -399,7 +399,7 @@ export function ExperienceHubPage() {
         brief={orgDashboardData?.crystalBrief ?? null}
         loading={orgDashboardLoading}
         error={orgDashboardError}
-        onAskFollowUp={() => openCrystal(t('orgDashboard.crystalBrief.followUpQuery'))}
+        onAskFollowUp={() => openCrystal(t('orgDashboard.crystalBrief.followUpQuery'), { focused_brief_id: orgDashboardData?.crystalBrief?.id })}
         onRetry={refetchOrgDashboard}
       />
 

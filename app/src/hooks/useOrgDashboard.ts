@@ -14,7 +14,7 @@ import { useCallback, useState } from 'react';
 import { useApi } from './useApi';
 import { useFetch } from './useExperience';
 import type {
-  CheckpointComparisonResult, CreateSummaryRequest, OrgSummary,
+  CheckpointComparisonResult, CreateSummaryRequest, OrgBriefDetail, OrgSummary,
   SummaryPreviewRequest, TrendRange,
 } from '../types/orgDashboard';
 
@@ -86,6 +86,16 @@ export function useCheckpointCompare() {
   const reset = useCallback(() => { setResult(null); setError(null); }, []);
 
   return { result, loading, error, compare, reset };
+}
+
+// Lazy — only fetches once `briefId` is non-null, mirroring how
+// `CheckpointDiffPanel` already lazy-fetches compare data only on click, not
+// on every archive render. Powers `BriefProvenancePanel` ("How was this
+// generated?"), nested inside a `BriefArchive` entry.
+export function useOrgBriefDetail(briefId: string | null) {
+  const api = useApi();
+  const fetcher = useCallback((): Promise<OrgBriefDetail> => api.getOrgBriefDetail(briefId as string), [api, briefId]);
+  return useFetch(briefId ? fetcher : null);
 }
 
 export function useOrgSummaries() {

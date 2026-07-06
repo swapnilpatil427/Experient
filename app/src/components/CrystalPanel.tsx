@@ -358,6 +358,12 @@ export function CrystalPanel({
                 // Only present when streamScope === 'tag' — omitted (undefined
                 // values are dropped by JSON.stringify) for survey/org scope.
                 tag_id: streamScope === 'tag' ? activeCtx.focused_tag_id : undefined,
+                // Org Dashboard's "Ask a follow-up" grounds Crystal's org-chat in
+                // the specific brief being viewed. Omitted (dropped by
+                // JSON.stringify) whenever the caller didn't set it — every
+                // existing caller (survey-scope, tag-scope, plain org-scope)
+                // keeps a byte-identical request body.
+                brief_id: activeCtx.focused_brief_id,
                 // Wave 15 (docs/automation-hub/TRACKER.md) — signal builder
                 // context to backend/src/routes/experience.ts, which hard-
                 // matches `body.surface === 'workflow_builder'` and relays

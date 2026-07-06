@@ -12,6 +12,8 @@ import { Icon } from '../Icon';
 import { Button } from '@/components/ui/button';
 import { useTranslation } from '../../lib/i18n';
 import { CheckpointDiffPanel } from './CheckpointDiffPanel';
+import { BriefProvenancePanel } from './BriefProvenancePanel';
+import { SourcePill } from './SourcePill';
 import type { BriefHistoryEntry } from '../../types/orgDashboard';
 
 function dateRangeLabel(start: string, end: string): string {
@@ -20,31 +22,11 @@ function dateRangeLabel(start: string, end: string): string {
   return `${fmt(s)}–${fmt(e)}, ${e.getFullYear()}`;
 }
 
-function SourcePill({ source, requestedByName }: { source: BriefHistoryEntry['source']; requestedByName?: string | null }) {
-  const { t } = useTranslation();
-  if (source === 'scheduled') {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-700">
-        <Icon name="schedule" size={11} />
-        {t('orgDashboard.briefArchive.scheduledPill')}
-      </span>
-    );
-  }
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-100 text-violet-700"
-      title={requestedByName ? t('orgDashboard.briefArchive.requestedBy', { name: requestedByName }) : undefined}
-    >
-      <Icon name="auto_awesome" size={11} />
-      {t('orgDashboard.briefArchive.manualPill')}
-    </span>
-  );
-}
-
 function BriefEntry({ entry }: { entry: BriefHistoryEntry }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
+  const [showProvenance, setShowProvenance] = useState(false);
   const dotColor = entry.healthStatusAtTime === 'critical' ? '#F43F5E'
     : entry.healthStatusAtTime === 'attention' ? '#F59E0B' : '#22C55E';
 
@@ -77,10 +59,19 @@ function BriefEntry({ entry }: { entry: BriefHistoryEntry }) {
                 {t('orgDashboard.briefArchive.compareToPrevious')}
               </button>
             )}
+            <button
+              type="button"
+              className="text-xs font-medium text-primary flex items-center gap-1"
+              onClick={() => setShowProvenance((v) => !v)}
+            >
+              <Icon name="manage_search" size={13} />
+              {t('orgDashboard.briefArchive.viewProvenance')}
+            </button>
           </div>
           {showCompare && entry.parentCheckpointId && (
             <CheckpointDiffPanel currentId={entry.id} previousId={entry.parentCheckpointId} />
           )}
+          {showProvenance && <BriefProvenancePanel briefId={entry.id} />}
         </div>
       )}
     </li>

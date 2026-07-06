@@ -4,6 +4,39 @@ Append-only. See `TEAM.md` for the entry format and escalation rules.
 
 ---
 
+## Decision 30: Brief Provenance Panel is the "trail" for org briefs — audit-surface disclosure rules apply, not the live card's suppression rules
+
+**Date:** 2026-07-05
+**Decision-maker:** Engineering (in response to a direct product question: "can the user see what generated the report," "could we utilize trails view for this one")
+**Context:** No shared trail/timeline component exists anywhere in this codebase to reuse (`InsightTrailPage.tsx` and `TagReportTrailPage.tsx` are both fully bespoke). `BriefArchive.tsx` already provides the chronological-list-plus-inline-expand shape the org level needs — building a second, parallel full-page trail view would duplicate that navigation structure for no benefit.
+**Decision:** Add `BriefProvenancePanel.tsx` as a second inline-expand trigger ("How was this generated?") inside each already-expanded `BriefArchive` entry, sibling to the existing "Compare to previous" trigger — not a new page or route. Unlike the live `CrystalBriefCard` (a verdict surface, per Decision 16, where a "pass" trust badge must never render inline), this panel is an explicit, opt-in audit surface and shows the full 3-pass trust breakdown plainly (numeric+LLM grounding verdict, and any `pass_3_grounding_completeness.grounding_failures` clauses) — Decision 16's suppression rule governs the at-rest primary read, not this deeper, deliberately-clicked-into disclosure level.
+**Rationale:** Matches Decision 16's own "same disclosure depth as history itself, not the primary read" principle, applied to a new case (full generation provenance) rather than just checkpoint comparison.
+**Reversibility:** Easy — additive component and endpoint, no schema change.
+
+---
+
+## Decision 29: Crystal's org-chat follow-up is grounded via a synthetic insight, not a new CrystalOS contract field
+
+**Date:** 2026-07-05
+**Decision-maker:** Engineering (in response to a direct product question: "can Crystal ask queries across the org report")
+**Context:** "Ask a follow-up" on the Crystal Brief Card opened the pre-existing general org-portfolio Crystal chat, whose context loader (`loadCrystalContext`) independently re-derives insights/topics/metrics from scratch — it never read the specific `org_crystal_briefs` row on screen, so Crystal's answer wasn't guaranteed to reference, or even agree with, the visible brief. Investigation found `CrystalInput.metrics` (the generic dict field) is parsed by a narrow, fixed formatter (`_build_metrics_context`, reads only `nps`/`csat`) that would silently ignore anything else stuffed into it — but `_build_insights_context` is generic and renders full narrative text for any dict in the `insights` list carrying a real `layer` value.
+**Decision:** Ground the follow-up entirely on the Node backend: `loadCrystalContext` gains an optional `briefId` param; when present, it fetches that brief (org-scoped), resolves each recommendation's `survey_id` to a title, and prepends one synthetic insight-shaped dict (`layer: 'prescriptive'`, narrative = brief text + numbered recommendations with resolved survey names) into `ctx.insights`. Zero CrystalOS/Python changes. The client threads the viewed brief's id through as `CrystalCtx.focused_brief_id` → request body `brief_id`, mirroring the existing `focused_tag_id` pattern exactly.
+**Alternatives considered:** Adding a dedicated `brief_id`/`org_brief` field to CrystalOS's `CrystalInput` model and a matching formatter (rejected — more surface area for the same outcome, and the existing insights-formatter already does exactly what's needed with zero new Python code, which is a stronger "build vs. reuse" fit).
+**Reversibility:** Easy — purely additive on both sides; removing `attachBriefGrounding`'s call site reverts to prior behavior exactly.
+
+---
+
+## Decision 28: Auto-scheduled weekly brief generation — env-tier cadence, not a new "daily period" concept
+
+**Date:** 2026-07-05
+**Decision-maker:** Engineering, per explicit user instruction ("Implement automatically weekly in staging or Production. 1 day in Dev")
+**Context:** The brief only ever generated on-demand (manual "Regenerate" click) — no scheduled trigger existed anywhere, a real gap against the original ARCHITECTURE.md intent ("the graph runs once per org per week, triggered by the backend scheduler") that none of the original parallel build agents actually built.
+**Decision:** New job `orgCrystalBrief.job.ts`, registered on the existing registry's daily tick (mirroring `orgTopicTrends.job.ts`'s own "tick daily, self-gate inside the handler" pattern, since the registry has no day-of-week primitive). The handler self-gates on environment tier (`NODE_ENV === 'production'` → production; `NODE_ENV === 'staging'` or `AGENTS_ENV === 'staging'` → staging; else dev): production/staging only proceed past the gate on Monday UTC (real weekly cadence, one brief per org per ISO week); dev proceeds on every tick. Dev-tier ticks do **not** introduce a new daily-period shape — they regenerate the same current-ISO-week range every time, landing on the same upsert-on-`(org_id, date_range_start)` row the manual regenerate button already targets, just automatically and more often, so a developer isn't stuck waiting a week to see the automation work.
+**Also shipped as part of this decision:** a real eligibility gate (`BRIEF_MIN_SURVEYS = 3`, `BRIEF_MIN_DATA_DAYS = 14`, shared between the per-org and batched-all-orgs eligibility queries) — previously the "Crystal needs at least 2 weeks of data from 3 programs" empty-state copy existed with no actual check wired to it anywhere (`minDataMet` was always `true` in practice). Sequential per-org processing with a small configurable delay (`ORG_CRYSTAL_BRIEF_INTER_ORG_DELAY_MS`, default 2s) and per-org error isolation — one org's CrystalOS failure never aborts the sweep for the rest.
+**Reversibility:** Easy — new job, additive `minDataMet` field, no schema change. Disabling: `JOB_ORG_CRYSTAL_BRIEF=false`.
+
+---
+
 ## Decision 27: Recommendation JSONB — resolve snake_case/camelCase and tagId naming during integration
 
 **Date:** 2026-07-04

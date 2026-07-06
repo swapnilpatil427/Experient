@@ -15,6 +15,7 @@ import { surveyHealthSummary } from './jobs/surveyHealthSummary.job';
 import { orgMetricsWeekly } from './jobs/orgMetricsWeekly.job';
 import { orgTopicTrends } from './jobs/orgTopicTrends.job';
 import { orgHealthScore } from './jobs/orgHealthScore.job';
+import { orgCrystalBrief } from './jobs/orgCrystalBrief.job';
 
 export interface JobResult { affected?: number; note?: string }
 
@@ -131,5 +132,15 @@ export const JOBS: Job[] = [
     intervalSec: intSec('JOB_ORG_HEALTH_SCORE_SEC', 86_400), // daily
     enabled: flag('JOB_ORG_HEALTH_SCORE', true),
     handler: orgHealthScore,
+  },
+  {
+    // Weekly (Monday) in production/staging; every tick in dev (org-dashboard's own
+    // deliberate dev-only faster refresh cadence — see orgCrystalBrief.job.ts's header).
+    // Ticks daily like org-topic-trends; the handler self-gates on environment tier.
+    name: 'org-crystal-brief',
+    description: 'Auto-generate the weekly org Crystal Brief for eligible orgs (>=3 surveys, >=14 days of data). Weekly (Monday UTC) in prod/staging; every tick in dev.',
+    intervalSec: intSec('JOB_ORG_CRYSTAL_BRIEF_SEC', 86_400), // daily tick, env-tier-gated handler
+    enabled: flag('JOB_ORG_CRYSTAL_BRIEF', true),
+    handler: orgCrystalBrief,
   },
 ];

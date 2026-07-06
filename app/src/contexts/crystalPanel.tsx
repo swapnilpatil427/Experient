@@ -9,6 +9,12 @@ export interface CrystalCtx {
   // being viewed, without touching `scope`/`SurveyScope` (survey_id | 'all').
   focused_tag_id?: string;
   focused_tag_name?: string;
+  // Org Dashboard's "Ask a follow-up" (CrystalBriefCard / WeeklyBriefTeaserCard)
+  // grounds the chat in the specific brief being viewed — threaded through to
+  // the streaming request body as `brief_id`. Additive: every existing caller
+  // that doesn't set this is unaffected, since `openCrystal(query, ctx)`
+  // already treats `ctx` as optional/replacing-wholesale, not merging.
+  focused_brief_id?: string;
 }
 
 // Wave 14 (docs/automation-hub/WAVE14_UNIFIED_BUILDER_SPEC.md §3.1) — a

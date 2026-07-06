@@ -89,7 +89,7 @@ export function OrgTrendsPage() {
 
   const handleAskFollowUp = () => {
     setScope('all');
-    openCrystal(t('orgDashboard.crystalBrief.followUpQuery'));
+    openCrystal(t('orgDashboard.crystalBrief.followUpQuery'), { focused_brief_id: brief?.id });
   };
 
   const handleGenerated = () => {
@@ -202,6 +202,7 @@ export function OrgTrendsPage() {
           brief={brief}
           loading={briefLoading}
           error={briefError}
+          minDataMet={brief?.minDataMet}
           onRetry={refetchDashboard}
           onAskFollowUp={handleAskFollowUp}
         />

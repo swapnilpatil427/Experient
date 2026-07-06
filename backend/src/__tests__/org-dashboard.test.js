@@ -17,6 +17,12 @@
  *   - GET  /api/org/dashboard         — {error:'NO_SURVEYS'} (not 500) for a zero-survey org
  *   - GET  /api/org/dashboard/programs — pagination (page 2 differs from page 1)
  *   - PATCH /api/org/dashboard/alerts/:id/acknowledge — updates alert_events.status
+ *   - checkOrgBriefEligibility (services/org-metrics.service.ts) — real "≥3 surveys AND
+ *     ≥2 weeks of data" eligibility check backing GET /crystal-brief's `minDataMet` field
+ *   - GET  /api/org/dashboard/crystal-brief — response includes the new `minDataMet` field;
+ *     stays byte-identical `null` (not an incomplete object) when no brief exists yet
+ *   - GET  /api/org/dashboard/briefs/:briefId — provenance/trail detail; 404s (never leaks)
+ *     for a brief id that exists but belongs to a different org
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRequire } from 'node:module';
@@ -263,5 +269,166 @@ describe('PATCH /api/org/dashboard/alerts/:alertId/acknowledge', () => {
     });
 
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('checkOrgBriefEligibility (services/org-metrics.service.ts)', () => {
+  it('returns eligible: false for a fixture org with fewer than 3 surveys', async () => {
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('earliest_submitted_at')) {
+        return { rows: [{ survey_count: 2, earliest_submitted_at: '2026-06-01T00:00:00Z' }] };
+      }
+      return { rows: [] };
+    });
+    buildApp(); // installs the fake db + forces a fresh require of the service module
+    const service = _require(SERVICE_PATH);
+
+    const result = await service.checkOrgBriefEligibility('test-org');
+
+    expect(result.eligible).toBe(false);
+    expect(result.surveyCount).toBe(2);
+  });
+
+  it('returns eligible: true for a fixture org with >=3 surveys and >=14 days of data', async () => {
+    const twentyDaysAgo = new Date(Date.now() - 20 * 86_400_000).toISOString();
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('earliest_submitted_at')) {
+        return { rows: [{ survey_count: 4, earliest_submitted_at: twentyDaysAgo }] };
+      }
+      return { rows: [] };
+    });
+    buildApp();
+    const service = _require(SERVICE_PATH);
+
+    const result = await service.checkOrgBriefEligibility('test-org');
+
+    expect(result.eligible).toBe(true);
+    expect(result.surveyCount).toBe(4);
+    expect(result.earliestResponseDaysAgo).toBeGreaterThanOrEqual(14);
+  });
+
+  it('returns eligible: false when survey count is sufficient but data is under 2 weeks old', async () => {
+    const fiveDaysAgo = new Date(Date.now() - 5 * 86_400_000).toISOString();
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('earliest_submitted_at')) {
+        return { rows: [{ survey_count: 5, earliest_submitted_at: fiveDaysAgo }] };
+      }
+      return { rows: [] };
+    });
+    buildApp();
+    const service = _require(SERVICE_PATH);
+
+    const result = await service.checkOrgBriefEligibility('test-org');
+
+    expect(result.eligible).toBe(false);
+  });
+});
+
+describe('GET /api/org/dashboard/crystal-brief', () => {
+  it('includes the new minDataMet field, computed from real eligibility, alongside the brief', async () => {
+    const twentyDaysAgo = new Date(Date.now() - 20 * 86_400_000).toISOString();
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM org_crystal_briefs WHERE org_id')) {
+        return { rows: [{
+          id: 'brief-1', brief_text: 'Great week', recommendations: [],
+          generated_at: '2026-07-03T00:00:00Z', date_range_start: '2026-06-27', date_range_end: '2026-07-03',
+        }] };
+      }
+      if (sql.includes('earliest_submitted_at')) {
+        return { rows: [{ survey_count: 4, earliest_submitted_at: twentyDaysAgo }] };
+      }
+      return { rows: [] };
+    });
+    const app = buildApp();
+
+    const res = await inject(app, { method: 'GET', url: '/api/org/dashboard/crystal-brief' });
+    const body = res.json();
+
+    expect(res.statusCode).toBe(200);
+    expect(body.id).toBe('brief-1');
+    expect(body.minDataMet).toBe(true);
+  });
+
+  it('stays exactly null (not an incomplete object) when no brief has been generated yet', async () => {
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM org_crystal_briefs WHERE org_id')) return { rows: [] };
+      if (sql.includes('earliest_submitted_at')) return { rows: [{ survey_count: 1, earliest_submitted_at: null }] };
+      return { rows: [] };
+    });
+    const app = buildApp();
+
+    const res = await inject(app, { method: 'GET', url: '/api/org/dashboard/crystal-brief' });
+
+    expect(res.statusCode).toBe(200);
+    // Must stay `null` (byte-identical to pre-existing behavior), not `{ minDataMet: false }` —
+    // the frontend's CrystalBriefCard treats a falsy top-level value as "no brief yet".
+    expect(res.json()).toBeNull();
+  });
+});
+
+describe('GET /api/org/dashboard/briefs/:briefId', () => {
+  it('returns 404 when the brief id exists in org_crystal_briefs but belongs to a different org', async () => {
+    dbQuery = vi.fn(async (sql, params) => {
+      if (sql.includes('FROM org_crystal_briefs WHERE id')) {
+        expect(params).toEqual(['brief-other-org', 'test-org']);
+        return { rows: [] }; // org-scoped query correctly finds nothing for 'test-org'
+      }
+      if (sql.includes('FROM org_custom_summaries WHERE id')) return { rows: [] };
+      return { rows: [] };
+    });
+    const app = buildApp();
+
+    const res = await inject(app, { method: 'GET', url: '/api/org/dashboard/briefs/brief-other-org' });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('returns full provenance detail for a scheduled brief belonging to this org', async () => {
+    dbQuery = vi.fn(async (sql, params) => {
+      if (sql.includes('FROM org_crystal_briefs WHERE id')) {
+        expect(params).toEqual(['brief-1', 'test-org']);
+        return { rows: [{
+          id: 'brief-1', date_range_start: '2026-06-27', date_range_end: '2026-07-03',
+          brief_text: 'Great week', recommendations: [{ rank: 1, action: 'Investigate', rationale: 'Why', survey_id: null, tag_id: null, action_type: 'investigate', source_insight_ids: [] }],
+          generated_at: '2026-07-03T00:00:00Z', model_version: 'gpt-x',
+          input_snapshot: { avg_nps: 40 }, trust_json: { verdict: 'pass' },
+          hallucination_score: 0.92, parent_checkpoint_id: null,
+        }] };
+      }
+      return { rows: [] };
+    });
+    const app = buildApp();
+
+    const res = await inject(app, { method: 'GET', url: '/api/org/dashboard/briefs/brief-1' });
+    const body = res.json();
+
+    expect(res.statusCode).toBe(200);
+    expect(body.source).toBe('scheduled');
+    expect(body.hallucinationScore).toBe(92); // scaled 0-100, matches mapCrystalBriefRow's trustScore
+    expect(body.recommendations[0]).toMatchObject({ rank: 1, action: 'Investigate', actionType: 'investigate' });
+  });
+
+  it('returns provenance detail (source: manual) for an org_custom_summaries row when no scheduled brief matches the id', async () => {
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM org_crystal_briefs WHERE id')) return { rows: [] };
+      if (sql.includes('FROM org_custom_summaries WHERE id')) {
+        return { rows: [{
+          id: 'summary-1', date_range_start: '2026-06-01', date_range_end: '2026-06-30',
+          brief_text: 'Custom range summary', recommendations: [],
+          generated_at: '2026-06-30T12:00:00Z', model_version: 'gpt-x',
+          input_snapshot: null, compared_against_brief_id: 'brief-0',
+        }] };
+      }
+      return { rows: [] };
+    });
+    const app = buildApp();
+
+    const res = await inject(app, { method: 'GET', url: '/api/org/dashboard/briefs/summary-1' });
+    const body = res.json();
+
+    expect(res.statusCode).toBe(200);
+    expect(body.source).toBe('manual');
+    expect(body.hallucinationScore).toBeNull();
+    expect(body.parentCheckpointId).toBe('brief-0');
   });
 });

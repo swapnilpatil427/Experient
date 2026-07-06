@@ -203,7 +203,7 @@ export interface CrystalBriefSummary {
  * today; `tagId` is the canonical field per Decision 23 (a "tag group" is a
  * `survey_tags` row, so its id is `tag_id`, not `tag_group_id`).
  */
-function mapRecommendation(raw: unknown): CrystalBriefRecommendation {
+export function mapRecommendation(raw: unknown): CrystalBriefRecommendation {
   const r = (raw ?? {}) as Record<string, unknown>;
   const actionType = r.action_type ?? r.actionType;
   return {
@@ -350,6 +350,21 @@ export interface BriefHistoryResult {
   pagination: { page: number; pageSize: number; total: number; totalPages: number };
 }
 
+export interface BriefDetailResult {
+  id: string;
+  dateRangeStart: string;
+  dateRangeEnd: string;
+  briefText: string | null;
+  recommendations: CrystalBriefRecommendation[];
+  generatedAt: string | null;
+  modelVersion: string | null;
+  inputSnapshot: unknown;
+  trustJson: unknown;
+  hallucinationScore: number | null; // scaled 0-100, matches mapCrystalBriefRow's trustScore
+  parentCheckpointId: string | null;
+  source: 'scheduled' | 'manual';
+}
+
 export interface CheckpointCompareSide {
   id: string;
   dateRangeLabel: string;
@@ -393,6 +408,68 @@ const DELTA_LABELS: Record<'nps' | 'sentiment' | 'responses', string> = {
 /** Dependency-free "start – end" label (no date-formatting library in the backend). */
 function formatDateRangeLabel(start: string, end: string): string {
   return `${start} – ${end}`;
+}
+
+// ── Crystal Brief eligibility ("minDataMet") ─────────────────────────────────────
+// Matches the existing locale copy (`orgDashboard.crystalBrief.notEnoughData`,
+// app/src/locales/en.ts ~line 5283): "Crystal needs at least 2 weeks of data from
+// 3 programs." Two independent read sites need this: the per-org check backing
+// GET /dashboard/crystal-brief's `minDataMet` field, and the scheduler job's
+// batched, all-orgs version (avoids N+1 — one aggregate query rather than N calls
+// to `checkOrgBriefEligibility`).
+export const BRIEF_MIN_SURVEYS = 3;
+export const BRIEF_MIN_DATA_DAYS = 14;
+
+export interface OrgBriefEligibility {
+  eligible: boolean;
+  surveyCount: number;
+  earliestResponseDaysAgo: number | null;
+}
+
+/** Per-org eligibility check — used by GET /dashboard/crystal-brief. */
+export async function checkOrgBriefEligibility(orgId: string): Promise<OrgBriefEligibility> {
+  const { rows } = await query<{ survey_count: number; earliest_submitted_at: string | null }>(
+    `SELECT
+        (SELECT COUNT(*)::int FROM surveys WHERE org_id = $1 AND deleted_at IS NULL) AS survey_count,
+        (SELECT MIN(r.submitted_at) FROM responses r
+           JOIN surveys s ON s.id = r.survey_id
+          WHERE s.org_id = $1 AND s.deleted_at IS NULL) AS earliest_submitted_at`,
+    [orgId],
+  );
+  const row = rows[0];
+  const surveyCount = num(row?.survey_count);
+  const earliestResponseDaysAgo = row?.earliest_submitted_at
+    ? Math.floor((Date.now() - new Date(row.earliest_submitted_at).getTime()) / 86_400_000)
+    : null;
+  const eligible = surveyCount >= BRIEF_MIN_SURVEYS
+    && earliestResponseDaysAgo != null
+    && earliestResponseDaysAgo >= BRIEF_MIN_DATA_DAYS;
+  return { eligible, surveyCount, earliestResponseDaysAgo };
+}
+
+/**
+ * Batched, all-orgs eligibility scan for the scheduler job (`orgCrystalBrief.job.ts`) —
+ * one aggregate query across `surveys`/`responses` rather than one `checkOrgBriefEligibility`
+ * call per org (N+1). Every org with at least one non-deleted survey is included (even if
+ * ineligible), so the job can report a real "not eligible" count, not just a silent omission.
+ */
+export async function fetchAllOrgBriefEligibility(): Promise<Array<{ orgId: string; eligible: boolean }>> {
+  const { rows } = await query<{ org_id: string; survey_count: number; earliest_submitted_at: string | null }>(
+    `SELECT s.org_id,
+            COUNT(DISTINCT s.id)::int AS survey_count,
+            MIN(r.submitted_at) AS earliest_submitted_at
+       FROM surveys s
+       LEFT JOIN responses r ON r.survey_id = s.id
+      WHERE s.deleted_at IS NULL
+      GROUP BY s.org_id`,
+  );
+  const cutoffMs = Date.now() - BRIEF_MIN_DATA_DAYS * 86_400_000;
+  return rows.map((r) => {
+    const surveyCount = num(r.survey_count);
+    const earliestMs = r.earliest_submitted_at ? new Date(r.earliest_submitted_at).getTime() : null;
+    const eligible = surveyCount >= BRIEF_MIN_SURVEYS && earliestMs != null && earliestMs <= cutoffMs;
+    return { orgId: r.org_id, eligible };
+  });
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────────
@@ -1118,6 +1195,64 @@ export class OrgMetricsService {
     if (rows[0]) return rows[0] as Record<string, unknown>;
     const { rows: customRows } = await query(`SELECT * FROM org_custom_summaries WHERE id = $1 AND org_id = $2`, [id, orgId]);
     return (customRows[0] as Record<string, unknown> | undefined) ?? null;
+  }
+
+  // ── Brief provenance/trail detail (GET /api/org/dashboard/briefs/:briefId) ───
+  // Checks org_crystal_briefs first, then org_custom_summaries by id — same two-table
+  // shape fetchBriefHistory's UNION query already covers for the list endpoint — since
+  // the Brief Archive UI can link into either a scheduled brief or a manual summary.
+  // Always scoped by org_id in both queries; never trusts a bare id from the client.
+  async getBriefDetail(orgId: string, briefId: string): Promise<BriefDetailResult | null> {
+    const { rows } = await query(
+      `SELECT * FROM org_crystal_briefs WHERE id = $1 AND org_id = $2`,
+      [briefId, orgId],
+    );
+    const scheduledRow = rows[0] as Record<string, unknown> | undefined;
+    if (scheduledRow) {
+      const hallucinationScore = numOrNull(scheduledRow.hallucination_score);
+      return {
+        id: scheduledRow.id as string,
+        dateRangeStart: scheduledRow.date_range_start as string,
+        dateRangeEnd: scheduledRow.date_range_end as string,
+        briefText: (scheduledRow.brief_text as string | undefined) ?? null,
+        recommendations: Array.isArray(scheduledRow.recommendations)
+          ? (scheduledRow.recommendations as unknown[]).map(mapRecommendation)
+          : [],
+        generatedAt: (scheduledRow.generated_at as string | undefined) ?? null,
+        modelVersion: (scheduledRow.model_version as string | undefined) ?? null,
+        inputSnapshot: scheduledRow.input_snapshot ?? null,
+        trustJson: scheduledRow.trust_json ?? null,
+        hallucinationScore: hallucinationScore != null ? Math.round(hallucinationScore * 100) : null,
+        parentCheckpointId: (scheduledRow.parent_checkpoint_id as string | undefined) ?? null,
+        source: 'scheduled',
+      };
+    }
+
+    const { rows: customRows } = await query(
+      `SELECT * FROM org_custom_summaries WHERE id = $1 AND org_id = $2`,
+      [briefId, orgId],
+    );
+    const customRow = customRows[0] as Record<string, unknown> | undefined;
+    if (!customRow) return null;
+    return {
+      id: customRow.id as string,
+      dateRangeStart: customRow.date_range_start as string,
+      dateRangeEnd: customRow.date_range_end as string,
+      briefText: (customRow.brief_text as string | undefined) ?? null,
+      recommendations: Array.isArray(customRow.recommendations)
+        ? (customRow.recommendations as unknown[]).map(mapRecommendation)
+        : [],
+      generatedAt: (customRow.generated_at as string | undefined) ?? null,
+      modelVersion: (customRow.model_version as string | undefined) ?? null,
+      inputSnapshot: customRow.input_snapshot ?? null,
+      // org_custom_summaries has no trust_json/hallucination_score column in the shipped
+      // migration (only org_crystal_briefs does) — null here is a real schema gap, not an
+      // oversight (mirrors this file's header "Documented gaps" convention).
+      trustJson: null,
+      hallucinationScore: null,
+      parentCheckpointId: (customRow.compared_against_brief_id as string | undefined) ?? null,
+      source: 'manual',
+    };
   }
 }
 

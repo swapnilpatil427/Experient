@@ -61,19 +61,24 @@ export function CheckpointDiffPanel({ currentId, previousId }: { currentId: stri
   const prefersReducedMotion = typeof window !== 'undefined'
     && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
+  // Error must be checked before the loading/!result fallback — `result` stays
+  // null on a failed fetch, so `!result` alone would keep showing the loading
+  // skeleton forever instead of ever reaching this branch (found while
+  // building BriefProvenancePanel.tsx, which follows the same hook shape;
+  // fixed here too since it's the same latent bug, not just avoided there).
+  if (error) {
+    return (
+      <div className="p-5 rounded-xl border border-outline-variant/20 mt-3">
+        <p className="text-sm text-on-surface-variant">{t('orgDashboard.checkpointDiff.error')}</p>
+      </div>
+    );
+  }
+
   if (loading || !result) {
     return (
       <div className="p-5 rounded-xl border border-outline-variant/20 mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="h-24 rounded-lg bg-surface-container animate-pulse" />
         <div className="h-24 rounded-lg bg-surface-container animate-pulse" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-5 rounded-xl border border-outline-variant/20 mt-3">
-        <p className="text-sm text-on-surface-variant">{t('orgDashboard.checkpointDiff.error')}</p>
       </div>
     );
   }

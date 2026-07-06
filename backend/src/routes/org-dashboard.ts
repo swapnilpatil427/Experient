@@ -34,7 +34,7 @@ import { checkCredits, debitCredits } from '../lib/creditLedger';
 import { resolveOrgSummaryCost } from '../lib/orgSummaryCost';
 import * as agentsClient from '../lib/agentsClient';
 import { transitionAlert } from '../lib/alertEngine';
-import { orgMetricsService } from '../services/org-metrics.service';
+import { orgMetricsService, checkOrgBriefEligibility } from '../services/org-metrics.service';
 import logger from '../lib/logger';
 
 const router = express.Router();
@@ -248,8 +248,21 @@ router.patch('/dashboard/alerts/:alertId/acknowledge', async (req: Request, res:
 
 router.get('/dashboard/crystal-brief', async (req: Request, res: Response): Promise<void> => {
   try {
-    const cached = await orgMetricsService.getLatestCrystalBrief(req.orgId);
-    res.json(cached.value);
+    const [cached, eligibility] = await Promise.all([
+      orgMetricsService.getLatestCrystalBrief(req.orgId),
+      // Additive field — real eligibility ("≥3 surveys AND ≥2 weeks of data", matching
+      // orgDashboard.crystalBrief.notEnoughData's copy) computed live, not from the
+      // brief-payload cache, so it reflects the org's *current* survey/response state
+      // even if the cached brief itself is stale.
+      checkOrgBriefEligibility(req.orgId),
+    ]);
+    // Merge onto the brief object only when one exists — the frontend's `CrystalBriefCard`
+    // (OrgTrendsPage.tsx) reads `brief?.minDataMet` off this exact response and treats a
+    // falsy top-level value as "no brief yet" (`if (!brief) { ...empty state... }`).
+    // Spreading `minDataMet` onto a `null` value here would turn that falsy `null` into a
+    // truthy-but-incomplete object and break that check — so the no-brief-yet case is left
+    // as `null`, byte-identical to pre-existing behavior.
+    res.json(cached.value === null ? null : { ...cached.value, minDataMet: eligibility.eligible });
   } catch (err: unknown) {
     serverError(res, err instanceof Error ? err : new Error(String(err)), { endpoint: 'org_dashboard_crystal_brief' });
   }
@@ -259,7 +272,7 @@ router.get('/dashboard/crystal-brief', async (req: Request, res: Response): Prom
  *  DATE_TRUNC('week', ...) grain, so a manual regenerate targets the same row the
  *  automated weekly run would have (upserts onto it via org_crystal_briefs' own
  *  UNIQUE(org_id, date_range_start), per ARCHITECTURE.md Addendum 2). */
-function currentIsoWeekRange(): { start: string; end: string } {
+export function currentIsoWeekRange(): { start: string; end: string } {
   const now = new Date();
   const day = now.getUTCDay(); // 0=Sun..6=Sat
   const diffToMonday = day === 0 ? -6 : 1 - day;
@@ -315,6 +328,21 @@ router.get('/dashboard/briefs', async (req: Request, res: Response): Promise<voi
     res.json(cached.value);
   } catch (err: unknown) {
     serverError(res, err instanceof Error ? err : new Error(String(err)), { endpoint: 'org_dashboard_briefs' });
+  }
+});
+
+// ── GET /dashboard/briefs/:briefId (provenance/trail detail) ─────────────────────
+// Powers a "what generated this" audit view for either a scheduled brief
+// (org_crystal_briefs) or a manual summary (org_custom_summaries) — the Brief
+// Archive UI lists both. Always org-scoped; 404s (never leaks) if the id belongs
+// to another org or doesn't exist in either table.
+router.get('/dashboard/briefs/:briefId', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const detail = await orgMetricsService.getBriefDetail(req.orgId, req.params.briefId);
+    if (!detail) { clientError(res, 404, 'Brief not found'); return; }
+    res.json(detail);
+  } catch (err: unknown) {
+    serverError(res, err instanceof Error ? err : new Error(String(err)), { endpoint: 'org_dashboard_brief_detail' });
   }
 });
 

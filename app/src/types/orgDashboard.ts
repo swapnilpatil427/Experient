@@ -89,6 +89,11 @@ export interface CrystalBrief {
   trustVerdict?: TrustVerdict | null;
   trustScore?: number | null; // 0-100, only meaningful with a hover/expand — never shown as a raw label
   parentCheckpointId?: string | null; // null => "Compare to previous" never renders
+  // Real eligibility check ("Crystal needs at least 2 weeks of data from 3
+  // programs") — added by the Backend Engineer alongside the rest of this
+  // object on `GET /api/org/dashboard/crystal-brief`. Drives
+  // `CrystalBriefCard`'s/`WeeklyBriefTeaserCard`'s `minDataMet` empty-state copy.
+  minDataMet: boolean;
 }
 
 export interface OrgDashboardPayload {
@@ -257,6 +262,71 @@ export interface CheckpointComparisonResult {
   previous: CheckpointCompareSide;
   current: CheckpointCompareSide;
   deltas: CheckpointComparisonDelta[];
+}
+
+// ── GET /api/org/dashboard/briefs/:briefId (Brief Provenance trail) ─────────
+// `inputSnapshot`/`trustJson` are raw JSONB pass-through from
+// `crystalos/graphs/org_brief_graph.py` / `crystalos/lib/org_brief_verify.py`
+// respectively — snake_case, unlike the rest of this API's camelCase
+// convention, because the backend forwards these objects verbatim rather
+// than re-encoding them field-by-field.
+export interface OrgBriefTopTopicSnapshot {
+  topic_label: string;
+  frequency: number;
+  avg_sentiment: number;
+  is_new_this_week: boolean;
+  frequency_change_pct: number | null;
+}
+
+export interface OrgBriefInputSnapshot {
+  org_id: string;
+  period_type: string;
+  week_start: string;
+  date_range_start: string;
+  date_range_end: string;
+  total_responses: number;
+  avg_nps: number;
+  avg_sentiment: number;
+  nps_wow_delta: number | null;
+  responses_wow_delta: number | null;
+  sentiment_wow_delta: number | null;
+  active_surveys: number;
+  top_topics: OrgBriefTopTopicSnapshot[];
+  no_comparable_prior_period: boolean;
+}
+
+export interface OrgBriefGroundingFailure {
+  clause: string;
+  reason: string;
+}
+
+export interface OrgBriefTrustJson {
+  pass_1_2_numeric_and_llm_grounding: {
+    score: number;
+    verdict: TrustVerdict;
+    issues: string[];
+    deterministic_score: number;
+    llm_score: number;
+  };
+  pass_3_grounding_completeness: {
+    grounding_failures: OrgBriefGroundingFailure[];
+  };
+  cited_insight_count: number;
+}
+
+export interface OrgBriefDetail {
+  id: string;
+  dateRangeStart: string;
+  dateRangeEnd: string;
+  briefText: string | null;
+  recommendations: CrystalBriefRecommendation[];
+  generatedAt: string | null;
+  modelVersion: string | null;
+  inputSnapshot: OrgBriefInputSnapshot | null;
+  trustJson: OrgBriefTrustJson | null;
+  hallucinationScore: number | null;
+  parentCheckpointId: string | null;
+  source: BriefSource;
 }
 
 // ── Tag-scoped aggregates (GET /api/org/dashboard/tags) ──────────────────────

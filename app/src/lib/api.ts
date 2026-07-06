@@ -36,6 +36,7 @@ import type {
   BriefsResponse, CheckpointComparisonResult, TagMetricsResponse,
   SummaryPreviewRequest, SummaryPreviewResponse, CreateSummaryRequest,
   CreateSummaryResponse, OrgSummary, CrystalBrief, TrendRange, TrendGranularity,
+  OrgBriefDetail,
 } from '../types/orgDashboard';
 
 // ── Prism response-shape guards ──────────────────────────────────────────────
@@ -2504,6 +2505,13 @@ export function createApiClient(getToken: GetToken) {
 
     compareOrgBriefs: async (id: string, otherId: string): Promise<CheckpointComparisonResult> => {
       const res = await http.get<CheckpointComparisonResult>(`/api/org/dashboard/briefs/${id}/compare/${otherId}`);
+      return res.data;
+    },
+
+    // Full provenance/trail data for one brief — powers `BriefProvenancePanel`
+    // ("How was this generated?", nested inside a `BriefArchive` entry).
+    getOrgBriefDetail: async (briefId: string): Promise<OrgBriefDetail> => {
+      const res = await http.get<OrgBriefDetail>(`/api/org/dashboard/briefs/${briefId}`);
       return res.data;
     },
 
