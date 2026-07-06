@@ -392,23 +392,30 @@ async def tag_untagged_responses(
                     result["failed"] += len(sentiment_updates)
 
             # ── Topic assignment — existing topics only (see docstring) ─────────
+            # Keyed per OPEN-TEXT ANSWER ("response_id::question_id"), not deduped
+            # to one embedding per response (fixed 2026-07-06) — a response with
+            # two open-text questions about two different things can genuinely
+            # match two different existing topics. assign_batch_to_nearest itself
+            # doesn't care about key shape; group_assignments_by_response regroups
+            # the per-answer results back to a per-response topic list afterward.
             scored_rids = set(by_resp.keys())
             if await topic_registry.has_centroids(survey_id, conn):
-                embeddings_by_rid: dict[str, list[float]] = {
-                    str(item["response_id"]): item["embedding"]
+                embeddings_by_key: dict[str, list[float]] = {
+                    f"{item['response_id']}::{item['question_id']}": item["embedding"]
                     for item in embedded_texts
                     if str(item["response_id"]) in scored_rids and item.get("embedding")
                 }
 
-                if embeddings_by_rid:
-                    assignments, unassigned_rids = await topic_registry.assign_batch_to_nearest(
-                        embeddings_by_rid, survey_id, conn,
+                if embeddings_by_key:
+                    assignments, unassigned_keys = await topic_registry.assign_batch_to_nearest(
+                        embeddings_by_key, survey_id, conn,
                     )
                     if assignments:
-                        topic_updates = [(json.dumps([tname]), rid) for rid, tname in assignments.items()]
+                        topics_by_rid = topic_registry.group_assignments_by_response(assignments)
+                        topic_updates = [(json.dumps(names), rid) for rid, names in topics_by_rid.items()]
                         topic_emb_groups: dict[str, list[list[float]]] = defaultdict(list)
-                        for rid, tname in assignments.items():
-                            topic_emb_groups[tname].append(embeddings_by_rid[rid])
+                        for key, tname in assignments.items():
+                            topic_emb_groups[tname].append(embeddings_by_key[key])
                         try:
                             async with conn.cursor() as cur:
                                 await cur.executemany(
@@ -423,8 +430,13 @@ async def tag_untagged_responses(
                             logger.error("response_tagging_topic_writeback_failed",
                                          survey_id=survey_id, error=str(exc))
 
-                    if unassigned_rids:
-                        cand_pairs = [(rid, embeddings_by_rid[rid]) for rid in unassigned_rids]
+                    if unassigned_keys:
+                        # At most one candidate per response — topic_candidates has
+                        # UNIQUE(survey_id, response_id); see dedupe_unassigned_to_
+                        # one_per_response's docstring.
+                        cand_pairs = topic_registry.dedupe_unassigned_to_one_per_response(
+                            unassigned_keys, embeddings_by_key,
+                        )
                         await topic_registry.add_candidates_batch(survey_id, org_id, cand_pairs, conn)
                         result["topics_buffered"] = len(cand_pairs)
 

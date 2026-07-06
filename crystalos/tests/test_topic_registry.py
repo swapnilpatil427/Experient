@@ -9,6 +9,8 @@ from crystalos.lib.topic_registry import (
     _parse_vector,
     add_candidates_batch,
     assign_batch_to_nearest,
+    dedupe_unassigned_to_one_per_response,
+    group_assignments_by_response,
     update_centroids_welford_batch,
 )
 
@@ -139,6 +141,60 @@ class TestAssignBatchToNearest:
             )
         assert assignments.get("r1") == "topic_a"
         assert assignments.get("r2") == "topic_b"
+
+
+# ── Multi-topic-per-response regrouping helpers (added 2026-07-06) ────────────
+# assign_batch_to_nearest itself is unchanged and key-agnostic (proven above by
+# using plain "r1"/"r2" keys) — these helpers let callers pass composite
+# "response_id::question_id" keys so a response with multiple open-text
+# answers can match multiple different existing topics, then regroup the
+# per-answer results back to per-response shape.
+
+class TestGroupAssignmentsByResponse:
+    def test_single_answer_per_response(self):
+        assignments = {"r1::q1": "Shipping Costs"}
+        assert group_assignments_by_response(assignments) == {"r1": ["Shipping Costs"]}
+
+    def test_two_different_answers_same_response_two_topics(self):
+        assignments = {"r1::q1": "Shipping Costs", "r1::q2": "Support Quality"}
+        result = group_assignments_by_response(assignments)
+        assert result == {"r1": ["Shipping Costs", "Support Quality"]}
+
+    def test_two_answers_same_response_same_topic_deduped(self):
+        assignments = {"r1::q1": "Shipping Costs", "r1::q2": "Shipping Costs"}
+        result = group_assignments_by_response(assignments)
+        assert result == {"r1": ["Shipping Costs"]}
+
+    def test_multiple_responses_kept_independent(self):
+        assignments = {"r1::q1": "Shipping Costs", "r2::q1": "Support Quality"}
+        result = group_assignments_by_response(assignments)
+        assert result == {"r1": ["Shipping Costs"], "r2": ["Support Quality"]}
+
+    def test_empty_assignments_returns_empty(self):
+        assert group_assignments_by_response({}) == {}
+
+
+class TestDedupeUnassignedToOnePerResponse:
+    def test_single_unassigned_answer(self):
+        embeddings = {"r1::q1": [0.1, 0.2]}
+        result = dedupe_unassigned_to_one_per_response(["r1::q1"], embeddings)
+        assert result == [("r1", [0.1, 0.2])]
+
+    def test_multiple_unassigned_answers_same_response_keeps_only_first(self):
+        """topic_candidates has UNIQUE(survey_id, response_id) — only one
+        candidate slot per response, so a response with 2 unmatched answers
+        must not produce 2 candidate rows."""
+        embeddings = {"r1::q1": [0.1, 0.2], "r1::q2": [0.9, 0.8]}
+        result = dedupe_unassigned_to_one_per_response(["r1::q1", "r1::q2"], embeddings)
+        assert result == [("r1", [0.1, 0.2])]  # first-seen wins
+
+    def test_different_responses_each_get_a_candidate(self):
+        embeddings = {"r1::q1": [0.1, 0.2], "r2::q1": [0.5, 0.6]}
+        result = dedupe_unassigned_to_one_per_response(["r1::q1", "r2::q1"], embeddings)
+        assert result == [("r1", [0.1, 0.2]), ("r2", [0.5, 0.6])]
+
+    def test_empty_list_returns_empty(self):
+        assert dedupe_unassigned_to_one_per_response([], {}) == []
 
 
 # ── Welford batch math ────────────────────────────────────────────────────────

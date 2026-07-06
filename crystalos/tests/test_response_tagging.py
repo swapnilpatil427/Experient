@@ -7,6 +7,7 @@ real LLMs/DB. Sub-functions (get_or_create_embeddings, run_absa_llm, get_absa_co
 topic_registry.*) are patched directly rather than simulated via raw SQL, since
 tag_untagged_responses orchestrates at that abstraction level.
 """
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -267,7 +268,7 @@ class TestTopicAssignment:
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
             patch("crystalos.lib.topic_registry.assign_batch_to_nearest",
-                  AsyncMock(return_value=({"r1": "Billing"}, []))),
+                  AsyncMock(return_value=({"r1::q1": "Billing"}, []))),
             patch("crystalos.lib.topic_registry.update_centroids_welford_batch", welford_mock),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()) as add_cand_mock,
         ):
@@ -282,6 +283,58 @@ class TestTopicAssignment:
         add_cand_mock.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_response_with_two_open_text_answers_can_get_two_different_topics(self):
+        """The core fix (2026-07-06): topic matching used to dedupe to ONE
+        embedding per response before calling assign_batch_to_nearest, so a
+        response could only ever get one topic no matter how many open-text
+        questions it answered. Now keyed per answer ("rid::qid"), so two
+        genuinely different answers can match two genuinely different
+        existing topics — both end up in that one response's ai_topics list."""
+        two_q_survey = (
+            '[{"id": "q1", "type": "open_text", "question": "What did you like?"},'
+            ' {"id": "q2", "type": "open_text", "question": "What could improve?"}]',
+        )
+        row = ("r1", [
+            {"questionId": "q1", "value": "The checkout flow was really smooth and fast"},
+            {"questionId": "q2", "value": "Shipping costs were way higher than expected"},
+        ])
+        cur = _RespCursor(untagged_rows=[row], survey_row=two_q_survey)
+        embed_mock = AsyncMock(side_effect=lambda texts, conn: [
+            {**t, "embedding": [0.9, 0.1] if t["question_id"] == "q1" else [0.1, 0.9]}
+            for t in texts
+        ])
+        absa_mock = AsyncMock(return_value=[
+            _absa_result("r1", qid="q1", text="The checkout flow was really smooth and fast"),
+            _absa_result("r1", qid="q2", text="Shipping costs were way higher than expected"),
+        ])
+
+        async def fake_assign(embeddings_by_key, survey_id, conn):
+            assignments = {
+                key: ("Checkout Experience" if emb == [0.9, 0.1] else "Shipping Costs")
+                for key, emb in embeddings_by_key.items()
+            }
+            return assignments, []
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings", embed_mock),
+            patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
+            patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
+            patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", fake_assign),
+            patch("crystalos.lib.topic_registry.update_centroids_welford_batch", AsyncMock()),
+            patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()),
+        ):
+            result = await tag_untagged_responses("s1", "o1")
+
+        assert result["topics_assigned"] == 1  # one RESPONSE updated, carrying 2 topics
+        topic_calls = [c for c in cur.executemany_calls if "ai_topics" in c[0]]
+        assert len(topic_calls) == 1
+        written_json, rid = topic_calls[0][1][0]
+        assert rid == "r1"
+        assert set(json.loads(written_json)) == {"Checkout Experience", "Shipping Costs"}
+
+    @pytest.mark.asyncio
     async def test_unassigned_response_is_buffered_as_candidate(self):
         cur = _RespCursor(untagged_rows=[_untagged_row("r1")], survey_row=_open_text_survey())
         embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.9, 0.1]} for t in texts])
@@ -294,7 +347,7 @@ class TestTopicAssignment:
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
             patch("crystalos.lib.topic_registry.assign_batch_to_nearest",
-                  AsyncMock(return_value=({}, ["r1"]))),
+                  AsyncMock(return_value=({}, ["r1::q1"]))),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()) as add_cand_mock,
         ):
             result = await tag_untagged_responses("s1", "o1")
@@ -362,7 +415,7 @@ class TestNewTopicDiscoveryFlush:
             patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
-            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1::q1"]))),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()),
             patch("crystalos.lib.topic_registry.get_candidate_count", AsyncMock(return_value=1)),
             patch("crystalos.lib.response_tagging.resolve_topic_discovery_candidate_threshold",
@@ -390,7 +443,7 @@ class TestNewTopicDiscoveryFlush:
             patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
-            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1::q1"]))),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()),
             patch("crystalos.lib.topic_registry.get_candidate_count", AsyncMock(return_value=25)),
             patch("crystalos.lib.response_tagging.resolve_topic_discovery_candidate_threshold",
@@ -423,7 +476,7 @@ class TestNewTopicDiscoveryFlush:
             patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
-            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1::q1"]))),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()),
             patch("crystalos.lib.topic_registry.get_candidate_count", AsyncMock(return_value=24)),
             patch("crystalos.lib.response_tagging.resolve_topic_discovery_candidate_threshold",
@@ -452,7 +505,7 @@ class TestNewTopicDiscoveryFlush:
             patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
-            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1::q1"]))),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()),
             patch("crystalos.lib.topic_registry.get_candidate_count", AsyncMock(return_value=25)),
             patch("crystalos.lib.response_tagging.resolve_topic_discovery_candidate_threshold",
@@ -492,7 +545,7 @@ class TestNewTopicDiscoveryFlush:
             patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
-            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1::q1"]))),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()) as add_cand_mock,
             patch("crystalos.lib.topic_registry.get_candidate_count", AsyncMock(return_value=25)),
             patch("crystalos.lib.response_tagging.resolve_topic_discovery_candidate_threshold",
@@ -528,7 +581,7 @@ class TestNewTopicDiscoveryFlush:
             patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
-            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1::q1"]))),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()) as add_cand_mock,
             patch("crystalos.lib.topic_registry.get_candidate_count", AsyncMock(return_value=25)),
             patch("crystalos.lib.response_tagging.resolve_topic_discovery_candidate_threshold",
@@ -572,7 +625,7 @@ class TestNewTopicDiscoveryFlush:
             patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
-            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1"]))),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest", AsyncMock(return_value=({}, ["r1::q1"]))),
             patch("crystalos.lib.topic_registry.add_candidates_batch", AsyncMock()),
             patch("crystalos.lib.topic_registry.get_candidate_count", AsyncMock(return_value=25)),
             patch("crystalos.lib.response_tagging.resolve_topic_discovery_candidate_threshold",

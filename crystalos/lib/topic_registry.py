@@ -144,6 +144,58 @@ async def assign_batch_to_nearest(
     return assignments, unassigned_rids
 
 
+# ── Multi-topic-per-response support (added 2026-07-06) ────────────────────────
+# assign_batch_to_nearest above is deliberately key-agnostic — it does pure
+# per-key nearest-centroid math and doesn't care whether a key is a plain
+# response_id or something else. That's what lets a caller assign PER OPEN-TEXT
+# ANSWER instead of per-response (composite key: "{response_id}::{question_id}"),
+# so a response with two open-text questions about two different things can
+# genuinely match two different existing topics — previously every call site
+# deduped to one embedding per response before calling assign_batch_to_nearest,
+# so a response could only ever get one topic no matter how many open-text
+# answers it had. These two helpers do the regrouping; no change to
+# assign_batch_to_nearest's contract or callers that still pass plain
+# response_id keys (there are none left after this fix, but the function
+# itself doesn't require the composite-key convention).
+
+def group_assignments_by_response(assignments: dict[str, str]) -> dict[str, list[str]]:
+    """Regroup per-answer assignments (keyed "response_id::question_id") into
+    per-response topic name lists — deduped, first-seen order preserved (a
+    response with 3 answers all matching "Shipping Costs" gets that topic
+    once, not three times).
+    """
+    by_response: dict[str, list[str]] = {}
+    for key, topic_name in assignments.items():
+        rid = key.split("::", 1)[0]
+        names = by_response.setdefault(rid, [])
+        if topic_name not in names:
+            names.append(topic_name)
+    return by_response
+
+
+def dedupe_unassigned_to_one_per_response(
+    unassigned_keys: list[str],
+    embeddings_by_key: dict[str, list[float]],
+) -> list[tuple[str, list[float]]]:
+    """topic_candidates has UNIQUE(survey_id, response_id) — only one pending
+    "unmatched, might seed a new topic" slot can exist per response. When a
+    response has multiple unmatched answers, keep only the first encountered
+    as that response's candidate. This does not lose the response's OTHER
+    answers' topic assignments — those are handled entirely separately by
+    group_assignments_by_response above; this only caps how many of a
+    response's UNMATCHED answers get a shot at seeding a brand-new topic.
+    """
+    seen_rids: set[str] = set()
+    result: list[tuple[str, list[float]]] = []
+    for key in unassigned_keys:
+        rid = key.split("::", 1)[0]
+        if rid in seen_rids:
+            continue
+        seen_rids.add(rid)
+        result.append((rid, embeddings_by_key[key]))
+    return result
+
+
 async def update_centroids_welford_batch(
     survey_id: str,
     topic_embeddings: dict[str, list[list[float]]],

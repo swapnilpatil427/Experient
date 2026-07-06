@@ -2046,12 +2046,9 @@ async def node_cluster(state: dict) -> dict:
 
     # Build (response_id, question_id) → embedding lookup
     emb_lookup: dict[tuple[str, str], list[float]] = {}
-    emb_by_rid: dict[str, list[float]] = {}   # first embedding per response_id
     for t in embedded_texts:
         if t.get("embedding"):
             emb_lookup[(t["response_id"], t["question_id"])] = t["embedding"]
-            if str(t["response_id"]) not in emb_by_rid:
-                emb_by_rid[str(t["response_id"])] = t["embedding"]
 
     clusters: list[dict] = []
 
@@ -2124,6 +2121,13 @@ async def node_cluster(state: dict) -> dict:
     absa_by_rid: dict[str, list[dict]] = {}
     for a in state["absa_results"]:
         absa_by_rid.setdefault(str(a["response_id"]), []).append(a)
+    # Per-answer lookup ("response_id::question_id" -> absa item) so a topic
+    # match can be traced back to the SPECIFIC answer that matched it — added
+    # 2026-07-06 alongside multi-topic-per-response support, below.
+    absa_by_key: dict[str, dict] = {
+        f"{str(a['response_id'])}::{str(a['question_id'])}": a
+        for a in state["absa_results"]
+    }
 
     topic_assignments: dict[str, list[dict]] = {}  # topic_name → absa items
 
@@ -2144,34 +2148,44 @@ async def node_cluster(state: dict) -> dict:
         min_cluster_size = await resolve_topic_discovery_min_cluster_size(survey_id, org_id)
 
         async with db._pool_conn().connection() as conn:
-            embeddings_by_rid: dict[str, list[float]] = {}
+            # Keyed per OPEN-TEXT ANSWER ("response_id::question_id"), not deduped
+            # to one embedding per response (fixed 2026-07-06) — a response with
+            # two open-text questions about two different things can genuinely
+            # match two different existing topics. assign_batch_to_nearest itself
+            # doesn't care about key shape; group_assignments_by_response (used
+            # implicitly below via absa_by_key) regroups per-answer results back
+            # to per-response topic lists downstream in node_topics's writeback.
+            embeddings_by_key: dict[str, list[float]] = {}
             for item in new_absa:
                 rid = str(item["response_id"])
-                embedding = emb_by_rid.get(rid)
+                qid = str(item["question_id"])
+                embedding = emb_lookup.get((item["response_id"], item["question_id"]))
                 if embedding:
-                    embeddings_by_rid[rid] = embedding
+                    embeddings_by_key[f"{rid}::{qid}"] = embedding
 
-            # Batch ANN: one centroid fetch + Python cosine sim for all responses
-            assignments, unassigned_rids = await topic_registry.assign_batch_to_nearest(
-                embeddings_by_rid, survey_id, conn
+            # Batch ANN: one centroid fetch + Python cosine sim for all answers
+            assignments, unassigned_keys = await topic_registry.assign_batch_to_nearest(
+                embeddings_by_key, survey_id, conn
             )
 
             topic_emb_groups: dict[str, list[list[float]]] = {}
-            for rid, tname in assignments.items():
-                items = absa_by_rid.get(rid)
-                if items:
-                    topic_assignments.setdefault(tname, []).append(items[0])
-                if rid in embeddings_by_rid:
-                    topic_emb_groups.setdefault(tname, []).append(embeddings_by_rid[rid])
+            for key, tname in assignments.items():
+                absa_item = absa_by_key.get(key)
+                if absa_item:
+                    topic_assignments.setdefault(tname, []).append(absa_item)
+                topic_emb_groups.setdefault(tname, []).append(embeddings_by_key[key])
 
             # Batch Welford: one SELECT FOR UPDATE + executemany UPDATE
             await topic_registry.update_centroids_welford_batch(survey_id, topic_emb_groups, conn)
 
-            cand_pairs = [
-                (rid, embeddings_by_rid[rid])
-                for rid in unassigned_rids
-                if rid in embeddings_by_rid
-            ]
+            # At most one candidate per response — topic_candidates has
+            # UNIQUE(survey_id, response_id); see dedupe_unassigned_to_one_per_
+            # response's docstring. A response's OTHER answers that DID match an
+            # existing topic are unaffected — this only caps how many of a
+            # response's unmatched answers get a shot at seeding a new topic.
+            cand_pairs = topic_registry.dedupe_unassigned_to_one_per_response(
+                unassigned_keys, embeddings_by_key,
+            )
             await topic_registry.add_candidates_batch(survey_id, org_id, cand_pairs, conn)
 
             # Candidate-buffer floor before a new topic gets clustered + named —
