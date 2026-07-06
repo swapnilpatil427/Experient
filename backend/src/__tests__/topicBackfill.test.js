@@ -91,10 +91,34 @@ describe('POST /api/insights/:surveyId/topics/backfill', () => {
     expect(insertCall[0]).toContain("'topic_backfill'");
   });
 
-  it('debits credits for the topic_backfill action', async () => {
+  it('debits credits for the topic_backfill action, scaled to the backlog size', async () => {
+    // Regression test (2026-07-13, pricing review): backlog is 5,000 in the
+    // default mock (tier 2) — must charge 40, not the old flat 20.
     await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
     expect(debitCreditsSpy).toHaveBeenCalledTimes(1);
-    expect(debitCreditsSpy.mock.calls[0][1]).toMatchObject({ actionType: 'topic_backfill' });
+    expect(debitCreditsSpy.mock.calls[0][1]).toMatchObject({ actionType: 'topic_backfill', credits: 40 });
+  });
+
+  it('charges more for a larger backlog and less for a smaller one', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+      if (text.includes('untagged_count')) return { rows: [{ untagged_count: 100_000 }] };
+      if (text.startsWith('INSERT INTO agent_runs')) return { rows: [{ id: 'run-1' }] };
+      return { rows: [] };
+    });
+    await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
+    expect(debitCreditsSpy.mock.calls[0][1]).toMatchObject({ credits: 450 });
+
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+      if (text.includes('untagged_count')) return { rows: [{ untagged_count: 20 }] };
+      if (text.startsWith('INSERT INTO agent_runs')) return { rows: [{ id: 'run-2' }] };
+      return { rows: [] };
+    });
+    await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
+    expect(debitCreditsSpy.mock.calls[0][1]).toMatchObject({ credits: 15 });
   });
 
   it('402 when credits insufficient', async () => {

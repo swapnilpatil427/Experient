@@ -19,7 +19,7 @@ import { serverError, clientError } from '../lib/httpError';
 import * as agentsClient from '../lib/agentsClient';
 import { getRedisClient } from '../lib/redis';
 import { checkCredits, debitCredits } from '../lib/creditLedger';
-import { CREDIT_COSTS } from '../lib/creditPlans';
+import { CREDIT_COSTS, resolveTopicBackfillCost } from '../lib/creditPlans';
 import { verifyToken } from '@clerk/backend';
 import { getOrgClaims } from '../lib/clerkClaims';
 import { validate } from '../lib/validate';
@@ -722,7 +722,12 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
       return;
     }
 
-    const check = await checkCredits(req.orgId, CREDIT_COSTS.topic_backfill, 'topic_backfill');
+    // Cost scales with backlog size (fixed 2026-07-13, pricing review) — a
+    // flat cost regardless of volume was a margin risk at scale, since
+    // embeddings + ABSA LLM calls scale linearly with responses processed.
+    // See resolveTopicBackfillCost's docstring for the full tier rationale.
+    const cost = resolveTopicBackfillCost(untaggedCount);
+    const check = await checkCredits(req.orgId, cost, 'topic_backfill');
     if (!check.ok) {
       res.status(402).json({
         error:    'Not enough credits to run a tagging backfill.',
@@ -780,7 +785,7 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
     try {
       await debitCredits(req.orgId, {
         actionType: 'topic_backfill',
-        credits:    CREDIT_COSTS.topic_backfill,
+        credits:    cost,
         userId:     req.userId,
         actionRef:  runId,
         note:       'Topic tagging backfill',

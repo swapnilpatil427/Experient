@@ -208,10 +208,15 @@ clustered + LLM-named; shared by `node_cluster` AND `lib/response_tagging.py::ta
 An explicit `INSIGHT_RESPONSE_TAGGING_BATCH_SIZE` env var (ops escape hatch, mirrors the existing but
 undocumented `INSIGHT_NEW_RESPONSE_THRESHOLD`) overrides `resolve_response_tagging_batch_size`'s survey/org/
 platform resolution outright.
-Manual topic-tagging backfill (Experience → Topics page "Backfill Tagging" button, added 2026-07-13):
-`CREDIT_COST_TOPIC_BACKFILL` (default `20` — Node-side credit cost per backfill job, `backend/src/lib/creditPlans.ts`;
-CrystalOS's own `POST /topics/backfill` endpoint and `lib/topic_backfill.py` orchestrator have no separate env vars —
-they reuse `RESPONSE_TAGGING_SWEEP_CAP`/`MAX_RESPONSE_TAGGING_ATTEMPTS` above).
+Manual "Catch Up Tagging" job (Experience → Topics page, added 2026-07-13; renamed from "Backfill Tagging"):
+cost is TIERED by backlog size, not flat (`backend/src/lib/creditPlans.ts::resolveTopicBackfillCost`, pricing
+review) — `CREDIT_COST_TOPIC_BACKFILL` (default `15` — tier 1, ≤500 untagged responses), `CREDIT_COST_TOPIC_
+BACKFILL_TIER2` (default `40` — 501–5,000), `CREDIT_COST_TOPIC_BACKFILL_TIER3` (default `200` — 5,001–50,000),
+`CREDIT_COST_TOPIC_BACKFILL_PER_1K` (default `5` — credits per additional 1,000 responses above 50,000; unlike
+Custom Analysis's bounded/sampled corpus, this job processes every untagged response with no sampling, so cost
+keeps climbing above tier 3 instead of flattening out, up to the same 500-credit platform ceiling `resolveCustomCost`
+uses). CrystalOS's own `POST /topics/backfill` endpoint and `lib/topic_backfill.py` orchestrator have no separate
+env vars — they reuse `RESPONSE_TAGGING_SWEEP_CAP`/`MAX_RESPONSE_TAGGING_ATTEMPTS` above.
 Insight Pipeline v2 (Phase 6/7): `CREDIT_COST_CUSTOM_BASE` (default `25` — base credit cost for a Custom Analysis run),
 `ENABLE_RETENTION_JOB` (default `false` — gate the nightly automated-checkpoint retention/compaction job in `scheduler.py`;
 dev no-op unless set to `true`), `RETENTION_BLOB_DROP_DAYS` (default `30` — grace days before a collapsed low-delta

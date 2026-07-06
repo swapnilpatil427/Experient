@@ -55,12 +55,58 @@ export const CREDIT_COSTS = {
   manual_quick:    envInt('CREDIT_COST_MANUAL_QUICK', 15),
   manual_expert:   envInt('CREDIT_COST_MANUAL_EXPERT', 40),
   custom_base:     envInt('CREDIT_COST_CUSTOM_BASE', 25),
-  // Manual topic-tagging backfill (Experience → Topics page "Backfill Tagging"
-  // button) — real embedding + ABSA LLM cost per untagged response, same
-  // underlying work as an automated tagging sweep, just user-initiated and
-  // metered like every other on-demand AI action in this table.
-  topic_backfill:  envInt('CREDIT_COST_TOPIC_BACKFILL', 20),
+  // Catch Up Tagging (topic_backfill) — tier 1 (≤500 responses) of a
+  // volume-scaled ladder, NOT a flat cost. See resolveTopicBackfillCost below
+  // for tiers 2+ and the full pricing rationale (2026-07-13 pricing review).
+  topic_backfill:  envInt('CREDIT_COST_TOPIC_BACKFILL', 15),
 } as const;
+
+// Tiers 2/3 + the linear per-1,000 rate above tier 3 for
+// resolveTopicBackfillCost — independently overridable per this file's
+// "everything is overridable via env" principle above.
+const TOPIC_BACKFILL_TIER_2_COST         = envInt('CREDIT_COST_TOPIC_BACKFILL_TIER2', 40);
+const TOPIC_BACKFILL_TIER_3_COST         = envInt('CREDIT_COST_TOPIC_BACKFILL_TIER3', 200);
+const TOPIC_BACKFILL_PER_1K_ABOVE_TIER3  = envInt('CREDIT_COST_TOPIC_BACKFILL_PER_1K', 5);
+
+/**
+ * Tiered cost for a Catch Up Tagging (topic_backfill) job, based on the
+ * survey's untagged-response backlog size at trigger time.
+ *
+ * Fixed 2026-07-13 (pricing review, prompted by a sales/product finding that
+ * a flat cost was a margin risk at scale): unlike Custom Analysis's bounded,
+ * SAMPLED corpus (`resolveCustomCost` above, which can safely flatten out at
+ * its top tier), Catch Up Tagging processes EVERY untagged response with no
+ * sampling — embeddings + a batched ABSA LLM call scale linearly with count,
+ * so cost is genuinely unbounded. A flat top tier here would silently
+ * reintroduce the exact bug this function exists to fix, so above tier 3 the
+ * cost keeps climbing per additional 1,000 responses rather than flattening,
+ * up to the same 500-credit ceiling `resolveCustomCost` uses platform-wide.
+ *
+ * This is priced as a SPEED convenience, not premium metered AI — the exact
+ * same per-response work happens for FREE via the automatic live-stream
+ * consumer and the 15-minute scheduler backlog sweep; this button only pays
+ * to do it now instead of waiting. Margins here are intentionally thinner
+ * than `insight_run`/`manual_expert` for that reason.
+ *
+ * Tiers (grounded in prod ABSA cost — gemini-2.5-flash, ~$0.05/1,000
+ * responses tagged including margin buffer):
+ *   0            → 0 (nothing to do — callers should skip billing entirely)
+ *   1–500        → CREDIT_COSTS.topic_backfill (15)
+ *   501–5,000    → 40
+ *   5,001–50,000 → 200
+ *   50,001+      → 200 + 5 credits per 1,000 responses above 50,000,
+ *                  capped at 500 (covers roughly a 110k-response backlog)
+ */
+export function resolveTopicBackfillCost(backlogSize: number): number {
+  const n = Number.isFinite(backlogSize) && backlogSize > 0 ? Math.trunc(backlogSize) : 0;
+  if (n === 0) return 0;
+  let cost: number;
+  if (n <= 500) cost = CREDIT_COSTS.topic_backfill;
+  else if (n <= 5_000) cost = TOPIC_BACKFILL_TIER_2_COST;
+  else if (n <= 50_000) cost = TOPIC_BACKFILL_TIER_3_COST;
+  else cost = TOPIC_BACKFILL_TIER_3_COST + TOPIC_BACKFILL_PER_1K_ABOVE_TIER3 * Math.ceil((n - 50_000) / 1_000);
+  return Math.min(Math.max(cost, 1), 500);
+}
 
 export type MeteredAction = keyof typeof CREDIT_COSTS;
 
