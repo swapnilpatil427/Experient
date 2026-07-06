@@ -480,6 +480,34 @@ export async function triggerManualInsightRun({
   }, 15_000);
 }
 
+/**
+ * CrystalOS internal endpoint for the manual "Backfill Tagging" job
+ * (Experience → Topics page). Held as a const for the same reason as
+ * MANUAL_INSIGHT_RUN_PATH above.
+ */
+export const TOPIC_BACKFILL_PATH = '/topics/backfill';
+
+/**
+ * Fire a manual topic-tagging backfill job. Best-effort kick-off — CrystalOS
+ * starts a background task and reports progress into the SAME agent_runs row
+ * (run_id) via stream_events, pollable at GET /api/runs/:runId. The caller
+ * must have already inserted that row (run_type='topic_backfill') before
+ * calling this, matching triggerManualInsightRun's division of responsibility.
+ */
+export async function triggerTopicBackfill({
+  surveyId, orgId, runId,
+}: {
+  surveyId: string;
+  orgId: string;
+  runId: string;
+}): Promise<unknown> {
+  logger.info({ surveyId, orgId, runId }, 'agents:triggerTopicBackfill');
+  return _fetch(TOPIC_BACKFILL_PATH, {
+    method: 'POST',
+    body: JSON.stringify({ survey_id: surveyId, org_id: orgId, run_id: runId }),
+  }, 15_000);
+}
+
 
 /**
  * CrystalOS internal endpoint for Custom Analysis runs (Insight Pipeline v2 — Phase 6).

@@ -113,6 +113,19 @@ async def assign_batch_to_nearest(
     Returns:
         assignments:    {rid: topic_name} for responses above threshold
         unassigned_rids: rids that fell below threshold → go to candidate buffer
+
+    Fault isolation (fixed 2026-07-13): a single malformed embedding (wrong
+    dimension, non-numeric element, etc — far likelier to surface on an old
+    survey's deep backlog than on fresh data) used to raise straight out of
+    this function with no handling at all. Since callers run this inside a
+    single all-or-nothing transaction alongside an already-committed-looking
+    sentiment writeback, one bad row aborted the ENTIRE batch — and because
+    the caller always re-selects the oldest-untagged rows first, the exact
+    same poison row got re-fetched and re-failed forever, permanently
+    starving every response behind it (including brand-new ones). Each row's
+    similarity computation is now isolated: a bad row is logged and treated
+    as unassigned (safe — it just falls into the candidate buffer / retry
+    path) instead of taking the whole batch down with it.
     """
     if not embeddings_by_rid:
         return {}, []
@@ -123,23 +136,35 @@ async def assign_batch_to_nearest(
 
     assignments: dict[str, str] = {}
     unassigned_rids: list[str] = []
+    poisoned_count = 0
 
     for rid, embedding in embeddings_by_rid.items():
         best_topic: str | None = None
         best_sim = -1.0
-        for c in centroids:
-            c_vec = c["centroid"]
-            if c_vec is None:
-                continue
-            sim = sum(a * b for a, b in zip(embedding, c_vec))
-            if sim > best_sim:
-                best_sim = sim
-                best_topic = c["topic_name"]
+        try:
+            for c in centroids:
+                c_vec = c["centroid"]
+                if c_vec is None:
+                    continue
+                sim = sum(a * b for a, b in zip(embedding, c_vec))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_topic = c["topic_name"]
+        except (TypeError, ValueError):
+            poisoned_count += 1
+            unassigned_rids.append(rid)
+            continue
 
         if best_sim >= threshold and best_topic:
             assignments[rid] = best_topic
         else:
             unassigned_rids.append(rid)
+
+    if poisoned_count:
+        logger.warning(
+            "topic_registry_assign_skipped_malformed_embeddings",
+            survey_id=survey_id, count=poisoned_count,
+        )
 
     return assignments, unassigned_rids
 

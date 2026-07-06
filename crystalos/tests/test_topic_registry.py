@@ -142,6 +142,45 @@ class TestAssignBatchToNearest:
         assert assignments.get("r1") == "topic_a"
         assert assignments.get("r2") == "topic_b"
 
+    @pytest.mark.asyncio
+    async def test_one_malformed_embedding_does_not_crash_the_whole_batch(self):
+        """Regression test (2026-07-13): a wrong-dimension or non-numeric embedding
+        used to raise straight out of this function, which — since callers run this
+        inside one all-or-nothing transaction — aborted the ENTIRE batch including
+        already-computed sentiment scoring, and because the caller always re-selects
+        the oldest untagged rows first, the same poison row would fail forever,
+        permanently starving every response behind it. Now a bad row is isolated:
+        treated as unassigned, everything else in the batch still gets scored."""
+        centroids = [{"topic_name": "topic_a", "centroid": [1.0, 0.0], "response_count": 5}]
+        with patch("crystalos.lib.topic_registry.get_centroids", return_value=centroids):
+            conn = AsyncMock()
+            assignments, unassigned = await assign_batch_to_nearest(
+                {
+                    "good": [1.0, 0.0],
+                    "wrong_dim": [1.0, 0.0, 0.0],   # zip() silently truncates — not this one
+                    "non_numeric": [None, "x"],      # TypeError inside the sum()
+                },
+                "s1", conn, threshold=0.5,
+            )
+        assert assignments.get("good") == "topic_a"
+        assert "non_numeric" in unassigned
+        assert "non_numeric" not in assignments
+
+    @pytest.mark.asyncio
+    async def test_malformed_embedding_logs_warning_not_raise(self):
+        centroids = [{"topic_name": "topic_a", "centroid": [1.0, 0.0], "response_count": 5}]
+        with (
+            patch("crystalos.lib.topic_registry.get_centroids", return_value=centroids),
+            patch("crystalos.lib.topic_registry.logger") as mock_logger,
+        ):
+            conn = AsyncMock()
+            assignments, unassigned = await assign_batch_to_nearest(
+                {"bad": [None, None]}, "s1", conn, threshold=0.5,
+            )
+        assert assignments == {}
+        assert unassigned == ["bad"]
+        mock_logger.warning.assert_called_once()
+
 
 # ── Multi-topic-per-response regrouping helpers (added 2026-07-06) ────────────
 # assign_batch_to_nearest itself is unchanged and key-agnostic (proven above by

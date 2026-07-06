@@ -192,8 +192,14 @@ unsigned only when neither is set.
 `DEFAULT_RESPONSE_TAGGING_BATCH_SIZE` (default `1` — how many new-response stream events accumulate before
 `consumers/response_stream.py` runs a lightweight sentiment/emotion/effort/topic tagging sweep,
 `lib/response_tagging.py::tag_untagged_responses`; independent of `DEFAULT_STREAM_THRESHOLD`, which still gates
-full report+checkpoint generation), `RESPONSE_TAGGING_SWEEP_CAP` (default `50` — safety ceiling on how many
-untagged responses a single tagging sweep call processes, independent of the batch-size trigger cadence above),
+full report+checkpoint generation), `RESPONSE_TAGGING_SWEEP_CAP` (safety ceiling on how many untagged responses
+a single tagging sweep call processes, independent of the batch-size trigger cadence above; env-tiered since
+2026-07-13 — dev `50`, dev-paid `75`, staging `100`, prod `200` — larger in prod so a real backlog drains in
+fewer scheduler ticks), `MAX_RESPONSE_TAGGING_ATTEMPTS` (default `3` — circuit breaker added 2026-07-13: a
+response that fails tagging this many times in a row is quarantined, i.e. marked enriched with no scores, instead
+of being retried forever; without this a single permanently-poisoned response would be re-selected by every
+future sweep's oldest-first query and block every response behind it — see
+`lib/response_tagging.py::_record_batch_failure`),
 `TOPIC_DISCOVERY_CANDIDATE_THRESHOLD` (default `25` — flat candidate-buffer floor before a new topic gets
 clustered + LLM-named; shared by `node_cluster` AND `lib/response_tagging.py::tag_untagged_responses` so both
 "enough evidence for a new topic" checks agree)
@@ -202,6 +208,10 @@ clustered + LLM-named; shared by `node_cluster` AND `lib/response_tagging.py::ta
 An explicit `INSIGHT_RESPONSE_TAGGING_BATCH_SIZE` env var (ops escape hatch, mirrors the existing but
 undocumented `INSIGHT_NEW_RESPONSE_THRESHOLD`) overrides `resolve_response_tagging_batch_size`'s survey/org/
 platform resolution outright.
+Manual topic-tagging backfill (Experience → Topics page "Backfill Tagging" button, added 2026-07-13):
+`CREDIT_COST_TOPIC_BACKFILL` (default `20` — Node-side credit cost per backfill job, `backend/src/lib/creditPlans.ts`;
+CrystalOS's own `POST /topics/backfill` endpoint and `lib/topic_backfill.py` orchestrator have no separate env vars —
+they reuse `RESPONSE_TAGGING_SWEEP_CAP`/`MAX_RESPONSE_TAGGING_ATTEMPTS` above).
 Insight Pipeline v2 (Phase 6/7): `CREDIT_COST_CUSTOM_BASE` (default `25` — base credit cost for a Custom Analysis run),
 `ENABLE_RETENTION_JOB` (default `false` — gate the nightly automated-checkpoint retention/compaction job in `scheduler.py`;
 dev no-op unless set to `true`), `RETENTION_BLOB_DROP_DAYS` (default `30` — grace days before a collapsed low-delta

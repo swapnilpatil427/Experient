@@ -18,6 +18,8 @@ import { PageHeader } from '../../components/PageHeader';
 import { Icon } from '../../components/Icon';
 import { Button } from '@/components/ui/button';
 import { SurveyScopePicker } from '../../components/SurveyScopePicker';
+import { Progress } from '@/components/ui/progress';
+import { ManualRunError } from '../../lib/api';
 import { GlassCard } from './shared';
 import { TopicHierarchyTree, type ThemeGroup } from './components/TopicHierarchyTree';
 import { TopicDetailPanel } from './components/TopicDetailPanel';
@@ -108,6 +110,110 @@ export function TopicsAnalysisPage() {
       setGenerating(false);
     }
   }, [api, surveyId, generating, loadHierarchy]);
+
+  // ── Backfill Tagging ─────────────────────────────────────────────────────
+  // Drains a survey's entire untagged-response backlog in the background
+  // (lib/topic_backfill.py on CrystalOS). Runs server-side — resumable on
+  // reload (checked below) and safe to navigate away from mid-run.
+  type BackfillStatus = 'idle' | 'running' | 'completed' | 'failed';
+  const [backfillRunId, setBackfillRunId] = useState<string | null>(null);
+  const [backfillStatus, setBackfillStatus] = useState<BackfillStatus>('idle');
+  const [backfillProgress, setBackfillProgress] = useState<{ total: number; processed: number; quarantined: number } | null>(null);
+  const [backfillError, setBackfillError] = useState<string | null>(null);
+
+  // Resume: if a backfill job is already running for this survey (started
+  // before a reload, or from another tab), pick up its progress instead of
+  // letting the button silently look idle while the server keeps working.
+  useEffect(() => {
+    setBackfillRunId(null);
+    setBackfillStatus('idle');
+    setBackfillProgress(null);
+    setBackfillError(null);
+    if (!surveyId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const runId = await api.getActiveTopicBackfillRun(surveyId);
+        if (!cancelled && runId) {
+          setBackfillRunId(runId);
+          setBackfillStatus('running');
+        }
+      } catch {
+        // no active run discoverable — button just starts idle, harmless
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [api, surveyId]);
+
+  useEffect(() => {
+    if (!backfillRunId || backfillStatus !== 'running') return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const run = await api.getRun(backfillRunId);
+        if (cancelled) return;
+        const events = run.stream_events ?? [];
+        const latest = [...events].reverse().find(
+          (e) => e.event === 'backfill_progress' || e.event === 'backfill_started',
+        ) as { data?: { total_untagged?: number; processed?: number; quarantined?: number } } | undefined;
+        if (latest?.data) {
+          setBackfillProgress({
+            total:       Number(latest.data.total_untagged ?? 0),
+            processed:   Number(latest.data.processed ?? 0),
+            quarantined: Number(latest.data.quarantined ?? 0),
+          });
+        }
+        if (run.status !== 'running') {
+          setBackfillStatus(run.status === 'completed' ? 'completed' : 'failed');
+          if (run.status === 'completed') await loadHierarchy();
+        }
+      } catch {
+        // transient poll failure — try again next tick, don't flip to failed
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [backfillRunId, backfillStatus, api, loadHierarchy]);
+
+  // Auto-reset the terminal state after a few seconds so the button is
+  // clickable again for a future backfill.
+  useEffect(() => {
+    if (backfillStatus !== 'completed' && backfillStatus !== 'failed') return;
+    const timer = setTimeout(() => {
+      setBackfillStatus('idle');
+      setBackfillRunId(null);
+      setBackfillProgress(null);
+      setBackfillError(null);
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [backfillStatus]);
+
+  const handleBackfillTagging = useCallback(async () => {
+    if (!surveyId || backfillStatus === 'running') return;
+    setBackfillError(null);
+    setBackfillProgress(null);
+    setBackfillStatus('running');
+    try {
+      const res = await api.triggerTopicBackfill(surveyId);
+      setBackfillRunId(res.run_id);
+    } catch (err) {
+      setBackfillStatus('failed');
+      setBackfillError(
+        err instanceof ManualRunError && err.code === 'RATE_LIMITED'
+          ? t('topicsAnalysis.backfillAlreadyRunning')
+          : err instanceof ManualRunError
+            ? err.message
+            : t('topicsAnalysis.backfillFailed'),
+      );
+    }
+  }, [api, surveyId, backfillStatus, t]);
+
+  const backfillPct = backfillProgress && backfillProgress.total > 0
+    ? Math.min(100, Math.round((backfillProgress.processed / backfillProgress.total) * 100))
+    : 0;
 
   // ── Topic detail ─────────────────────────────────────────────────────────
   const [topicDetail, setTopicDetail] = useState<TopicDetail | null>(null);
@@ -295,6 +401,27 @@ export function TopicsAnalysisPage() {
         <Icon name="auto_awesome" size={14} />
         {t('topicsAnalysis.askCrystal')}
       </Button>
+
+      {/* Backfill Tagging — drains the survey's entire untagged-response
+          backlog in the background; safe to click regardless of whether
+          topics exist yet. */}
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-2"
+        disabled={!surveyId || backfillStatus === 'running'}
+        onClick={handleBackfillTagging}
+        title={t('topicsAnalysis.backfillTaggingHint')}
+      >
+        <Icon
+          name={backfillStatus === 'running' ? 'sync' : 'auto_fix_high'}
+          size={14}
+          className={backfillStatus === 'running' ? 'animate-spin' : ''}
+        />
+        {backfillStatus === 'running'
+          ? t('topicsAnalysis.backfillRunning', { pct: backfillPct })
+          : t('topicsAnalysis.backfillTagging')}
+      </Button>
     </div>
   );
 
@@ -306,6 +433,48 @@ export function TopicsAnalysisPage() {
         title={t('topicsAnalysis.pageTitle')}
         actions={headerActions}
       />
+
+      {backfillStatus !== 'idle' && (
+        <div
+          className="flex items-center gap-3 px-4 py-3 rounded-xl border mb-4"
+          style={{
+            background:  backfillStatus === 'failed' ? 'rgba(220,38,38,0.05)' : 'rgba(0,100,124,0.05)',
+            borderColor: backfillStatus === 'failed' ? 'rgba(220,38,38,0.2)' : 'rgba(0,100,124,0.2)',
+          }}
+        >
+          <Icon
+            name={backfillStatus === 'failed' ? 'error_outline' : backfillStatus === 'completed' ? 'check_circle' : 'sync'}
+            size={16}
+            className={backfillStatus === 'running' ? 'animate-spin' : ''}
+            style={{ color: backfillStatus === 'failed' ? '#dc2626' : 'var(--color-secondary, #00647c)', flexShrink: 0 }}
+          />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold" style={{ color: backfillStatus === 'failed' ? '#dc2626' : undefined }}>
+              {backfillStatus === 'running' && t('topicsAnalysis.backfillProgressLabel', {
+                processed: backfillProgress?.processed ?? 0,
+                total:     backfillProgress?.total ?? 0,
+              })}
+              {backfillStatus === 'completed' && (
+                (backfillProgress?.quarantined ?? 0) > 0
+                  ? t('topicsAnalysis.backfillCompleteWithQuarantine', {
+                      processed:   backfillProgress?.processed ?? 0,
+                      quarantined: backfillProgress?.quarantined ?? 0,
+                    })
+                  : t('topicsAnalysis.backfillCompleteDetail', {
+                      processed: backfillProgress?.processed ?? 0,
+                    })
+              )}
+              {backfillStatus === 'failed' && (backfillError || t('topicsAnalysis.backfillFailed'))}
+            </p>
+            {backfillStatus === 'running' && (
+              <>
+                <Progress value={backfillPct} className="h-1.5 mt-2" />
+                <p className="text-xs text-muted-foreground mt-1">{t('topicsAnalysis.backfillNavigateAwayHint')}</p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <AnimatePresence mode="wait">
         {/* ═══════════════════════════════════════════════════════════

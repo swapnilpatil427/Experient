@@ -120,7 +120,26 @@ DEFAULT_RESPONSE_TAGGING_BATCH_SIZE:      int = int(os.getenv("DEFAULT_RESPONSE_
 # independent of response_tagging_batch_size (which only controls trigger cadence).
 # Keeps a large backlog sweep (scheduler catch-up, or a survey that's been silent for a
 # while) from doing unbounded work in one call — mirrors INGEST_NEW_RESPONSE_ABSA_CAP.
-RESPONSE_TAGGING_SWEEP_CAP:               int = int(os.getenv("RESPONSE_TAGGING_SWEEP_CAP",               "50"))
+# Env-tiered (fixed 2026-07-13, was flat 50 — inconsistent with every sibling constant in
+# this section): larger in prod/staging so a real backlog drains in fewer scheduler ticks,
+# smaller in dev for fast iteration and to keep local LLM-call volume low.
+if _ENV == "prod":
+    _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT = "200"
+elif _ENV == "staging":
+    _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT = "100"
+elif _ENV == "dev-paid":
+    _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT = "75"
+else:                                             # dev / local / test
+    _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT = "50"
+
+RESPONSE_TAGGING_SWEEP_CAP: int = int(os.getenv("RESPONSE_TAGGING_SWEEP_CAP", _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT))
+# Circuit breaker (added 2026-07-13): a response that fails tagging this many times in a
+# row gets quarantined (ai_enriched_at set with no scores) instead of being retried
+# forever. Without this, a single permanently-poisoned response — malformed answers,
+# a corrupted embedding, anything that reliably throws — would be re-selected by every
+# future sweep's oldest-first query and block every response behind it, indefinitely.
+# See lib/response_tagging.py::_record_batch_failure.
+MAX_RESPONSE_TAGGING_ATTEMPTS:            int = int(os.getenv("MAX_RESPONSE_TAGGING_ATTEMPTS",            "3"))
 # Candidate-buffer floor before a new topic gets clustered + LLM-named (was an
 # adaptive max(5, 3% of total responses) formula inline in node_cluster; simplified to
 # one flat number shared by node_cluster AND lib/response_tagging.py's lightweight

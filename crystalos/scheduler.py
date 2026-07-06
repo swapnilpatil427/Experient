@@ -140,7 +140,7 @@ async def sweep_zombie_runs() -> None:
         async with _pool_conn().connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    """SELECT id, survey_id, org_id, retry_count
+                    """SELECT id, survey_id, org_id, retry_count, run_type
                        FROM agent_runs
                        WHERE status = 'running'
                          AND (
@@ -151,7 +151,7 @@ async def sweep_zombie_runs() -> None:
                 )
                 zombies = await cur.fetchall()
 
-        for zombie_id, survey_id, org_id, retry_count in zombies:
+        for zombie_id, survey_id, org_id, retry_count, run_type in zombies:
             async with _pool_conn().connection() as conn:
                 await conn.execute(
                     """UPDATE agent_runs
@@ -165,8 +165,16 @@ async def sweep_zombie_runs() -> None:
                 "zombie_run_killed",
                 run_id=str(zombie_id),
                 survey_id=str(survey_id) if survey_id else None,
+                run_type=run_type,
             )
-            if (retry_count or 0) < 2 and survey_id and org_id:
+            # Retry is insight-generation-specific (_trigger_generation kicks off a
+            # fresh insight run). Fixed 2026-07-13: this used to fire unconditionally
+            # for ANY zombied run_type — a zombied topic_backfill run would have been
+            # incorrectly "retried" as a brand-new insight-generation run. A backfill
+            # job doesn't need this retry at all: the scheduler's own backlog sweep
+            # (run_response_tagging_backlog_sweep) keeps draining the same untagged
+            # rows regardless, and the user can just click the button again.
+            if run_type == "insight_generation" and (retry_count or 0) < 2 and survey_id and org_id:
                 await _trigger_generation(str(survey_id), str(org_id))
     except Exception as exc:
         logger.error("zombie_sweep_failed", error=str(exc))

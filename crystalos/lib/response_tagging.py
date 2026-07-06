@@ -52,7 +52,9 @@ from collections import defaultdict
 from crystalos.lib import db
 from crystalos.lib import topic_registry
 from crystalos.lib.logger import logger
-from crystalos.lib.constants import RESPONSE_TAGGING_SWEEP_CAP, TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
+from crystalos.lib.constants import (
+    RESPONSE_TAGGING_SWEEP_CAP, TOPIC_DISCOVERY_SIMILARITY_THRESHOLD, MAX_RESPONSE_TAGGING_ATTEMPTS,
+)
 from crystalos.lib.insight_settings import (
     resolve_topic_discovery_candidate_threshold, resolve_topic_discovery_min_cluster_size,
 )
@@ -89,14 +91,27 @@ async def _fetch_untagged_responses(survey_id: str, org_id: str, limit: int, con
     This is also how "tag any previously missing ones, especially if they failed
     before" is satisfied with no separate failure-tracking state: a failed attempt
     simply never sets ``ai_enriched_at``, so it's naturally retried on the next
-    sweep — no dead-letter table or retry counter needed."""
+    sweep — no dead-letter table or retry counter needed.
+
+    ``FOR UPDATE SKIP LOCKED`` (added 2026-07-13, independent review finding):
+    the live stream consumer, the 15-min scheduler backlog sweep, and the manual
+    backfill job can all call this for the SAME survey concurrently. Without row
+    locking they'd all fetch the identical oldest batch and pay for embeddings +
+    ABSA LLM calls on the same responses twice (or more) — a direct cost/accuracy
+    regression. Locking here means a concurrent caller transparently skips
+    whatever another in-flight call already claimed and gets the next available
+    untagged rows instead; the lock is released at this transaction's next
+    commit/rollback (see ``_process_batch``'s early sentiment commit), by which
+    point those rows already have ``ai_enriched_at`` set and naturally drop out
+    of any concurrent caller's WHERE clause anyway."""
     async with conn.cursor() as cur:
         await cur.execute(
             """SELECT id, answers
                FROM responses
                WHERE survey_id = %s AND org_id = %s AND ai_enriched_at IS NULL
                ORDER BY submitted_at ASC
-               LIMIT %s""",
+               LIMIT %s
+               FOR UPDATE SKIP LOCKED""",
             (survey_id, org_id, limit),
         )
         rows = await cur.fetchall()
@@ -278,6 +293,244 @@ async def _flush_and_discover_topics(
     return len(new_topics)
 
 
+async def _record_batch_failure(response_ids: list[str], error_msg: str) -> list[str]:
+    """Circuit breaker (added 2026-07-13): bump ``ai_tagging_attempts`` for a batch
+    that failed to process, and quarantine (set ``ai_enriched_at=NOW()``) any
+    response that has now failed ``MAX_RESPONSE_TAGGING_ATTEMPTS`` times in a row.
+
+    Without this, ANY bug anywhere in this function's pipeline (ABSA LLM call,
+    embedding, DB writeback — this is deliberately not scoped to one known cause)
+    that reliably throws for a specific response would cause ``_fetch_untagged_
+    responses``'s ``ORDER BY submitted_at ASC LIMIT`` to re-select and re-fail on
+    the exact same oldest rows on every future sweep call, forever — permanently
+    starving every response behind them, including brand-new ones (this is the
+    literal production incident that motivated this fix). Quarantining a
+    genuinely-poisoned response after a bounded number of attempts guarantees the
+    queue always makes forward progress regardless of what causes a given attempt
+    to fail. Runs in its OWN fresh connection since the connection tied to the
+    failed sweep may itself be left in an aborted transaction state.
+
+    Returns the list of response_ids that were quarantined this call (for tests).
+    """
+    if not response_ids:
+        return []
+    try:
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """UPDATE responses
+                       SET ai_tagging_attempts = ai_tagging_attempts + 1,
+                           ai_tagging_last_error = %s
+                       WHERE id = ANY(%s) AND ai_enriched_at IS NULL
+                       RETURNING id, ai_tagging_attempts""",
+                    (error_msg[:500], response_ids),
+                )
+                rows = await cur.fetchall()
+                quarantine_ids = [str(r[0]) for r in rows if r[1] >= MAX_RESPONSE_TAGGING_ATTEMPTS]
+                if quarantine_ids:
+                    await cur.executemany(
+                        "UPDATE responses SET ai_enriched_at = NOW() WHERE id = %s",
+                        [(rid,) for rid in quarantine_ids],
+                    )
+            await conn.commit()
+        if quarantine_ids:
+            logger.error(
+                "response_tagging_quarantined_after_max_attempts",
+                count=len(quarantine_ids), response_ids=quarantine_ids,
+            )
+        return quarantine_ids
+    except Exception as exc:
+        logger.error("response_tagging_record_failure_failed", error=str(exc))
+        return []
+
+
+def _merge_partial_result(result: dict, partial: dict) -> None:
+    """Accumulate a ``_process_batch`` partial result into the running total —
+    used both for the single whole-batch call and for the per-row fallback
+    (which calls ``_process_batch`` once per response and needs to sum them)."""
+    result["tagged"]            += partial.get("tagged", 0)
+    result["topics_assigned"]   += partial.get("topics_assigned", 0)
+    result["topics_buffered"]   += partial.get("topics_buffered", 0)
+    result["topics_discovered"] += partial.get("topics_discovered", 0)
+
+
+async def _process_batch(
+    survey_id: str,
+    org_id: str,
+    responses: list[dict],
+    questions: list[dict],
+    conn,
+    candidate_threshold: int,
+    min_cluster_size: int,
+) -> dict:
+    """Score sentiment/emotion/effort and assign/discover topics for exactly the
+    given list of responses, on the given connection.
+
+    RAISES on any failure that should trigger the caller's per-row isolation
+    fallback (``extract_open_texts``, the aggregation loop, or the sentiment
+    writeback) — added 2026-07-13, independent review finding. The topic-
+    assignment section below keeps its OWN internal try/except (unchanged):
+    it's already fully isolated (``assign_batch_to_nearest`` can't crash the
+    batch; every ``topic_registry`` write self-protects), so a topic-only
+    failure doesn't need to fall all the way back to per-row retry — it would
+    gain nothing (nothing there is response-data-dependent in the way that,
+    say, a malformed ``answers`` field is) and would only add cost.
+
+    Never sets ``ai_enriched_at`` on a response without also committing its
+    sentiment score in the same statement — a caller retrying a subset of a
+    failed batch therefore can't produce a half-written response.
+
+    Returns a partial result dict: ``{tagged, topics_assigned,
+    topics_buffered, topics_discovered}``.
+    """
+    result = {"tagged": 0, "topics_assigned": 0, "topics_buffered": 0, "topics_discovered": 0}
+
+    texts = extract_open_texts(responses, questions)
+    if not texts:
+        response_ids = [str(r["id"]) for r in responses]
+        await _mark_enriched_no_text(response_ids, conn)
+        await conn.commit()
+        result["tagged"] = len(response_ids)
+        return result
+
+    tagged_texts = [{**t, "org_id": org_id, "survey_id": survey_id} for t in texts]
+    try:
+        embedded_texts = await get_or_create_embeddings(tagged_texts, conn)
+    except Exception as exc:
+        logger.warning("response_tagging_embed_failed", survey_id=survey_id, error=str(exc))
+        embedded_texts = tagged_texts
+
+    absa_cfg = get_absa_config()
+    llm_results = await run_absa_llm(
+        embedded_texts, _llm_raw,
+        batch_size=absa_cfg["batch_size"],
+        semaphore=asyncio.Semaphore(absa_cfg["concurrency"]),
+    )
+
+    by_resp: dict[str, list] = defaultdict(list)
+    for r in llm_results:
+        by_resp[str(r["response_id"])].append(r)
+
+    sentiment_updates = []
+    for resp_id, items in by_resp.items():
+        avg_score = sum(i.get("score", 0.0) for i in items) / len(items)
+        negs = sum(1 for i in items if i.get("sentiment") == "negative")
+        pos  = sum(1 for i in items if i.get("sentiment") == "positive")
+        dom_sentiment = "negative" if negs > pos else ("positive" if pos > negs else "neutral")
+        emotion_counts: dict[str, int] = {}
+        for i in items:
+            e = i.get("emotion", "neutral")
+            emotion_counts[e] = emotion_counts.get(e, 0) + 1
+        dom_emotion = max(emotion_counts, key=emotion_counts.get) if emotion_counts else "neutral"
+        effort = compute_effort_score([i["text"] for i in items])
+        sentiment_updates.append(
+            (dom_sentiment, round(avg_score, 2), dom_emotion, round(effort, 1), resp_id)
+        )
+
+    if sentiment_updates:
+        try:
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    """UPDATE responses
+                       SET ai_sentiment=%s, ai_sentiment_score=%s,
+                           ai_emotion=%s, ai_effort_score=%s, ai_enriched_at=NOW()
+                       WHERE id=%s""",
+                    sentiment_updates,
+                )
+            # Commit sentiment/emotion/effort writeback IMMEDIATELY, before
+            # touching topic assignment below — fixed 2026-07-13. A topic-side
+            # failure (isolated by its own try/except further down) must never
+            # be able to roll back scoring that already succeeded.
+            await conn.commit()
+            result["tagged"] = len(sentiment_updates)
+        except Exception as exc:
+            # RAISES (fixed 2026-07-13, independent review finding): this used
+            # to swallow the failure here without incrementing
+            # ai_tagging_attempts, so a deterministically-failing writeback
+            # (e.g. a persistent constraint violation) left those rows with
+            # neither a score NOR a recorded attempt — exactly the oldest-
+            # first-forever livelock this whole fix set exists to eliminate,
+            # left uncovered for the one section given its own commit
+            # boundary. Propagating routes it through the caller's per-row
+            # isolation fallback, which DOES record the attempt.
+            logger.error("response_tagging_sentiment_writeback_failed",
+                         survey_id=survey_id, error=str(exc))
+            raise
+
+    # ── Topic assignment — existing topics only (see module docstring) ──────
+    # Keyed per OPEN-TEXT ANSWER ("response_id::question_id"), not deduped to
+    # one embedding per response (fixed 2026-07-06) — a response with two
+    # open-text questions about two different things can genuinely match two
+    # different existing topics. assign_batch_to_nearest itself doesn't care
+    # about key shape; group_assignments_by_response regroups the per-answer
+    # results back to a per-response topic list afterward.
+    try:
+        scored_rids = set(by_resp.keys())
+        if await topic_registry.has_centroids(survey_id, conn):
+            embeddings_by_key: dict[str, list[float]] = {
+                f"{item['response_id']}::{item['question_id']}": item["embedding"]
+                for item in embedded_texts
+                if str(item["response_id"]) in scored_rids and item.get("embedding")
+            }
+
+            if embeddings_by_key:
+                assignments, unassigned_keys = await topic_registry.assign_batch_to_nearest(
+                    embeddings_by_key, survey_id, conn,
+                )
+                if assignments:
+                    topics_by_rid = topic_registry.group_assignments_by_response(assignments)
+                    topic_updates = [(json.dumps(names), rid) for rid, names in topics_by_rid.items()]
+                    topic_emb_groups: dict[str, list[list[float]]] = defaultdict(list)
+                    for key, tname in assignments.items():
+                        topic_emb_groups[tname].append(embeddings_by_key[key])
+                    try:
+                        async with conn.cursor() as cur:
+                            await cur.executemany(
+                                "UPDATE responses SET ai_topics=%s WHERE id=%s",
+                                topic_updates,
+                            )
+                        await topic_registry.update_centroids_welford_batch(
+                            survey_id, topic_emb_groups, conn,
+                        )
+                        result["topics_assigned"] = len(topic_updates)
+                    except Exception as exc:
+                        logger.error("response_tagging_topic_writeback_failed",
+                                     survey_id=survey_id, error=str(exc))
+
+                if unassigned_keys:
+                    # At most one candidate per response — topic_candidates has
+                    # UNIQUE(survey_id, response_id); see dedupe_unassigned_to_
+                    # one_per_response's docstring.
+                    cand_pairs = topic_registry.dedupe_unassigned_to_one_per_response(
+                        unassigned_keys, embeddings_by_key,
+                    )
+                    await topic_registry.add_candidates_batch(survey_id, org_id, cand_pairs, conn)
+                    result["topics_buffered"] = len(cand_pairs)
+
+            # Checked regardless of whether THIS call added new candidates — the
+            # buffer may have already crossed the floor from earlier sweep calls,
+            # and skipping this check whenever embeddings_by_rid happens to be
+            # empty (e.g. an embed failure this round) would needlessly delay
+            # discovery of evidence that's already sitting in the buffer.
+            candidate_count = await topic_registry.get_candidate_count(survey_id, conn)
+            if candidate_count >= candidate_threshold:
+                try:
+                    discovered = await _flush_and_discover_topics(
+                        survey_id, org_id, conn, questions, by_resp, min_cluster_size,
+                    )
+                    result["topics_discovered"] = discovered
+                except Exception as exc:
+                    logger.error("response_tagging_topic_discovery_failed",
+                                 survey_id=survey_id, error=str(exc))
+
+        await conn.commit()
+    except Exception as exc:
+        logger.warning("response_tagging_topic_section_failed",
+                        survey_id=survey_id, error=str(exc))
+
+    return result
+
+
 async def tag_untagged_responses(
     survey_id: str,
     org_id: str,
@@ -296,15 +549,28 @@ async def tag_untagged_responses(
 
     Never raises — any DB/LLM failure is caught, logged, and simply leaves the
     affected response(s) untagged (or the candidate buffer un-flushed) for the
-    next sweep to retry.
+    next sweep to retry, UNLESS a response has now failed
+    ``MAX_RESPONSE_TAGGING_ATTEMPTS`` times, in which case it's quarantined
+    (``ai_enriched_at`` set with no scores) so it stops blocking the queue.
+
+    Fault isolation (fixed 2026-07-13, independent review finding): the whole
+    fetched batch is tried together first (cheap, common case). If that fails,
+    responses are retried ONE AT A TIME so a single poison response can't drag
+    its healthy neighbors into quarantine — only the response(s) that ALSO fail
+    individually get an attempt recorded. Before this fix, any un-isolated
+    exception (e.g. in ``extract_open_texts`` or the sentiment writeback) bumped
+    ``ai_tagging_attempts`` for the ENTIRE batch (up to ``RESPONSE_TAGGING_SWEEP_
+    CAP`` responses), and after 3 failed sweeps quarantined all of them — silent,
+    irrecoverable data loss for responses that were never actually broken.
 
     Returns ``{tagged, topics_assigned, topics_buffered, topics_discovered,
-    skipped_no_survey, failed}``.
+    skipped_no_survey, failed, quarantined}``.
     """
     result = {
         "tagged": 0, "topics_assigned": 0, "topics_buffered": 0, "topics_discovered": 0,
-        "skipped_no_survey": False, "failed": 0,
+        "skipped_no_survey": False, "failed": 0, "quarantined": 0,
     }
+    responses: list[dict] = []
     try:
         # Resolved BEFORE acquiring the main connection below, not while holding it —
         # each resolver opens its OWN connection internally (lib/insight_settings.py::
@@ -333,133 +599,37 @@ async def tag_untagged_responses(
             if isinstance(questions, str):
                 questions = json.loads(questions)
 
-            texts = extract_open_texts(responses, questions)
-            if not texts:
-                response_ids = [str(r["id"]) for r in responses]
-                await _mark_enriched_no_text(response_ids, conn)
-                await conn.commit()
-                result["tagged"] = len(response_ids)
-                return result
-
-            tagged_texts = [{**t, "org_id": org_id, "survey_id": survey_id} for t in texts]
             try:
-                embedded_texts = await get_or_create_embeddings(tagged_texts, conn)
-            except Exception as exc:
-                logger.warning("response_tagging_embed_failed", survey_id=survey_id, error=str(exc))
-                embedded_texts = tagged_texts
-
-            absa_cfg = get_absa_config()
-            llm_results = await run_absa_llm(
-                embedded_texts, _llm_raw,
-                batch_size=absa_cfg["batch_size"],
-                semaphore=asyncio.Semaphore(absa_cfg["concurrency"]),
-            )
-
-            by_resp: dict[str, list] = defaultdict(list)
-            for r in llm_results:
-                by_resp[str(r["response_id"])].append(r)
-
-            sentiment_updates = []
-            for resp_id, items in by_resp.items():
-                avg_score = sum(i.get("score", 0.0) for i in items) / len(items)
-                negs = sum(1 for i in items if i.get("sentiment") == "negative")
-                pos  = sum(1 for i in items if i.get("sentiment") == "positive")
-                dom_sentiment = "negative" if negs > pos else ("positive" if pos > negs else "neutral")
-                emotion_counts: dict[str, int] = {}
-                for i in items:
-                    e = i.get("emotion", "neutral")
-                    emotion_counts[e] = emotion_counts.get(e, 0) + 1
-                dom_emotion = max(emotion_counts, key=emotion_counts.get) if emotion_counts else "neutral"
-                effort = compute_effort_score([i["text"] for i in items])
-                sentiment_updates.append(
-                    (dom_sentiment, round(avg_score, 2), dom_emotion, round(effort, 1), resp_id)
+                batch_result = await _process_batch(
+                    survey_id, org_id, responses, questions, conn, candidate_threshold, min_cluster_size,
                 )
-
-            if sentiment_updates:
-                try:
-                    async with conn.cursor() as cur:
-                        await cur.executemany(
-                            """UPDATE responses
-                               SET ai_sentiment=%s, ai_sentiment_score=%s,
-                                   ai_emotion=%s, ai_effort_score=%s, ai_enriched_at=NOW()
-                               WHERE id=%s""",
-                            sentiment_updates,
-                        )
-                    result["tagged"] = len(sentiment_updates)
-                except Exception as exc:
-                    logger.error("response_tagging_sentiment_writeback_failed",
-                                 survey_id=survey_id, error=str(exc))
-                    result["failed"] += len(sentiment_updates)
-
-            # ── Topic assignment — existing topics only (see docstring) ─────────
-            # Keyed per OPEN-TEXT ANSWER ("response_id::question_id"), not deduped
-            # to one embedding per response (fixed 2026-07-06) — a response with
-            # two open-text questions about two different things can genuinely
-            # match two different existing topics. assign_batch_to_nearest itself
-            # doesn't care about key shape; group_assignments_by_response regroups
-            # the per-answer results back to a per-response topic list afterward.
-            scored_rids = set(by_resp.keys())
-            if await topic_registry.has_centroids(survey_id, conn):
-                embeddings_by_key: dict[str, list[float]] = {
-                    f"{item['response_id']}::{item['question_id']}": item["embedding"]
-                    for item in embedded_texts
-                    if str(item["response_id"]) in scored_rids and item.get("embedding")
-                }
-
-                if embeddings_by_key:
-                    assignments, unassigned_keys = await topic_registry.assign_batch_to_nearest(
-                        embeddings_by_key, survey_id, conn,
-                    )
-                    if assignments:
-                        topics_by_rid = topic_registry.group_assignments_by_response(assignments)
-                        topic_updates = [(json.dumps(names), rid) for rid, names in topics_by_rid.items()]
-                        topic_emb_groups: dict[str, list[list[float]]] = defaultdict(list)
-                        for key, tname in assignments.items():
-                            topic_emb_groups[tname].append(embeddings_by_key[key])
-                        try:
-                            async with conn.cursor() as cur:
-                                await cur.executemany(
-                                    "UPDATE responses SET ai_topics=%s WHERE id=%s",
-                                    topic_updates,
-                                )
-                            await topic_registry.update_centroids_welford_batch(
-                                survey_id, topic_emb_groups, conn,
-                            )
-                            result["topics_assigned"] = len(topic_updates)
-                        except Exception as exc:
-                            logger.error("response_tagging_topic_writeback_failed",
-                                         survey_id=survey_id, error=str(exc))
-
-                    if unassigned_keys:
-                        # At most one candidate per response — topic_candidates has
-                        # UNIQUE(survey_id, response_id); see dedupe_unassigned_to_
-                        # one_per_response's docstring.
-                        cand_pairs = topic_registry.dedupe_unassigned_to_one_per_response(
-                            unassigned_keys, embeddings_by_key,
-                        )
-                        await topic_registry.add_candidates_batch(survey_id, org_id, cand_pairs, conn)
-                        result["topics_buffered"] = len(cand_pairs)
-
-                # Checked regardless of whether THIS call added new candidates — the
-                # buffer may have already crossed the floor from earlier sweep calls,
-                # and skipping this check whenever embeddings_by_rid happens to be
-                # empty (e.g. an embed failure this round) would needlessly delay
-                # discovery of evidence that's already sitting in the buffer.
-                candidate_count = await topic_registry.get_candidate_count(survey_id, conn)
-                if candidate_count >= candidate_threshold:
+                _merge_partial_result(result, batch_result)
+            except Exception as exc:
+                logger.warning("response_tagging_batch_failed_isolating_rows",
+                                survey_id=survey_id, batch_size=len(responses), error=str(exc))
+                # Nothing in this batch was committed for a failure originating
+                # here (the sentiment writeback either fully succeeds-and-commits
+                # or raises before committing) — rollback just clears the
+                # connection's aborted-transaction state so it's usable again.
+                await conn.rollback()
+                for r in responses:
                     try:
-                        discovered = await _flush_and_discover_topics(
-                            survey_id, org_id, conn, questions, by_resp, min_cluster_size,
+                        single_result = await _process_batch(
+                            survey_id, org_id, [r], questions, conn, candidate_threshold, min_cluster_size,
                         )
-                        result["topics_discovered"] = discovered
-                    except Exception as exc:
-                        logger.error("response_tagging_topic_discovery_failed",
-                                     survey_id=survey_id, error=str(exc))
-
-            await conn.commit()
+                        _merge_partial_result(result, single_result)
+                    except Exception as row_exc:
+                        await conn.rollback()
+                        result["failed"] += 1
+                        quarantined = await _record_batch_failure([str(r["id"])], str(row_exc))
+                        result["quarantined"] += len(quarantined)
     except Exception as exc:
         logger.error("response_tagging_sweep_failed", survey_id=survey_id, org_id=org_id, error=str(exc))
         result["failed"] += 1
+        response_ids = [str(r["id"]) for r in responses]
+        if response_ids:
+            quarantined = await _record_batch_failure(response_ids, str(exc))
+            result["quarantined"] += len(quarantined)
 
     logger.info("response_tagging_sweep_done", survey_id=survey_id, org_id=org_id, **result)
     return result

@@ -55,6 +55,11 @@ export const CREDIT_COSTS = {
   manual_quick:    envInt('CREDIT_COST_MANUAL_QUICK', 15),
   manual_expert:   envInt('CREDIT_COST_MANUAL_EXPERT', 40),
   custom_base:     envInt('CREDIT_COST_CUSTOM_BASE', 25),
+  // Manual topic-tagging backfill (Experience → Topics page "Backfill Tagging"
+  // button) — real embedding + ABSA LLM cost per untagged response, same
+  // underlying work as an automated tagging sweep, just user-initiated and
+  // metered like every other on-demand AI action in this table.
+  topic_backfill:  envInt('CREDIT_COST_TOPIC_BACKFILL', 20),
 } as const;
 
 export type MeteredAction = keyof typeof CREDIT_COSTS;

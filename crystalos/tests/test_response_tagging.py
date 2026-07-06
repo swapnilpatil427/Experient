@@ -9,7 +9,7 @@ tag_untagged_responses orchestrates at that abstraction level.
 """
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from crystalos.lib.response_tagging import tag_untagged_responses, _fetch_untagged_responses
 
@@ -72,11 +72,18 @@ class _RespCursor:
 class _RespConn:
     def __init__(self, cursor):
         self._cursor = cursor
+        self.commit_count = 0
+        self.rollback_count = 0
 
     def cursor(self):
         return self._cursor
 
     async def commit(self):
+        self.commit_count += 1
+        return None
+
+    async def rollback(self):
+        self.rollback_count += 1
         return None
 
     async def __aenter__(self):
@@ -119,7 +126,7 @@ class TestNoUntaggedResponses:
             result = await tag_untagged_responses("s1", "o1")
         assert result == {
             "tagged": 0, "topics_assigned": 0, "topics_buffered": 0, "topics_discovered": 0,
-            "skipped_no_survey": False, "failed": 0,
+            "skipped_no_survey": False, "failed": 0, "quarantined": 0,
         }
         # No survey lookup needed if there's nothing to tag.
         assert not any("FROM surveys" in sql for sql, _ in cur.execute_calls)
@@ -208,11 +215,19 @@ class TestSentimentEmotionEffortTagging:
         assert result["topics_assigned"] == 0
 
     @pytest.mark.asyncio
-    async def test_sentiment_writeback_failure_is_caught_not_raised(self):
+    async def test_sentiment_writeback_failure_never_crashes_the_sweep_and_records_an_attempt(self):
+        """Fixed 2026-07-13 (independent review finding): a deterministic
+        sentiment-writeback failure used to be swallowed WITHOUT ever recording
+        an attempt, so a row with a permanently-broken writeback would be
+        re-selected and re-fail forever (the exact livelock class this whole
+        fix set exists to eliminate) — left uncovered for the one section given
+        its own commit boundary. It now propagates into the per-row isolation
+        fallback, which DOES call _record_batch_failure."""
         cur = _RespCursor(untagged_rows=[_untagged_row("r1")], survey_row=_open_text_survey())
         cur.fail_executemany_containing = "ai_sentiment"
         embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1]} for t in texts])
         absa_mock = AsyncMock(return_value=[_absa_result("r1")])
+        record_failure_mock = AsyncMock(return_value=[])
 
         with (
             patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
@@ -220,11 +235,13 @@ class TestSentimentEmotionEffortTagging:
             patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=False)),
+            patch("crystalos.lib.response_tagging._record_batch_failure", record_failure_mock),
         ):
             result = await tag_untagged_responses("s1", "o1")
 
         assert result["tagged"] == 0
         assert result["failed"] == 1
+        record_failure_mock.assert_awaited_once_with(["r1"], ANY)
 
 
 # ── No open-text questions on the survey ──────────────────────────────────────
@@ -688,6 +705,23 @@ class TestBacklogCatchup:
         assert "nps_score" not in sql
 
     @pytest.mark.asyncio
+    async def test_fetch_locks_rows_so_concurrent_callers_dont_double_process(self):
+        """Regression test (2026-07-13, independent review finding): the live
+        stream consumer, the 15-min scheduler backlog sweep, and the manual
+        backfill job can all call tag_untagged_responses for the SAME survey
+        concurrently. Without FOR UPDATE SKIP LOCKED they'd fetch the identical
+        oldest batch and pay for embeddings + ABSA LLM calls twice for the same
+        responses. A concurrent caller must transparently skip whatever another
+        in-flight call already claimed."""
+        cur = _RespCursor(untagged_rows=[])
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)):
+            await tag_untagged_responses("s1", "o1")
+
+        untagged_calls = [c for c in cur.execute_calls if "ai_enriched_at IS NULL" in c[0]]
+        assert len(untagged_calls) == 1
+        assert "FOR UPDATE SKIP LOCKED" in untagged_calls[0][0]
+
+    @pytest.mark.asyncio
     async def test_query_selects_all_untagged_oldest_first_not_just_new_ones(self):
         """There is no separate 'new vs backlog' distinction — every sweep call
         queries ALL untagged responses (ai_enriched_at IS NULL), oldest first, so
@@ -729,3 +763,247 @@ class TestSweepFailureIsolation:
             result = await tag_untagged_responses("s1", "o1")
         assert result["failed"] == 1
         assert result["tagged"] == 0
+
+
+# ── Split commit boundary (2026-07-13 fix) ────────────────────────────────────
+# The whole function used to be one all-or-nothing transaction: a topic-section
+# exception rolled back sentiment/emotion/effort scoring that had already
+# succeeded. Since _fetch_untagged_responses always re-selects the oldest
+# untagged rows first, that meant a single response that reliably broke topic
+# assignment would poison EVERY future sweep forever, blocking every response
+# behind it — the literal production incident that motivated this fix.
+
+class TestSplitCommitBoundary:
+    @pytest.mark.asyncio
+    async def test_topic_section_exception_does_not_roll_back_already_committed_sentiment(self):
+        cur = _RespCursor(untagged_rows=[_untagged_row("r1")], survey_row=_open_text_survey())
+        embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1, 0.2]} for t in texts])
+        absa_mock = AsyncMock(return_value=[_absa_result("r1")])
+        pool = _pool_for(cur)
+        conn = pool.connection()
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings", embed_mock),
+            patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
+            patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
+            # Simulate an unexpected exception deep in the topic section — even
+            # though assign_batch_to_nearest itself is now hardened, this proves
+            # the commit split protects sentiment regardless of WHAT breaks here.
+            patch("crystalos.lib.topic_registry.has_centroids",
+                  AsyncMock(side_effect=RuntimeError("simulated topic-section crash"))),
+        ):
+            result = await tag_untagged_responses("s1", "o1")
+
+        assert result["tagged"] == 1
+        assert result["failed"] == 0
+        sentiment_calls = [c for c in cur.executemany_calls if "ai_sentiment" in c[0]]
+        assert len(sentiment_calls) == 1
+        # Sentiment writeback's commit happened before the topic section blew up.
+        assert conn.commit_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_sentiment_writeback_commits_before_topic_work_starts(self):
+        """Direct proof of ordering: has_centroids must observe a connection that
+        has already committed the sentiment write (not merely executed it)."""
+        cur = _RespCursor(untagged_rows=[_untagged_row("r1")], survey_row=_open_text_survey())
+        embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1, 0.2]} for t in texts])
+        absa_mock = AsyncMock(return_value=[_absa_result("r1")])
+        pool = _pool_for(cur)
+        conn = pool.connection()
+        commit_count_when_checked = {}
+
+        async def _capture_commit_count(*a, **kw):
+            commit_count_when_checked["value"] = conn.commit_count
+            return False
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings", embed_mock),
+            patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
+            patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
+            patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(side_effect=_capture_commit_count)),
+        ):
+            await tag_untagged_responses("s1", "o1")
+
+        assert commit_count_when_checked["value"] == 1
+
+
+# ── Quarantine circuit breaker (2026-07-13 fix) ───────────────────────────────
+# A response that keeps failing (whatever the cause) must eventually stop being
+# re-selected by the oldest-first query, otherwise it permanently blocks every
+# response behind it. _record_batch_failure bumps ai_tagging_attempts and
+# quarantines (sets ai_enriched_at) once MAX_RESPONSE_TAGGING_ATTEMPTS is hit.
+
+class _AttemptsCursor:
+    def __init__(self, returning_rows):
+        self._returning_rows = returning_rows
+        self.execute_calls = []
+        self.executemany_calls = []
+
+    async def execute(self, sql, params=None):
+        self.execute_calls.append((sql, params))
+
+    async def executemany(self, sql, params_list):
+        self.executemany_calls.append((sql, list(params_list)))
+
+    async def fetchall(self):
+        return self._returning_rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _AttemptsConn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+    async def commit(self):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _attempts_pool(cursor):
+    conn = _AttemptsConn(cursor)
+    pool = MagicMock()
+    pool.connection = MagicMock(return_value=conn)
+    return pool
+
+
+class TestQuarantineCircuitBreaker:
+    @pytest.mark.asyncio
+    async def test_below_max_attempts_bumps_counter_but_does_not_quarantine(self):
+        from crystalos.lib.response_tagging import _record_batch_failure
+
+        cur = _AttemptsCursor(returning_rows=[("r1", 1)])  # 1st failure, MAX is 3
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_attempts_pool(cur)):
+            quarantined = await _record_batch_failure(["r1"], "boom")
+
+        assert quarantined == []
+        update_calls = [c for c in cur.executemany_calls if "ai_enriched_at" in c[0]]
+        assert update_calls == []
+
+    @pytest.mark.asyncio
+    async def test_reaching_max_attempts_quarantines_the_response(self):
+        from crystalos.lib.response_tagging import _record_batch_failure
+        from crystalos.lib.constants import MAX_RESPONSE_TAGGING_ATTEMPTS
+
+        cur = _AttemptsCursor(returning_rows=[("r1", MAX_RESPONSE_TAGGING_ATTEMPTS)])
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_attempts_pool(cur)):
+            quarantined = await _record_batch_failure(["r1"], "boom")
+
+        assert quarantined == ["r1"]
+        update_calls = [c for c in cur.executemany_calls if "ai_enriched_at" in c[0]]
+        assert len(update_calls) == 1
+        assert update_calls[0][1] == [("r1",)]
+
+    @pytest.mark.asyncio
+    async def test_empty_response_ids_is_a_noop(self):
+        from crystalos.lib.response_tagging import _record_batch_failure
+
+        pool = MagicMock()
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=pool):
+            quarantined = await _record_batch_failure([], "boom")
+        assert quarantined == []
+        pool.connection.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_record_batch_failure_itself_never_raises(self):
+        from crystalos.lib.response_tagging import _record_batch_failure
+
+        pool = MagicMock()
+        pool.connection = MagicMock(side_effect=RuntimeError("pool exhausted"))
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=pool):
+            quarantined = await _record_batch_failure(["r1"], "boom")
+        assert quarantined == []
+
+    @pytest.mark.asyncio
+    async def test_whole_sweep_failure_calls_record_batch_failure_with_fetched_response_ids(self):
+        """End-to-end: when the whole sweep throws (any cause), the responses that
+        were fetched at the top of this call get their attempt counter bumped —
+        this is what eventually quarantines a genuinely poisoned response instead
+        of retrying it forever."""
+        cur = _RespCursor(untagged_rows=[_untagged_row("r1")], survey_row=_open_text_survey())
+        record_failure_mock = AsyncMock(return_value=[])
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings",
+                  AsyncMock(side_effect=RuntimeError("embedding service down"))),
+            patch("crystalos.lib.response_tagging.extract_open_texts",
+                  side_effect=RuntimeError("simulated top-level crash")),
+            patch("crystalos.lib.response_tagging._record_batch_failure", record_failure_mock),
+        ):
+            result = await tag_untagged_responses("s1", "o1")
+
+        assert result["failed"] == 1
+        record_failure_mock.assert_awaited_once()
+        called_ids, called_error = record_failure_mock.call_args[0]
+        assert called_ids == ["r1"]
+        assert "simulated top-level crash" in called_error
+
+    @pytest.mark.asyncio
+    async def test_one_poison_response_does_not_quarantine_its_healthy_batch_neighbors(self):
+        """THE core regression test for the independent-review finding
+        (2026-07-13): the circuit breaker used to be batch-granular — one
+        malformed response crashing extract_open_texts for the WHOLE fetched
+        batch (a real Python loop with no per-item try/except) meant EVERY
+        response in that batch got an attempt bumped, and after 3 failed
+        sweeps ALL of them — including perfectly healthy neighbors — were
+        permanently quarantined with zero AI data. That was strictly worse
+        than the original livelock, which lost no data. Now a whole-batch
+        failure falls back to processing responses one at a time: only the
+        response that ALSO fails individually is ever penalized, and its
+        healthy neighbor gets tagged normally in the very same call."""
+        cur = _RespCursor(
+            untagged_rows=[_untagged_row("poison"), _untagged_row("good")],
+            survey_row=_open_text_survey(),
+        )
+        embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1, 0.2]} for t in texts])
+        absa_mock = AsyncMock(side_effect=lambda texts, *a, **kw: [_absa_result(t["response_id"]) for t in texts])
+        record_failure_mock = AsyncMock(return_value=[])
+
+        def fake_extract(responses, questions):
+            # Simulates a real bug class: ONE malformed response (e.g. a
+            # non-list `answers` field) crashes the whole-list extraction —
+            # this is exactly what extract_open_texts's actual implementation
+            # would do, since it has no per-response try/except.
+            if any(r["id"] == "poison" for r in responses):
+                raise RuntimeError("malformed answers field")
+            return [
+                {"response_id": r["id"], "question_id": "q1", "text": "great experience", "question": "Anything else?"}
+                for r in responses
+            ]
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
+            patch("crystalos.lib.response_tagging.extract_open_texts", side_effect=fake_extract),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings", embed_mock),
+            patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
+            patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
+            patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=False)),
+            patch("crystalos.lib.response_tagging._record_batch_failure", record_failure_mock),
+        ):
+            result = await tag_untagged_responses("s1", "o1")
+
+        # "good" got tagged normally despite sharing a fetched batch with "poison".
+        assert result["tagged"] == 1
+        sentiment_calls = [c for c in cur.executemany_calls if "ai_sentiment" in c[0]]
+        tagged_ids = {p[-1] for _, params in sentiment_calls for p in params}
+        assert tagged_ids == {"good"}
+
+        # Only "poison" was ever handed to the failure/quarantine tracker.
+        record_failure_mock.assert_awaited_once()
+        called_ids, _called_error = record_failure_mock.call_args[0]
+        assert called_ids == ["poison"]

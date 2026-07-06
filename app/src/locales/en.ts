@@ -4050,6 +4050,16 @@ const en = {
     noThemesTitle: 'No topics discovered yet',
     noThemesDesc: 'Run the insight pipeline on this survey to discover themes and topics.',
     generateInsights: 'Run Pipeline',
+    backfillTagging: 'Backfill Tagging',
+    backfillTaggingHint: 'Tag every previously untagged response for this survey — useful after a large import, or if tagging was ever interrupted.',
+    backfillRunning: 'Backfilling… {pct}%',
+    backfillComplete: 'Backfill complete',
+    backfillFailed: 'Backfill failed',
+    backfillAlreadyRunning: 'A backfill is already running for this survey.',
+    backfillProgressLabel: 'Tagging responses… {processed} / {total} done',
+    backfillCompleteDetail: 'Backfill complete — {processed} responses tagged',
+    backfillCompleteWithQuarantine: 'Backfill complete — {processed} tagged, {quarantined} could not be tagged after repeated attempts',
+    backfillNavigateAwayHint: 'This runs in the background — feel free to navigate away or close this tab.',
   },
 
   support: {

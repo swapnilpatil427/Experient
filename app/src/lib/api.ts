@@ -1628,6 +1628,46 @@ export function createApiClient(getToken: GetToken) {
       return res.data;
     },
 
+    // ── Topic tagging backfill (Experience → Topics page "Backfill Tagging") ──
+    // Drains a survey's entire untagged-response backlog in the background —
+    // useful for an old survey with a large pre-existing backlog, or one that
+    // hit a tagging failure before it was fixed. Progress is reported into the
+    // SAME generic agent_runs polling mechanism every other run type uses
+    // (getRun below) — no bespoke progress channel.
+
+    /** Start a backfill job. 202 → { run_id, status: 'started' }. Throws ManualRunError on 402/429. */
+    triggerTopicBackfill: async (surveyId: string): Promise<{ run_id: string; status: string }> => {
+      try {
+        const res = await rawHttp.post<{ run_id: string; status: string }>(
+          `/api/insights/${surveyId}/topics/backfill`,
+        );
+        return res.data;
+      } catch (error) {
+        throw toManualRunError(error);
+      }
+    },
+
+    /**
+     * Find an already-running backfill job for this survey, if any — lets the
+     * page resume showing a progress bar after a reload/navigation instead of
+     * losing track of an in-flight job (the job itself runs server-side and
+     * keeps going regardless of whether anyone is watching).
+     */
+    getActiveTopicBackfillRun: async (surveyId: string): Promise<string | null> => {
+      const res = await http.get<{ runs: Array<{ id: string }> }>(
+        `/api/runs?run_type=topic_backfill&survey_id=${surveyId}&status=running&limit=1`,
+      );
+      return res.data.runs?.[0]?.id ?? null;
+    },
+
+    /** Generic run poll — status + the stream_events progress feed every run_type writes into. */
+    getRun: async (runId: string): Promise<{ id: string; status: string; stream_events: Array<Record<string, unknown>> }> => {
+      const res = await http.get<{ id: string; status: string; stream_events: Array<Record<string, unknown>> }>(
+        `/api/runs/${runId}`,
+      );
+      return res.data;
+    },
+
     // ── Manual runs (Phase 3) + Insight Trail (Phase 4) ────────────────────────
 
     /**

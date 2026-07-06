@@ -675,6 +675,113 @@ router.post('/:surveyId/generate', async (req: Request, res: Response): Promise<
   }
 });
 
+// ── POST /:surveyId/topics/backfill ───────────────────────────────────────────
+// Manual "Backfill Tagging" job (Experience → Topics page). Drains the
+// survey's ENTIRE untagged-response backlog in the background — mirrors
+// /:surveyId/generate's shape (duplicate-run guard, credit metering,
+// agent_runs insert, fire-and-forget agentsClient call, 202 response) but
+// against a new run_type ('topic_backfill') and a lighter, per-response job
+// (lib/topic_backfill.py in CrystalOS) rather than a full report run.
+
+router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): Promise<void> => {
+  const { surveyId } = req.params;
+
+  try {
+    const survey = await getSurvey(surveyId, req.orgId);
+    if (!survey) { res.status(404).json({ error: 'Survey not found' }); return; }
+
+    // One backfill job per survey at a time — a second click while one is
+    // already running would just duplicate (billed) LLM/embedding work on the
+    // exact same backlog.
+    const { rows: running } = await query(
+      `SELECT id FROM agent_runs
+       WHERE survey_id = $1 AND org_id = $2 AND run_type = 'topic_backfill' AND status = 'running'
+       LIMIT 1`,
+      [surveyId, req.orgId],
+    );
+    if (running.length) {
+      res.status(429).json({
+        error: 'A tagging backfill is already running for this survey.',
+        retryable: true,
+        run_id: (running[0] as { id: string }).id,
+      });
+      return;
+    }
+
+    const check = await checkCredits(req.orgId, CREDIT_COSTS.topic_backfill, 'topic_backfill');
+    if (!check.ok) {
+      res.status(402).json({
+        error:    'Not enough credits to run a tagging backfill.',
+        code:     'INSUFFICIENT_CREDITS',
+        required: check.required,
+        available: check.available,
+      });
+      return;
+    }
+
+    // The SELECT above is a fast-path check, not a lock — two near-simultaneous
+    // requests (a double-submit that beats the frontend's button-disable, or
+    // two browser tabs) can both observe zero running rows and both reach this
+    // INSERT. uq_agent_runs_topic_backfill_inflight (partial unique index on
+    // (survey_id, org_id) WHERE run_type='topic_backfill' AND status='running',
+    // mirrors uq_gir_tag_inflight's pattern for group_insight_runs) makes the
+    // SECOND insert fail with 23505 instead of silently creating a duplicate
+    // job — caught below so the loser attaches to the winner's run instead of
+    // starting a second job and double-debiting credits (fixed 2026-07-13,
+    // independent review finding).
+    const threadId = `topics:backfill:${req.orgId}:${surveyId}:${Date.now()}`;
+    let runId: string;
+    try {
+      const { rows: [{ id }] } = await query(
+        `INSERT INTO agent_runs
+           (org_id, user_id, thread_id, run_type, status, intent, survey_id)
+         VALUES ($1, $2, $3, 'topic_backfill', 'running', 'topics:backfill', $4)
+         RETURNING id`,
+        [req.orgId, req.userId, threadId, surveyId],
+      ) as { rows: { id: string }[] };
+      runId = id;
+    } catch (err: unknown) {
+      if ((err as { code?: string }).code === '23505') {
+        const { rows: existing } = await query(
+          `SELECT id FROM agent_runs
+           WHERE survey_id = $1 AND org_id = $2 AND run_type = 'topic_backfill' AND status = 'running'
+           LIMIT 1`,
+          [surveyId, req.orgId],
+        );
+        res.status(429).json({
+          error: 'A tagging backfill is already running for this survey.',
+          retryable: true,
+          run_id: existing.length ? (existing[0] as { id: string }).id : null,
+        });
+        return;
+      }
+      throw err;
+    }
+
+    agentsClient.triggerTopicBackfill({ surveyId, orgId: req.orgId, runId }).catch(err => {
+      logger.error({ err: (err as Error).message, surveyId, runId }, 'insights:topics:backfill:agents_error');
+      query("UPDATE agent_runs SET status='failed', completed_at=NOW() WHERE id=$1", [runId]).catch(() => {});
+    });
+
+    try {
+      await debitCredits(req.orgId, {
+        actionType: 'topic_backfill',
+        credits:    CREDIT_COSTS.topic_backfill,
+        userId:     req.userId,
+        actionRef:  runId,
+        note:       'Topic tagging backfill',
+      });
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, surveyId, runId }, 'insights:topics:backfill:debit_failed');
+    }
+
+    res.status(202).json({ run_id: runId, status: 'started' });
+  } catch (err: unknown) {
+    logger.error({ err: (err as Error).message, surveyId }, 'insights:topics:backfill:error');
+    serverError(res, err instanceof Error ? err : new Error(String(err)));
+  }
+});
+
 // ── GET /:surveyId/run-status ─────────────────────────────────────────────────
 
 router.get('/:surveyId/run-status', async (req: Request, res: Response): Promise<void> => {

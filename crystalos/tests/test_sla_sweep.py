@@ -435,6 +435,108 @@ class TestRunScheduilerOnceNoLongerGatesFastJobs:
         assert zombie_mock.await_count == 2  # failed once, ran again next interval
         assert sleep_mock.await_count == 2
 
+
+# ── sweep_zombie_runs retry guard (fixed 2026-07-13) ──────────────────────────
+# The retry branch used to fire unconditionally for ANY zombied run_type. Once
+# 'topic_backfill' became a second real run_type in agent_runs, a zombied
+# backfill job would have been incorrectly "retried" via _trigger_generation
+# (which starts a brand-new INSIGHT run, not a backfill resume) — a different
+# job entirely. Retry must only ever apply to run_type='insight_generation'.
+
+class _ZombieCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def execute(self, sql, params=None):
+        return None
+
+    async def fetchall(self):
+        return self._rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _ZombieConn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.executed = []
+
+    def cursor(self):
+        return self._cursor
+
+    async def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _zombie_pool(rows):
+    cur = _ZombieCursor(rows)
+    conn = _ZombieConn(cur)
+    pool = MagicMock()
+    pool.connection = MagicMock(return_value=conn)
+    return pool
+
+
+class TestSweepZombieRunsRetryGuard:
+    @pytest.mark.asyncio
+    async def test_zombied_insight_generation_run_is_retried(self):
+        from crystalos.scheduler import sweep_zombie_runs
+
+        rows = [("run-1", "survey-1", "org-1", 0, "insight_generation")]
+        trigger_mock = AsyncMock()
+        with (
+            patch("crystalos.scheduler._pool_conn", return_value=_zombie_pool(rows)),
+            patch("crystalos.scheduler._trigger_generation", trigger_mock),
+        ):
+            await sweep_zombie_runs()
+
+        trigger_mock.assert_awaited_once_with("survey-1", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_zombied_topic_backfill_run_is_not_retried(self):
+        """The core fix: a zombied backfill job must NOT trigger a fresh insight
+        run via _trigger_generation — that's the wrong recovery action entirely.
+        It's simply marked failed; the scheduler's own backlog sweep and/or the
+        user clicking the button again are what actually resume the work."""
+        from crystalos.scheduler import sweep_zombie_runs
+
+        rows = [("run-2", "survey-1", "org-1", 0, "topic_backfill")]
+        trigger_mock = AsyncMock()
+        pool = _zombie_pool(rows)
+        with (
+            patch("crystalos.scheduler._pool_conn", return_value=pool),
+            patch("crystalos.scheduler._trigger_generation", trigger_mock),
+        ):
+            await sweep_zombie_runs()
+
+        trigger_mock.assert_not_called()
+        # It's still marked failed like any other zombie, regardless of type.
+        failed_calls = [c for c in pool.connection().executed if "status = 'failed'" in c[0]]
+        assert len(failed_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_count_ceiling_still_respected_for_insight_generation(self):
+        from crystalos.scheduler import sweep_zombie_runs
+
+        rows = [("run-3", "survey-1", "org-1", 2, "insight_generation")]  # already retried twice
+        trigger_mock = AsyncMock()
+        with (
+            patch("crystalos.scheduler._pool_conn", return_value=_zombie_pool(rows)),
+            patch("crystalos.scheduler._trigger_generation", trigger_mock),
+        ):
+            await sweep_zombie_runs()
+
+        trigger_mock.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_cx_sla_breach_loop_survives_a_failed_sweep(self):
         from crystalos.scheduler import _run_cx_sla_breach_loop

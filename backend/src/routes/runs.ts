@@ -25,7 +25,7 @@ router.use(requireAuth);
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   const { run_type, status, survey_id, limit = '20', offset = '0' } = req.query as Record<string, string>;
 
-  const VALID_TYPES   = new Set(['survey_creation', 'insight_generation']);
+  const VALID_TYPES   = new Set(['survey_creation', 'insight_generation', 'topic_backfill']);
   const VALID_STATUSES = new Set(['running', 'completed', 'failed', 'cancelled', 'waiting_approval']);
 
   const clauses: string[] = ['org_id = $1'];
@@ -115,6 +115,12 @@ function normaliseRun(row: Record<string, unknown>): Record<string, unknown> {
     completed_at:          row.completed_at  || null,
     duration_seconds:      row.duration_seconds != null ? parseInt(String(row.duration_seconds)) : null,
     error:                 Array.isArray(row.error_log) ? row.error_log[row.error_log.length - 1] : null,
+    // Progress feed — same convention every run_type already writes into
+    // (insight generation, tag report, and now topic_backfill all append here;
+    // no run_type has a numeric total/completed column, by design — see
+    // lib/topic_backfill.py's "backfill_progress" events for the shape a
+    // poller should read: { total_untagged, processed, remaining, ... }).
+    stream_events:         Array.isArray(row.stream_events) ? row.stream_events : [],
   };
 }
 

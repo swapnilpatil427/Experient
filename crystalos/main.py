@@ -1091,6 +1091,38 @@ async def start_insight_run(
     return resp
 
 
+@app.post("/topics/backfill", summary="Start a manual topic-tagging backfill job for a survey")
+async def start_topic_backfill(
+    request: Request,
+    _: None = Depends(require_internal_key),
+) -> dict:
+    """Drain a survey's entire untagged-response backlog on demand (Experience →
+    Topics page "Backfill Tagging" button).
+
+    The Node backend POSTs here with the internal key after inserting the
+    agent_runs row (run_type='topic_backfill') and debiting credits on its own
+    route — same division of responsibility as /insights/runs above: Node owns
+    the row, this endpoint only starts the background task that updates it.
+    Body: { survey_id, org_id, run_id }. Returns {status, run_id} immediately;
+    lib/topic_backfill.py::run_topic_backfill reports progress into the SAME
+    agent_runs row via stream_events, pollable at GET /api/runs/:runId.
+    """
+    body      = await request.json()
+    survey_id = body.get("survey_id")
+    org_id    = body.get("org_id")
+    run_id    = body.get("run_id")
+    if not all([survey_id, org_id, run_id]):
+        raise HTTPException(status_code=422, detail="survey_id, org_id, run_id required")
+
+    from crystalos.lib.topic_backfill import run_topic_backfill
+    task = asyncio.create_task(run_topic_backfill(run_id, survey_id, org_id))
+    task.add_done_callback(
+        lambda t: logger.warning("topic_backfill_unhandled_error", run_id=run_id, error=str(t.exception()))
+        if t.exception() else None
+    )
+    return {"status": "started", "run_id": run_id}
+
+
 # ── Workflow NL parsing (Xperiq Actions Wave 3) ───────────────────────────────
 
 @app.post("/workflows/parse-nl", summary="Parse a natural-language description into a workflow graph")
