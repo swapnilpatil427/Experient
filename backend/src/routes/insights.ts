@@ -712,9 +712,27 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
     // 2026-07-13, independent sales/product review finding. Without this, a
     // customer double-checking "did everything already get tagged?" pays the
     // full flat cost for an instant no-op every time.
+    //
+    // "Untagged" also counts retriable QUARANTINED responses (ai_enriched_at
+    // set, but ai_sentiment/ai_emotion/ai_effort_score still NULL because
+    // every automatic attempt failed) — fixed 2026-07-14. Excludes
+    // ai_no_scorable_text (a response with no open-text answer to score,
+    // terminal by design — counting those here would re-charge for the exact
+    // same textless backlog on every click). MUST stay in exact sync with
+    // crystalos/lib/topic_backfill.py::_count_untagged, which this job's
+    // CrystalOS side uses independently — same class of bug as the
+    // 2026-07-13 bootstrap-gap incident: if the two "untagged" definitions
+    // ever disagree, one side reports complete while the other still has work.
     const { rows: [{ untagged_count: untaggedCount }] } = await query(
       `SELECT COUNT(*)::int AS untagged_count FROM responses
-       WHERE survey_id = $1 AND org_id = $2 AND ai_enriched_at IS NULL`,
+       WHERE survey_id = $1 AND org_id = $2
+       AND (
+         ai_enriched_at IS NULL
+         OR (
+           ai_no_scorable_text = FALSE
+           AND (ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL)
+         )
+       )`,
       [surveyId, req.orgId],
     ) as { rows: { untagged_count: number }[] };
     if (untaggedCount === 0) {

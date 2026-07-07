@@ -26,6 +26,13 @@ rather than importing ``graphs/insights.py``'s private versions of the same
 pattern — same rationale as ``lib/response_tagging.py``'s own module
 docstring: this stays a standalone, lightweight unit that doesn't pull in the
 full LangGraph pipeline module for two one-line SQL UPDATEs.
+
+Also the ONLY caller that passes ``include_retriable=True`` to
+``tag_untagged_responses`` (added 2026-07-14) — a manual click here is the one
+deliberate point where re-attempting a previously-QUARANTINED response (one
+that repeatedly failed automatic tagging, still missing sentiment/emotion/
+effort) is safe; the automatic stream/scheduler sweep must never do this
+itself, or it defeats the point of quarantine.
 """
 from __future__ import annotations
 
@@ -121,12 +128,33 @@ async def _has_topics_yet(survey_id: str) -> bool:
 
 
 async def _count_untagged(survey_id: str, org_id: str) -> int:
+    """Counts both never-swept responses AND retriable ones — quarantined
+    responses (``ai_enriched_at`` set, but sentiment/emotion/effort still NULL
+    because every automatic attempt failed) — since this job runs with
+    ``include_retriable=True`` (added 2026-07-14, closing the gap where a
+    manual Catch Up Tagging run could report "nothing to backfill" while
+    quarantined responses sat with permanently-missing sentiment/emotion/
+    effort). Excludes ``ai_no_scorable_text`` responses — those are a terminal
+    "nothing to score" state, not a retriable failure; counting them here would
+    make this job re-charge for the exact same textless backlog on every click.
+    Must stay in sync with backend/src/routes/insights.ts's own pre-check query
+    for the SAME reason the 2026-07-13 bootstrap-gap bug existed: Node's
+    short-circuit and this job's own count must never disagree about what
+    "untagged" means, or one reports complete while the other still has work.
+    """
     try:
         async with db._pool_conn().connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """SELECT COUNT(*) FROM responses
-                       WHERE survey_id = %s AND org_id = %s AND ai_enriched_at IS NULL""",
+                       WHERE survey_id = %s AND org_id = %s
+                       AND (
+                         ai_enriched_at IS NULL
+                         OR (
+                           ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
+                           AND (ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL)
+                         )
+                       )""",
                     (survey_id, org_id),
                 )
                 row = await cur.fetchone()
@@ -223,7 +251,9 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
                 logger.info("topic_backfill_stopped_externally", run_id=run_id, status=status)
                 return
 
-            chunk_result = await tag_untagged_responses(survey_id, org_id, max_batch=RESPONSE_TAGGING_SWEEP_CAP)
+            chunk_result = await tag_untagged_responses(
+                survey_id, org_id, max_batch=RESPONSE_TAGGING_SWEEP_CAP, include_retriable=True,
+            )
             await _update_heartbeat(run_id)
 
             processed          += chunk_result["tagged"]

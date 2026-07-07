@@ -268,6 +268,64 @@ class TestNoOpenTextSurvey:
         assert {p[0] for p in enrich_calls[0][1]} == {"r1", "r2"}
 
 
+# ── Mixed batch: some responses have text, some don't ─────────────────────────
+
+class TestMixedBatchNoText:
+    @pytest.mark.asyncio
+    async def test_marks_only_the_no_text_response_in_a_mixed_batch(self):
+        """Regression test (2026-07-14): previously, _mark_enriched_no_text was
+        only invoked when the ENTIRE fetched batch had no scorable text. A
+        MIXED batch — one response answered the open-text question, one left
+        it blank — left the blank one's ai_enriched_at permanently NULL
+        (result["tagged"] never counted it, no executemany ever touched it),
+        so _fetch_untagged_responses's ORDER BY submitted_at ASC would keep
+        re-selecting that exact same unscoreable row on every future sweep,
+        forever, instead of it ever being marked done."""
+        cur = _RespCursor(
+            untagged_rows=[
+                _untagged_row("r1", text="Great service overall"),
+                _untagged_row("r2", text=""),  # blank open-text answer
+            ],
+            survey_row=_open_text_survey(),
+        )
+        embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1]} for t in texts])
+        absa_mock = AsyncMock(return_value=[_absa_result("r1")])
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings", embed_mock),
+            patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
+            patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
+            patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=False)),
+        ):
+            result = await tag_untagged_responses("s1", "o1")
+
+        # r1 scored normally, r2 marked done-with-nothing-to-score — both count.
+        assert result["tagged"] == 2
+
+        no_text_calls = [c for c in cur.executemany_calls if "ai_no_scorable_text" in c[0]]
+        assert len(no_text_calls) == 1
+        assert [p[0] for p in no_text_calls[0][1]] == ["r2"]
+
+        sentiment_calls = [c for c in cur.executemany_calls if "ai_sentiment" in c[0]]
+        assert len(sentiment_calls) == 1
+        assert sentiment_calls[0][1][0][-1] == "r1"
+
+    @pytest.mark.asyncio
+    async def test_mark_enriched_no_text_sets_the_terminal_flag(self):
+        """ai_no_scorable_text must be set alongside ai_enriched_at — that flag
+        is what lets the manual Catch Up Tagging job (include_retriable=True)
+        tell "nothing to score, never retry" apart from a quarantined response
+        that failed and IS worth retrying."""
+        cur = _RespCursor(untagged_rows=[_untagged_row("r1"), _untagged_row("r2")], survey_row=("[]",))
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)):
+            await tag_untagged_responses("s1", "o1")
+
+        no_text_calls = [c for c in cur.executemany_calls if "ai_no_scorable_text=TRUE" in c[0]]
+        assert len(no_text_calls) == 1
+        assert {p[0] for p in no_text_calls[0][1]} == {"r1", "r2"}
+
+
 # ── Topic assignment ───────────────────────────────────────────────────────────
 
 class TestTopicAssignment:
@@ -750,6 +808,59 @@ class TestBacklogCatchup:
         rows = await _fetch_untagged_responses("s1", "o1", 5, conn)
         assert len(rows) == 2
         assert cur.execute_calls[0][1] == ("s1", "o1", 5)
+
+
+# ── include_retriable: manual Catch Up Tagging's quarantine-retry mode ────────
+
+class TestIncludeRetriable:
+    @pytest.mark.asyncio
+    async def test_default_query_never_retries_quarantined_responses(self):
+        """The automatic stream/scheduler sweep (include_retriable's default,
+        False) must never widen its own selection beyond ai_enriched_at IS
+        NULL — retrying a quarantined response automatically, forever, is
+        exactly what quarantine (2026-07-13) exists to prevent."""
+        cur = _RespCursor(untagged_rows=[])
+        conn = _RespConn(cur)
+        await _fetch_untagged_responses("s1", "o1", 10, conn)
+        sql = cur.execute_calls[0][0]
+        assert "ai_no_scorable_text" not in sql
+        assert "ai_sentiment IS NULL" not in sql
+
+    @pytest.mark.asyncio
+    async def test_include_retriable_reselects_responses_missing_scores(self):
+        """Manual Catch Up Tagging (include_retriable=True) must ALSO pick up
+        responses that already went through the sweep (ai_enriched_at set) but
+        are still missing sentiment/emotion/effort — a quarantined response —
+        while still excluding anything confirmed to have no scorable text
+        (ai_no_scorable_text), or every survey with any skipped open-text
+        answers would re-pay this query's cost on every future backfill click."""
+        cur = _RespCursor(untagged_rows=[])
+        conn = _RespConn(cur)
+        await _fetch_untagged_responses("s1", "o1", 10, conn, include_retriable=True)
+        sql, params = cur.execute_calls[0]
+        assert "ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE" in sql
+        assert "ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL" in sql
+        assert params == ("s1", "o1", 10)
+
+    @pytest.mark.asyncio
+    async def test_tag_untagged_responses_threads_include_retriable_through(self):
+        cur = _RespCursor(untagged_rows=[])
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)):
+            await tag_untagged_responses("s1", "o1", include_retriable=True)
+
+        untagged_calls = [c for c in cur.execute_calls if "FROM responses" in c[0] and "ai_enriched_at IS NULL" in c[0]]
+        assert len(untagged_calls) == 1
+        assert "ai_no_scorable_text = FALSE" in untagged_calls[0][0]
+
+    @pytest.mark.asyncio
+    async def test_tag_untagged_responses_defaults_to_not_retrying(self):
+        cur = _RespCursor(untagged_rows=[])
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)):
+            await tag_untagged_responses("s1", "o1")
+
+        untagged_calls = [c for c in cur.execute_calls if "FROM responses" in c[0] and "ai_enriched_at IS NULL" in c[0]]
+        assert len(untagged_calls) == 1
+        assert "ai_no_scorable_text" not in untagged_calls[0][0]
 
 
 # ── Whole-sweep failure isolation ─────────────────────────────────────────────

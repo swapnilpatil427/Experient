@@ -42,6 +42,17 @@ than ``TOPIC_ASSIGNMENT_THRESHOLD``'s 0.72) and a resolved
 permanently-stored, LLM-named topic is a costlier mistake than a nudge to an
 already-vetted centroid, so discovery is deliberately more conservative than
 assignment (added 2026-07-06).
+
+Two terminal-vs-retriable states share the same ``ai_enriched_at IS NOT NULL``
+surface but must never be confused (added 2026-07-14): a response with no
+scorable open-text answer (``ai_no_scorable_text``, set by
+``_mark_enriched_no_text``) is DONE — there is nothing to tag and it must never
+be reselected. A quarantined response (``ai_tagging_attempts`` maxed out,
+``ai_no_scorable_text`` still False, sentiment/emotion/effort still NULL)
+FAILED rather than having nothing to score, and is retriable — but only via a
+deliberate, user-initiated manual Catch Up Tagging run (``include_retriable``),
+never by the automatic stream/scheduler sweep, which must keep leaving it alone
+or it defeats the point of quarantine.
 """
 from __future__ import annotations
 
@@ -85,13 +96,29 @@ async def _llm_raw(prompt: str, max_tokens: int = 2500) -> str:
     return content
 
 
-async def _fetch_untagged_responses(survey_id: str, org_id: str, limit: int, conn) -> list[dict]:
+async def _fetch_untagged_responses(
+    survey_id: str, org_id: str, limit: int, conn, include_retriable: bool = False,
+) -> list[dict]:
     """Untagged = ``ai_enriched_at IS NULL``. Oldest first, so a persistent backlog
     (or a response whose scoring previously failed) surfaces before brand-new ones.
     This is also how "tag any previously missing ones, especially if they failed
     before" is satisfied with no separate failure-tracking state: a failed attempt
     simply never sets ``ai_enriched_at``, so it's naturally retried on the next
     sweep — no dead-letter table or retry counter needed.
+
+    ``include_retriable`` (added 2026-07-14, manual Catch Up Tagging only):
+    ALSO reselects responses that already went through this sweep
+    (``ai_enriched_at`` IS NOT NULL) but are still missing ``ai_sentiment``,
+    ``ai_emotion``, or ``ai_effort_score`` — i.e. a response quarantined by
+    ``_record_batch_failure`` after repeatedly failing. Explicitly EXCLUDES
+    anything ``_mark_enriched_no_text`` has confirmed has no scorable text
+    (``ai_no_scorable_text``) — that is a terminal state, not a failure, and
+    must never be reselected, or every survey with any skipped open-text
+    answers would re-pay this query's cost forever. The regular sweep
+    (stream consumer / 15-min scheduler) always leaves this False —
+    automatically retrying a quarantined response forever is exactly what
+    quarantine exists to prevent; a deliberate, user-initiated manual
+    backfill click is the only sane point to give it another attempt.
 
     ``FOR UPDATE SKIP LOCKED`` (added 2026-07-13, independent review finding):
     the live stream consumer, the 15-min scheduler backlog sweep, and the manual
@@ -104,11 +131,21 @@ async def _fetch_untagged_responses(survey_id: str, org_id: str, limit: int, con
     commit/rollback (see ``_process_batch``'s early sentiment commit), by which
     point those rows already have ``ai_enriched_at`` set and naturally drop out
     of any concurrent caller's WHERE clause anyway."""
+    retriable_clause = ""
+    if include_retriable:
+        retriable_clause = """
+                 OR (
+                   ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
+                   AND (ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL)
+                 )"""
     async with conn.cursor() as cur:
         await cur.execute(
-            """SELECT id, answers
+            f"""SELECT id, answers
                FROM responses
-               WHERE survey_id = %s AND org_id = %s AND ai_enriched_at IS NULL
+               WHERE survey_id = %s AND org_id = %s
+               AND (
+                 ai_enriched_at IS NULL{retriable_clause}
+               )
                ORDER BY submitted_at ASC
                LIMIT %s
                FOR UPDATE SKIP LOCKED""",
@@ -120,14 +157,19 @@ async def _fetch_untagged_responses(survey_id: str, org_id: str, limit: int, con
 
 
 async def _mark_enriched_no_text(response_ids: list[str], conn) -> None:
-    """A survey with zero open-text questions has nothing for ABSA/topics to score.
-    Mark these responses enriched anyway so they stop being re-selected by every
-    future sweep forever."""
+    """Nothing for ABSA/topics to score for these responses — either the survey
+    has zero open-text questions, or (mixed batch) these specific responses
+    skipped/left blank the open-text question their batch-mates answered. Mark
+    them enriched with ``ai_no_scorable_text`` so they stop being re-selected by
+    every future sweep forever — including the manual Catch Up Tagging job's
+    ``include_retriable`` mode, which otherwise would treat their permanently-
+    NULL sentiment/emotion/effort as a retriable failure and re-pay this query's
+    cost on every future backfill click."""
     if not response_ids:
         return
     async with conn.cursor() as cur:
         await cur.executemany(
-            "UPDATE responses SET ai_enriched_at=NOW() WHERE id=%s",
+            "UPDATE responses SET ai_enriched_at=NOW(), ai_no_scorable_text=TRUE WHERE id=%s",
             [(rid,) for rid in response_ids],
         )
 
@@ -386,11 +428,25 @@ async def _process_batch(
     result = {"tagged": 0, "topics_assigned": 0, "topics_buffered": 0, "topics_discovered": 0}
 
     texts = extract_open_texts(responses, questions)
-    if not texts:
-        response_ids = [str(r["id"]) for r in responses]
-        await _mark_enriched_no_text(response_ids, conn)
+
+    # Responses in THIS batch with no scorable text (skipped/blank open-text
+    # answer) never appear in `texts`, even when their batch-mates do — fixed
+    # 2026-07-14. Previously only an ENTIRELY empty batch (checked below) got
+    # marked done; a MIXED batch left the non-answering responses with
+    # ai_enriched_at permanently NULL, so _fetch_untagged_responses's
+    # ORDER BY submitted_at ASC kept re-selecting those exact same unscoreable
+    # oldest rows on every future sweep, forever — crowding out (or in a big
+    # enough backlog, fully blocking) genuinely-untagged newer responses behind
+    # them, the same class of livelock the 2026-07-13 quarantine fix addressed
+    # for actual failures.
+    texted_rids = {str(t["response_id"]) for t in texts}
+    no_text_ids = [str(r["id"]) for r in responses if str(r["id"]) not in texted_rids]
+    if no_text_ids:
+        await _mark_enriched_no_text(no_text_ids, conn)
         await conn.commit()
-        result["tagged"] = len(response_ids)
+        result["tagged"] += len(no_text_ids)
+
+    if not texts:
         return result
 
     tagged_texts = [{**t, "org_id": org_id, "survey_id": survey_id} for t in texts]
@@ -442,7 +498,9 @@ async def _process_batch(
             # failure (isolated by its own try/except further down) must never
             # be able to roll back scoring that already succeeded.
             await conn.commit()
-            result["tagged"] = len(sentiment_updates)
+            # += , not = : a mixed batch may have already counted this
+            # batch's no-scorable-text responses into result["tagged"] above.
+            result["tagged"] += len(sentiment_updates)
         except Exception as exc:
             # RAISES (fixed 2026-07-13, independent review finding): this used
             # to swallow the failure here without incrementing
@@ -535,11 +593,19 @@ async def tag_untagged_responses(
     survey_id: str,
     org_id: str,
     max_batch: int = RESPONSE_TAGGING_SWEEP_CAP,
+    include_retriable: bool = False,
 ) -> dict:
     """Score sentiment/emotion/effort and assign to an existing topic (if any) for
     up to ``max_batch`` untagged responses on this survey. Always queries ALL
     untagged responses for the survey (not just recently-arrived ones), so
     previously-missed or previously-failed responses get swept up on every call.
+
+    ``include_retriable`` (manual Catch Up Tagging only — see
+    ``_fetch_untagged_responses``'s docstring): also re-attempts responses that
+    already went through this sweep but are still missing sentiment/emotion/
+    effort (i.e. were quarantined after repeatedly failing). Defaults to False
+    so the automatic stream/scheduler sweep never retries a response quarantine
+    exists specifically to stop retrying.
 
     New-topic discovery: responses that don't match an existing topic are buffered
     into the same ``topic_candidates`` table ``node_cluster`` already reads from.
@@ -584,7 +650,9 @@ async def tag_untagged_responses(
         min_cluster_size = await resolve_topic_discovery_min_cluster_size(survey_id, org_id)
 
         async with db._pool_conn().connection() as conn:
-            responses = await _fetch_untagged_responses(survey_id, org_id, max_batch, conn)
+            responses = await _fetch_untagged_responses(
+                survey_id, org_id, max_batch, conn, include_retriable=include_retriable,
+            )
             if not responses:
                 return result
 

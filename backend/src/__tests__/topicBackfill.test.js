@@ -217,6 +217,35 @@ describe('POST /api/insights/:surveyId/topics/backfill', () => {
     expect(body.bootstrap_pending).toBe(false);
   });
 
+  it('counts quarantined responses (enriched but missing sentiment/emotion/effort) as untagged too', async () => {
+    // Regression test (2026-07-14): a response quarantined after repeatedly
+    // failing automatic tagging has ai_enriched_at set but ai_sentiment/
+    // ai_emotion/ai_effort_score left NULL. The old query (ai_enriched_at IS
+    // NULL alone) never counted these, so a survey with quarantined responses
+    // but zero never-touched ones would report "nothing to backfill" even
+    // though CrystalOS's own broadened count (topic_backfill.py::
+    // _count_untagged, called with include_retriable=True) would find real
+    // work. The two queries must stay in exact sync.
+    let capturedSql = null;
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+      if (text.includes('untagged_count')) {
+        capturedSql = text;
+        return { rows: [{ untagged_count: 1 }] };
+      }
+      if (text.startsWith('INSERT INTO agent_runs')) return { rows: [{ id: 'run-1' }] };
+      return { rows: [] };
+    });
+
+    const { status, body } = await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
+    expect(status).toBe(202);
+    expect(body.run_id).toBe('run-1');
+    expect(capturedSql).toContain('ai_enriched_at IS NULL');
+    expect(capturedSql).toContain('ai_no_scorable_text = FALSE');
+    expect(capturedSql).toContain('ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL');
+  });
+
   it('404 when survey not found', async () => {
     dbQuery = vi.fn(async () => ({ rows: [] }));
     const { status } = await api(buildApp(), 'POST', '/api/insights/missing/topics/backfill');

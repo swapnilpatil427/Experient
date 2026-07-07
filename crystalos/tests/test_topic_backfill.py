@@ -6,7 +6,7 @@ routing mock DB for status/count checks and agent_runs writeback.
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from crystalos.lib.topic_backfill import run_topic_backfill, _MAX_NO_PROGRESS_CHUNKS
+from crystalos.lib.topic_backfill import run_topic_backfill, _MAX_NO_PROGRESS_CHUNKS, _count_untagged
 
 
 # ── Mock DB plumbing ──────────────────────────────────────────────────────────
@@ -20,8 +20,10 @@ class _BackfillCursor:
         self._run_status = run_status
         self._has_topics = has_topics
         self._last_fetchone = None
+        self.execute_calls = []
 
     async def execute(self, sql, params=None):
+        self.execute_calls.append((sql, params))
         if "COUNT(*)" in sql:
             value = self._remaining_sequence.pop(0) if self._remaining_sequence else 0
             self._last_fetchone = (value,)
@@ -143,6 +145,57 @@ class TestSuccessfulDrain:
         # Must NOT overwrite the status the canceller already set.
         status_updates = [c for c in conn.executed if "status=%s" in c[0]]
         assert status_updates == []
+
+    @pytest.mark.asyncio
+    async def test_passes_include_retriable_so_quarantined_responses_get_another_attempt(self):
+        """This orchestrator is the ONLY caller allowed to ask
+        tag_untagged_responses to retry quarantined responses (2026-07-14) —
+        a manual, user-initiated backfill click is the one deliberate point
+        where re-attempting a response that repeatedly failed automatic
+        tagging is safe; the automatic stream/scheduler sweep must never do
+        this itself."""
+        pool, conn = _backfill_pool(remaining_sequence=[10, 0])
+        tag_mock = AsyncMock(return_value=_chunk(tagged=10))
+
+        with (
+            patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.topic_backfill.tag_untagged_responses", tag_mock),
+            patch("crystalos.lib.topic_backfill.asyncio.sleep", AsyncMock()),
+        ):
+            await run_topic_backfill("run-1", "s1", "o1")
+
+        tag_mock.assert_awaited_once_with("s1", "o1", max_batch=50, include_retriable=True)
+
+
+# ── _count_untagged: retriable (quarantined) responses count too ──────────────
+
+class TestCountUntaggedIncludesRetriable:
+    @pytest.mark.asyncio
+    async def test_count_query_also_selects_quarantined_responses_missing_scores(self):
+        """Regression test (2026-07-14): a survey with a quarantined response
+        (ai_enriched_at set, but ai_sentiment/ai_emotion/ai_effort_score still
+        NULL because every automatic attempt failed) used to report a backlog
+        of 0 here — this job's own count and backend/src/routes/insights.ts's
+        pre-check both used ai_enriched_at IS NULL alone, so a manual Catch Up
+        Tagging click would report "nothing to backfill" while that response
+        sat with permanently-missing scores. Must also exclude
+        ai_no_scorable_text — that's a terminal "nothing to score" state, not
+        a retriable failure."""
+        cur = _BackfillCursor(remaining_sequence=[3])
+        conn = _BackfillConn(cur)
+        pool = MagicMock()
+        pool.connection = MagicMock(return_value=conn)
+
+        with patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool):
+            count = await _count_untagged("s1", "o1")
+
+        assert count == 3
+        count_calls = [c for c in cur.execute_calls if "COUNT(*)" in c[0]]
+        assert len(count_calls) == 1
+        sql = count_calls[0][0]
+        assert "ai_enriched_at IS NULL" in sql
+        assert "ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE" in sql
+        assert "ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL" in sql
 
 
 # ── Stall detection (safety valve) ─────────────────────────────────────────────
