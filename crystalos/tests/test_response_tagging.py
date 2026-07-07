@@ -29,7 +29,7 @@ class _RespCursor:
         # ("column csat_score does not exist" — the table only ever had nps_score, and
         # none of the three were even used downstream). Mocked-cursor tests never
         # caught it because a mock doesn't validate column names against a real schema.
-        self._untagged_desc = [("id",), ("answers",)]
+        self._untagged_desc = [("id",), ("answers",), ("ai_sentiment",), ("ai_emotion",), ("ai_effort_score",)]
         self._survey_row = survey_row
         self._reconstruct_rows = reconstruct_rows or []
         self._reconstruct_desc = [("id",), ("answers",), ("ai_sentiment",), ("ai_sentiment_score",), ("ai_emotion",)]
@@ -104,8 +104,17 @@ def _open_text_survey():
     return ('[{"id": "q1", "type": "open_text", "question": "Anything else?"}]',)
 
 
-def _untagged_row(rid, text="This was a genuinely great experience overall"):
-    return (rid, [{"questionId": "q1", "value": text}])
+def _untagged_row(
+    rid, text="This was a genuinely great experience overall",
+    ai_sentiment=None, ai_emotion=None, ai_effort_score=None,
+):
+    return (rid, [{"questionId": "q1", "value": text}], ai_sentiment, ai_emotion, ai_effort_score)
+
+
+def _orphan_row(rid, text="This was a genuinely great experience overall"):
+    """A "topic orphan" — already fully sentiment/emotion/effort-scored, only
+    ai_topics missing. Only reachable via include_retriable=True."""
+    return _untagged_row(rid, text, ai_sentiment="positive", ai_emotion="joy", ai_effort_score=2.5)
 
 
 _ABSA_CFG = {"batch_size": 10, "concurrency": 3, "cap": 100}
@@ -457,6 +466,108 @@ class TestTopicAssignment:
         assert result["tagged"] == 1
         assert result["topics_assigned"] == 0
         assert result["topics_buffered"] == 0
+
+
+# ── Topic orphans: sentiment/emotion/effort already scored, only topics ───────
+# missing (added 2026-07-14). Reachable only via include_retriable=True — see
+# _fetch_untagged_responses's docstring. This is the actual bug the customer
+# hit: a survey swept before its topic centroids existed (or bootstrap never
+# ran at all) ends up with every response fully sentiment-tagged but zero
+# topics, permanently, since neither the automatic sweep nor the OLD Catch Up
+# Tagging definition of "untagged" ever revisits a response once
+# ai_enriched_at is set.
+
+class TestTopicOrphans:
+    @pytest.mark.asyncio
+    async def test_orphan_gets_topic_assigned_without_any_llm_rescoring(self):
+        cur = _RespCursor(untagged_rows=[_orphan_row("r1")], survey_row=_open_text_survey())
+        embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1, 0.2]} for t in texts])
+        absa_mock = AsyncMock(return_value=[_absa_result("r1")])
+        welford_mock = AsyncMock()
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings", embed_mock),
+            patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
+            patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
+            patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest",
+                  AsyncMock(return_value=({"r1::q1": "Wait Time"}, []))),
+            patch("crystalos.lib.topic_registry.update_centroids_welford_batch", welford_mock),
+        ):
+            result = await tag_untagged_responses("s1", "o1", include_retriable=True)
+
+        # No re-scoring: the orphan's sentiment/emotion/effort was already
+        # correct — an ABSA call here would just re-pay for a known answer.
+        absa_mock.assert_not_called()
+        # Counted as "tagged" via its topic fix, not sentiment scoring (it
+        # never went through sentiment_updates) — otherwise a run that only
+        # fixes orphans would misleadingly report "0 responses tagged".
+        assert result["tagged"] == 1
+        assert result["topics_assigned"] == 1
+        topic_calls = [c for c in cur.executemany_calls if "ai_topics" in c[0]]
+        assert len(topic_calls) == 1
+        assert topic_calls[0][1] == [('["Wait Time"]', "r1")]
+        # Sentiment/emotion/effort must never be touched for an orphan.
+        sentiment_calls = [c for c in cur.executemany_calls if "ai_sentiment" in c[0]]
+        assert sentiment_calls == []
+
+    @pytest.mark.asyncio
+    async def test_orphan_without_centroids_yet_does_nothing_and_is_not_an_error(self):
+        """If centroids somehow don't exist despite the row being fetched
+        (e.g. a race with bootstrap, or a test calling tag_untagged_responses
+        directly without going through the EXISTS-gated SQL), topic
+        assignment is a no-op — never re-scores, never crashes."""
+        cur = _RespCursor(untagged_rows=[_orphan_row("r1")], survey_row=_open_text_survey())
+        absa_mock = AsyncMock()
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings",
+                  AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1]} for t in texts])),
+            patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
+            patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=False)),
+        ):
+            result = await tag_untagged_responses("s1", "o1", include_retriable=True)
+
+        absa_mock.assert_not_called()
+        assert result["tagged"] == 0
+        assert result["topics_assigned"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_only_scores_the_non_orphan_response(self):
+        """A batch with one never-scored response and one orphan must ABSA-
+        score ONLY the never-scored one — the orphan's embedding still feeds
+        topic assignment, but its sentiment/emotion/effort is left alone."""
+        cur = _RespCursor(
+            untagged_rows=[_untagged_row("fresh", text="Great support team"), _orphan_row("orphan")],
+            survey_row=_open_text_survey(),
+        )
+        embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1, 0.2]} for t in texts])
+        absa_mock = AsyncMock(return_value=[_absa_result("fresh")])
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings", embed_mock),
+            patch("crystalos.lib.response_tagging.get_absa_config", return_value=_ABSA_CFG),
+            patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
+            patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest",
+                  AsyncMock(return_value=({"fresh::q1": "Support", "orphan::q1": "Support"}, []))),
+            patch("crystalos.lib.topic_registry.update_centroids_welford_batch", AsyncMock()),
+        ):
+            result = await tag_untagged_responses("s1", "o1", include_retriable=True)
+
+        absa_mock.assert_awaited_once()
+        called_texts = absa_mock.call_args[0][0]
+        assert {t["response_id"] for t in called_texts} == {"fresh"}
+
+        # "fresh" via sentiment scoring + "orphan" via its topic fix.
+        assert result["tagged"] == 2
+        assert result["topics_assigned"] == 2  # both fresh and orphan got a topic
+        sentiment_calls = [c for c in cur.executemany_calls if "ai_sentiment" in c[0]]
+        assert len(sentiment_calls) == 1
+        assert sentiment_calls[0][1][0][-1] == "fresh"
 
 
 # ── New-topic discovery flush (added 2026-07-04) ──────────────────────────────
@@ -841,6 +952,37 @@ class TestIncludeRetriable:
         assert "ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE" in sql
         assert "ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL" in sql
         assert params == ("s1", "o1", 10)
+
+    @pytest.mark.asyncio
+    async def test_include_retriable_also_reselects_topic_orphans_gated_on_centroids_existing(self):
+        """Regression test (2026-07-14): a fully sentiment/emotion/effort-scored
+        response missing only ai_topics (a "topic orphan") must be reselected
+        too — this is the actual customer-reported bug (Data table showing
+        sentiment/emotion/effort populated but Topics empty even after Catch
+        Up Tagging reports success). Gated on this survey's topic centroids
+        actually existing (EXISTS subquery) — before that, topic assignment
+        can't run at all, so reselecting would just waste cost for no outcome."""
+        cur = _RespCursor(untagged_rows=[])
+        conn = _RespConn(cur)
+        await _fetch_untagged_responses("s1", "o1", 10, conn, include_retriable=True)
+        sql = cur.execute_calls[0][0]
+        assert "ai_topics IS NULL" in sql
+        assert "EXISTS" in sql
+        assert "survey_topic_centroids" in sql
+
+    @pytest.mark.asyncio
+    async def test_fetch_untagged_responses_selects_enrichment_columns(self):
+        """_process_batch needs ai_sentiment/ai_emotion/ai_effort_score on each
+        fetched row to tell a topic orphan (already scored) apart from a
+        response that genuinely needs full ABSA scoring."""
+        cur = _RespCursor(untagged_rows=[_orphan_row("r1")])
+        conn = _RespConn(cur)
+        rows = await _fetch_untagged_responses("s1", "o1", 10, conn)
+        assert rows[0]["ai_sentiment"] == "positive"
+        assert rows[0]["ai_emotion"] == "joy"
+        assert rows[0]["ai_effort_score"] == 2.5
+        sql = cur.execute_calls[0][0]
+        assert "ai_sentiment, ai_emotion, ai_effort_score" in sql
 
     @pytest.mark.asyncio
     async def test_tag_untagged_responses_threads_include_retriable_through(self):

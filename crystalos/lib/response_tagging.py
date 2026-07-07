@@ -53,6 +53,16 @@ FAILED rather than having nothing to score, and is retriable — but only via a
 deliberate, user-initiated manual Catch Up Tagging run (``include_retriable``),
 never by the automatic stream/scheduler sweep, which must keep leaving it alone
 or it defeats the point of quarantine.
+
+A THIRD, distinct retriable state (also 2026-07-14): a "topic orphan" —
+sentiment/emotion/effort all present, only ``ai_topics`` is NULL. This is not
+a failure at all; it happens whenever a response was swept before this
+survey's topic centroids existed, or its embedding fell below
+``min_cluster_size`` on a prior discovery flush (``graphs/insights.py`` calls
+the identical case a "bootstrap orphan" in its own full-pipeline run).
+``include_retriable`` reselects these too, but ``_process_batch`` skips ABSA
+for them entirely — only topic assignment runs, since re-scoring would
+re-charge for an answer that's already correct.
 """
 from __future__ import annotations
 
@@ -120,6 +130,21 @@ async def _fetch_untagged_responses(
     quarantine exists to prevent; a deliberate, user-initiated manual
     backfill click is the only sane point to give it another attempt.
 
+    Also reselects "topic orphans" (added 2026-07-14): fully sentiment/
+    emotion/effort-scored responses whose ``ai_topics`` is still NULL — this
+    happens whenever a response was swept by this module BEFORE the survey's
+    topic centroids existed (``graphs/insights.py``'s full pipeline calls
+    these the same thing — see its own ``ai_enriched_at and not ai_topics``
+    bootstrap-orphan check), or whose cluster fell below
+    ``min_cluster_size`` on a prior run. Gated on
+    ``EXISTS (SELECT 1 FROM survey_topic_centroids …)`` for THIS survey —
+    while centroids don't exist yet, topic assignment structurally cannot
+    happen (see the module docstring's terminal-vs-retriable note and
+    ``lib/topic_backfill.py::_has_topics_yet``), so reselecting these orphans
+    before that would just be wasted cost on every manual click with no
+    possible outcome; the existing ``bootstrap_pending`` disclosure already
+    tells the user to fix that first via Generate Report.
+
     ``FOR UPDATE SKIP LOCKED`` (added 2026-07-13, independent review finding):
     the live stream consumer, the 15-min scheduler backlog sweep, and the manual
     backfill job can all call this for the SAME survey concurrently. Without row
@@ -136,11 +161,20 @@ async def _fetch_untagged_responses(
         retriable_clause = """
                  OR (
                    ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
-                   AND (ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL)
+                   AND (
+                     ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL
+                     OR (
+                       ai_topics IS NULL
+                       AND EXISTS (
+                         SELECT 1 FROM survey_topic_centroids stc
+                         WHERE stc.survey_id = responses.survey_id
+                       )
+                     )
+                   )
                  )"""
     async with conn.cursor() as cur:
         await cur.execute(
-            f"""SELECT id, answers
+            f"""SELECT id, answers, ai_sentiment, ai_emotion, ai_effort_score
                FROM responses
                WHERE survey_id = %s AND org_id = %s
                AND (
@@ -450,6 +484,12 @@ async def _process_batch(
     """Score sentiment/emotion/effort and assign/discover topics for exactly the
     given list of responses, on the given connection.
 
+    Skips ABSA/sentiment re-scoring for any response already fully scored
+    (``ai_sentiment``/``ai_emotion``/``ai_effort_score`` all present — a "topic
+    orphan," only reachable via ``include_retriable``, added 2026-07-14) —
+    only topic assignment runs for these; see the module docstring's
+    terminal-vs-retriable note.
+
     RAISES on any failure that should trigger the caller's per-row isolation
     fallback (``extract_open_texts``, the aggregation loop, or the sentiment
     writeback) — added 2026-07-13, independent review finding. The topic-
@@ -491,6 +531,22 @@ async def _process_batch(
     if not texts:
         return result
 
+    # "Topic orphans" (added 2026-07-14): a response already fully scored
+    # (ai_sentiment/ai_emotion/ai_effort_score all present) that only reached
+    # this batch because its ai_topics is still NULL — e.g. it was swept
+    # before this survey's topic centroids existed, or its cluster fell below
+    # min_cluster_size on a prior run (`_fetch_untagged_responses`'s
+    # include_retriable docstring; `graphs/insights.py` calls the same thing
+    # a "bootstrap orphan"). Re-running ABSA for these would re-pay an LLM
+    # call for an answer we already have — only topic assignment below is
+    # actually missing for them.
+    orphan_rids = {
+        str(r["id"]) for r in responses
+        if r.get("ai_sentiment") is not None
+        and r.get("ai_emotion") is not None
+        and r.get("ai_effort_score") is not None
+    } & texted_rids
+
     tagged_texts = [{**t, "org_id": org_id, "survey_id": survey_id} for t in texts]
     try:
         embedded_texts = await get_or_create_embeddings(tagged_texts, conn)
@@ -498,12 +554,19 @@ async def _process_batch(
         logger.warning("response_tagging_embed_failed", survey_id=survey_id, error=str(exc))
         embedded_texts = tagged_texts
 
-    absa_cfg = get_absa_config()
-    llm_results = await run_absa_llm(
-        embedded_texts, _llm_raw,
-        batch_size=absa_cfg["batch_size"],
-        semaphore=asyncio.Semaphore(absa_cfg["concurrency"]),
-    )
+    # Only score text belonging to NON-orphan responses via ABSA — orphans'
+    # sentiment/emotion/effort is already correct and must not be overwritten
+    # (or re-charged for) just to fix their missing topics.
+    scoring_texts = [t for t in embedded_texts if str(t["response_id"]) not in orphan_rids]
+
+    llm_results = []
+    if scoring_texts:
+        absa_cfg = get_absa_config()
+        llm_results = await run_absa_llm(
+            scoring_texts, _llm_raw,
+            batch_size=absa_cfg["batch_size"],
+            semaphore=asyncio.Semaphore(absa_cfg["concurrency"]),
+        )
 
     by_resp: dict[str, list] = defaultdict(list)
     for r in llm_results:
@@ -565,12 +628,17 @@ async def _process_batch(
     # about key shape; group_assignments_by_response regroups the per-answer
     # results back to a per-response topic list afterward.
     try:
-        scored_rids = set(by_resp.keys())
+        # Eligible for topic assignment: responses freshly scored THIS batch
+        # (`by_resp`) PLUS orphans (added 2026-07-14) — already correctly
+        # scored before, ABSA deliberately skipped for them above, so they'd
+        # never otherwise reach this section and their whole reason for being
+        # in this batch (fixing JUST the missing topics) would silently no-op.
+        topic_eligible_rids = set(by_resp.keys()) | orphan_rids
         if await topic_registry.has_centroids(survey_id, conn):
             embeddings_by_key: dict[str, list[float]] = {
                 f"{item['response_id']}::{item['question_id']}": item["embedding"]
                 for item in embedded_texts
-                if str(item["response_id"]) in scored_rids and item.get("embedding")
+                if str(item["response_id"]) in topic_eligible_rids and item.get("embedding")
             }
 
             if embeddings_by_key:
@@ -593,6 +661,12 @@ async def _process_batch(
                             survey_id, topic_emb_groups, conn,
                         )
                         result["topics_assigned"] = len(topic_updates)
+                        # An orphan never went through sentiment_updates above,
+                        # so it's never counted in `tagged` there — without
+                        # this, a run that only fixes orphans' missing topics
+                        # would report "0 responses tagged" to the user even
+                        # though it genuinely did the work (added 2026-07-14).
+                        result["tagged"] += sum(1 for rid in topics_by_rid if rid in orphan_rids)
                     except Exception as exc:
                         logger.error("response_tagging_topic_writeback_failed",
                                      survey_id=survey_id, error=str(exc))
@@ -645,9 +719,11 @@ async def tag_untagged_responses(
     ``include_retriable`` (manual Catch Up Tagging only — see
     ``_fetch_untagged_responses``'s docstring): also re-attempts responses that
     already went through this sweep but are still missing sentiment/emotion/
-    effort (i.e. were quarantined after repeatedly failing). Defaults to False
-    so the automatic stream/scheduler sweep never retries a response quarantine
-    exists specifically to stop retrying.
+    effort (i.e. were quarantined after repeatedly failing) OR are "topic
+    orphans" (fully scored, only ``ai_topics`` missing — no re-scoring, only
+    topic assignment runs for these). Defaults to False so the automatic
+    stream/scheduler sweep never retries a response quarantine exists
+    specifically to stop retrying.
 
     New-topic discovery: responses that don't match an existing topic are buffered
     into the same ``topic_candidates`` table ``node_cluster`` already reads from.

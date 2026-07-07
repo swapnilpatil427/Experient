@@ -130,17 +130,24 @@ async def _has_topics_yet(survey_id: str) -> bool:
 async def _count_untagged(survey_id: str, org_id: str) -> int:
     """Counts both never-swept responses AND retriable ones — quarantined
     responses (``ai_enriched_at`` set, but sentiment/emotion/effort still NULL
-    because every automatic attempt failed) — since this job runs with
-    ``include_retriable=True`` (added 2026-07-14, closing the gap where a
-    manual Catch Up Tagging run could report "nothing to backfill" while
-    quarantined responses sat with permanently-missing sentiment/emotion/
-    effort). Excludes ``ai_no_scorable_text`` responses — those are a terminal
-    "nothing to score" state, not a retriable failure; counting them here would
-    make this job re-charge for the exact same textless backlog on every click.
-    Must stay in sync with backend/src/routes/insights.ts's own pre-check query
-    for the SAME reason the 2026-07-13 bootstrap-gap bug existed: Node's
-    short-circuit and this job's own count must never disagree about what
-    "untagged" means, or one reports complete while the other still has work.
+    because every automatic attempt failed) and "topic orphans" (fully
+    sentiment/emotion/effort-scored, only ``ai_topics`` missing — see
+    ``lib/response_tagging.py::_fetch_untagged_responses``'s docstring) —
+    since this job runs with ``include_retriable=True`` (added 2026-07-14,
+    closing the gap where a manual Catch Up Tagging run could report "nothing
+    to backfill" while quarantined/orphaned responses sat with permanently-
+    missing data). Excludes ``ai_no_scorable_text`` responses — those are a
+    terminal "nothing to score" state, not a retriable failure; counting them
+    here would make this job re-charge for the exact same textless backlog on
+    every click. The orphan branch is additionally gated on this survey
+    actually having topic centroids yet — reselecting them before that would
+    be pure wasted cost with no possible outcome (topic assignment can't run
+    at all without centroids; ``bootstrap_pending`` already tells the user to
+    fix that first). Must stay in sync with backend/src/routes/insights.ts's
+    own pre-check query for the SAME reason the 2026-07-13 bootstrap-gap bug
+    existed: Node's short-circuit and this job's own count must never
+    disagree about what "untagged" means, or one reports complete while the
+    other still has work.
     """
     try:
         async with db._pool_conn().connection() as conn:
@@ -152,7 +159,16 @@ async def _count_untagged(survey_id: str, org_id: str) -> int:
                          ai_enriched_at IS NULL
                          OR (
                            ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
-                           AND (ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL)
+                           AND (
+                             ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL
+                             OR (
+                               ai_topics IS NULL
+                               AND EXISTS (
+                                 SELECT 1 FROM survey_topic_centroids stc
+                                 WHERE stc.survey_id = responses.survey_id
+                               )
+                             )
+                           )
                          )
                        )""",
                     (survey_id, org_id),
@@ -265,7 +281,23 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
             # "progress" — counting it as such would mask a genuine stall
             # (e.g. _record_batch_failure itself broken) behind chunks that
             # look active but never actually free anything from the queue.
-            chunk_activity = chunk_result["tagged"] + chunk_result.get("quarantined", 0)
+            #
+            # Also includes topics_assigned/topics_discovered (added
+            # 2026-07-14): a "topic orphan" (already sentiment/emotion/effort-
+            # scored, only ai_topics missing — see _fetch_untagged_responses's
+            # include_retriable docstring) never touches `tagged` at all, since
+            # re-scoring it would be wasted cost. Its ONLY possible signal of
+            # real progress (remaining, tracked via ai_topics IS NULL for this
+            # case, actually shrinking) is topics_assigned/topics_discovered.
+            # Without this, a chunk that successfully fixed nothing but a
+            # batch of orphans' missing topics would look like zero activity
+            # and could false-trip the stall valve on a perfectly healthy run.
+            chunk_activity = (
+                chunk_result["tagged"]
+                + chunk_result.get("quarantined", 0)
+                + chunk_result.get("topics_assigned", 0)
+                + chunk_result.get("topics_discovered", 0)
+            )
             remaining = await _count_untagged(survey_id, org_id)
 
             await _emit_event(run_id, "backfill_progress", {

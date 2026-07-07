@@ -197,6 +197,27 @@ class TestCountUntaggedIncludesRetriable:
         assert "ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE" in sql
         assert "ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL" in sql
 
+    @pytest.mark.asyncio
+    async def test_count_query_also_selects_topic_orphans_when_centroids_exist(self):
+        """Regression test (2026-07-14) for the actual customer-reported bug:
+        a survey fully sentiment/emotion/effort-tagged but with zero topics
+        (e.g. swept before centroids existed) used to report a backlog of 0
+        here forever — Catch Up Tagging would say "nothing to backfill" while
+        every response's Topics column stayed permanently empty."""
+        cur = _BackfillCursor(remaining_sequence=[7])
+        conn = _BackfillConn(cur)
+        pool = MagicMock()
+        pool.connection = MagicMock(return_value=conn)
+
+        with patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool):
+            count = await _count_untagged("s1", "o1")
+
+        assert count == 7
+        sql = cur.execute_calls[0][0]
+        assert "ai_topics IS NULL" in sql
+        assert "EXISTS" in sql
+        assert "survey_topic_centroids" in sql
+
 
 # ── Stall detection (safety valve) ─────────────────────────────────────────────
 
@@ -219,6 +240,33 @@ class TestStallDetection:
         assert tag_mock.await_count == _MAX_NO_PROGRESS_CHUNKS
         status_updates = [c[1] for c in conn.executed if "status=%s" in c[0]]
         assert ("failed", "run-1") in status_updates
+
+    @pytest.mark.asyncio
+    async def test_orphan_only_progress_is_not_a_false_stall(self):
+        """Regression test (2026-07-14): a chunk that ONLY fixes topic orphans
+        (already sentiment/emotion/effort-scored, so tagged=0) but assigns
+        topics to them must count as real progress. Before this fix,
+        chunk_activity only looked at tagged/quarantined — a backlog made
+        entirely of orphans would show zero activity every single chunk even
+        while genuinely shrinking, and the stall valve would wrongly mark a
+        healthy run 'failed'."""
+        remaining_sequence = [40, 20, 0]
+        pool, conn = _backfill_pool(remaining_sequence=remaining_sequence)
+        tag_mock = AsyncMock(side_effect=[
+            _chunk(tagged=0, topics_assigned=20),
+            _chunk(tagged=0, topics_assigned=20),
+        ])
+
+        with (
+            patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.topic_backfill.tag_untagged_responses", tag_mock),
+            patch("crystalos.lib.topic_backfill.asyncio.sleep", AsyncMock()),
+        ):
+            await run_topic_backfill("run-1", "s1", "o1")
+
+        status_updates = [c[1] for c in conn.executed if "status=%s" in c[0]]
+        assert ("completed", "run-1") in status_updates
+        assert ("failed", "run-1") not in status_updates
 
     @pytest.mark.asyncio
     async def test_active_survey_with_flat_remaining_count_is_not_a_false_stall(self):

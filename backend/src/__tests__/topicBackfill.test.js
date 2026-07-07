@@ -246,6 +246,35 @@ describe('POST /api/insights/:surveyId/topics/backfill', () => {
     expect(capturedSql).toContain('ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL');
   });
 
+  it('counts "topic orphans" (fully sentiment/emotion/effort-scored, only ai_topics missing) as untagged too, gated on centroids existing', async () => {
+    // Regression test (2026-07-14) for the actual customer-reported bug: a
+    // survey swept before its topic centroids existed ends up with every
+    // response fully sentiment-tagged (Data table shows Sentiment/Emotion/
+    // Effort populated) but zero topics, permanently — the old query only
+    // checked sentiment/emotion/effort nullness, so it never counted these,
+    // and Catch Up Tagging kept reporting "nothing to backfill" while the
+    // Topics column stayed empty forever. Must stay in sync with
+    // crystalos/lib/topic_backfill.py::_count_untagged's identical clause.
+    let capturedSql = null;
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+      if (text.includes('untagged_count')) {
+        capturedSql = text;
+        return { rows: [{ untagged_count: 1 }] };
+      }
+      if (text.startsWith('INSERT INTO agent_runs')) return { rows: [{ id: 'run-1' }] };
+      return { rows: [] };
+    });
+
+    const { status, body } = await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
+    expect(status).toBe(202);
+    expect(body.run_id).toBe('run-1');
+    expect(capturedSql).toContain('ai_topics IS NULL');
+    expect(capturedSql).toContain('EXISTS');
+    expect(capturedSql).toContain('survey_topic_centroids');
+  });
+
   it('404 when survey not found', async () => {
     dbQuery = vi.fn(async () => ({ rows: [] }));
     const { status } = await api(buildApp(), 'POST', '/api/insights/missing/topics/backfill');
