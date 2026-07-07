@@ -359,7 +359,16 @@ class TestNodeClusterIncrementalDiscoverySettings:
 
     @pytest.mark.asyncio
     async def test_flush_uses_discovery_similarity_threshold_and_resolved_min_cluster_size(self):
-        from crystalos.lib.constants import TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
+        # Imported from graphs.insights itself, NOT crystalos.lib.constants directly
+        # (fixed 2026-07-07): insights.py binds this name ONCE at ITS OWN import
+        # time (a plain `from constants import NAME`, frozen thereafter regardless
+        # of any later os.environ/AGENTS_ENV change elsewhere in the suite — e.g.
+        # crystalos.main's dotenv.load_dotenv() applying the repo's real .env
+        # AGENTS_ENV value the first time ANY test happens to import it). Comparing
+        # against a FRESH re-import from constants would race against whatever tier
+        # is ambient at THIS test's run time, which can legitimately differ from
+        # the tier that was ambient when insights.py itself was first imported.
+        from crystalos.graphs.insights import TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
 
         state = self._incremental_state()
 
@@ -391,7 +400,6 @@ class TestNodeClusterIncrementalDiscoverySettings:
         cluster_mock.assert_called_once()
         _, kwargs = cluster_mock.call_args
         assert kwargs["threshold"] == TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
-        assert kwargs["threshold"] != 0.72
         assert kwargs["min_cluster_size"] == 7
 
 

@@ -165,14 +165,34 @@ TOPIC_DISCOVERY_CANDIDATE_THRESHOLD:      int = int(os.getenv("TOPIC_DISCOVERY_C
 # Added 2026-07-04: a flush of 25+ candidates can fragment into several 2-item
 # clusters via cluster_texts's own min_cluster_size=2 default, and each one used to
 # get promoted regardless — below even this codebase's own "low confidence" floor
-# (n<10) elsewhere. Flat across all envs (a statistical validity floor, not a
-# cost/latency knob — unlike the candidate threshold above, there's no reason a
-# 2-item "topic" is more acceptable in dev than in prod). Also resolvable per
-# survey/org as a real setting — see resolve_topic_discovery_min_cluster_size.
-# Applies ONLY to incremental (post-bootstrap) discovery; bootstrap's exploratory
-# first pass keeps cluster_texts's default of 2 — there's no established topic set
-# to protect yet on a survey's very first run.
-DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE: int = int(os.getenv("DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE", "5"))
+# (n<10) elsewhere.
+#
+# Env-tiered (fixed 2026-07-07, was flat at 5 for all envs — customer-reported):
+# a survey seeded with auto-generated sample responses (agents/response_generator.py
+# explicitly prompts the LLM for "realistic, DISTINCT synthetic responses") almost
+# never produces 5+ genuinely near-duplicate embeddings within a reasonably-sized
+# buffer — incremental discovery correctly kept re-buffering real evidence
+# (leftover_rids) instead of losing it, but topics_discovered stayed at 0 sweep
+# after sweep, which looked identical to "discovery is broken" from the Data page
+# even though nothing was actually silently dropped. dev/local gets the SAME floor
+# (2) bootstrap's own exploratory first pass already uses on a survey's very first
+# run (cluster_texts's own default — see TOPIC_DISCOVERY_SIMILARITY_THRESHOLD below)
+# — validating the pipeline end-to-end matters more than protecting a live topic
+# list from noise there. prod/staging keep the original conservative n>=5 bar
+# (still above the n<10 "low confidence" floor referenced above) — real customer
+# data must not get diluted by one-off "topics." Also resolvable per survey/org as
+# a real setting — see resolve_topic_discovery_min_cluster_size.
+# Applies ONLY to incremental (post-bootstrap) discovery.
+if _ENV == "prod":
+    _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT = "5"
+elif _ENV == "staging":
+    _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT = "5"
+elif _ENV == "dev-paid":
+    _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT = "3"
+else:                                            # dev / local / test
+    _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT = "2"
+
+DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE: int = int(os.getenv("DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE", _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT))
 DEFAULT_REPORT_REGEN_THRESHOLD:           int = int(os.getenv("DEFAULT_REPORT_REGEN_THRESHOLD",           "25"))
 DEFAULT_FULL_CHECKPOINT_THRESHOLD:        int = int(os.getenv("DEFAULT_FULL_CHECKPOINT_THRESHOLD",        "200"))
 DEFAULT_MEANINGFUL_DELTA_NPS_POINTS:    float = float(os.getenv("DEFAULT_MEANINGFUL_DELTA_NPS_POINTS",    "2.0"))
@@ -230,8 +250,30 @@ INSIGHT_PROFILES: frozenset[str] = frozenset({
 # discovery can be more conservative than assignment, matching each operation's
 # actual error cost.
 TOPIC_ASSIGNMENT_THRESHOLD = 0.72          # cosine similarity threshold for topic assignment
-TOPIC_DISCOVERY_SIMILARITY_THRESHOLD = 0.80  # incremental (post-bootstrap) new-cluster formation only;
-                                              # bootstrap's exploratory first pass stays on TOPIC_ASSIGNMENT_THRESHOLD
+
+# Env-tiered (fixed 2026-07-07, was a flat 0.80 for all envs — see
+# DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE above for the full incident writeup;
+# same root cause, same fix shape). dev/local relaxes to TOPIC_ASSIGNMENT_THRESHOLD
+# itself (0.72) — the exact value bootstrap's own exploratory first pass already
+# uses, so incremental discovery in dev is no MORE conservative than a survey's
+# very first clustering pass, which has the identical "no established topic list
+# to protect yet" justification. prod/staging keep the original 0.80 — a
+# customer-visible, permanent, LLM-named topic is a costlier mistake there than a
+# nudge to an existing centroid, and that asymmetry is exactly why this constant
+# was split from TOPIC_ASSIGNMENT_THRESHOLD in the first place.
+if _ENV == "prod":
+    _TOPIC_DISCOVERY_SIMILARITY_DEFAULT = "0.80"
+elif _ENV == "staging":
+    _TOPIC_DISCOVERY_SIMILARITY_DEFAULT = "0.80"
+elif _ENV == "dev-paid":
+    _TOPIC_DISCOVERY_SIMILARITY_DEFAULT = "0.75"
+else:                                             # dev / local / test
+    _TOPIC_DISCOVERY_SIMILARITY_DEFAULT = "0.72"
+
+TOPIC_DISCOVERY_SIMILARITY_THRESHOLD = float(
+    os.getenv("TOPIC_DISCOVERY_SIMILARITY_THRESHOLD", _TOPIC_DISCOVERY_SIMILARITY_DEFAULT)
+)  # incremental (post-bootstrap) new-cluster formation only;
+   # bootstrap's exploratory first pass stays on TOPIC_ASSIGNMENT_THRESHOLD
 WINDOW_MIN_RESPONSES = {                   # min responses needed per window
     "all_time": 1,
     "last_30d": 10,

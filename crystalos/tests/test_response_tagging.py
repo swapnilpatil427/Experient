@@ -643,11 +643,17 @@ class TestNewTopicDiscoveryFlush:
         threshold_mock.assert_awaited_once_with("survey-9", "org-42")
 
     @pytest.mark.asyncio
-    async def test_discovery_clustering_uses_the_stricter_similarity_threshold_and_resolved_cluster_size(self):
+    async def test_discovery_clustering_uses_the_resolved_similarity_threshold_and_cluster_size(self):
         """Regression test: incremental discovery must use
-        TOPIC_DISCOVERY_SIMILARITY_THRESHOLD (0.80) and the resolved
-        min_cluster_size — NOT the 0.72/2 used for nearest-centroid assignment."""
-        from crystalos.lib.constants import TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
+        TOPIC_DISCOVERY_SIMILARITY_THRESHOLD (env-tiered — see
+        tests/test_constants.py for the per-env values) and the resolved
+        min_cluster_size — not cluster_texts's own hardcoded default of 2."""
+        # Imported from response_tagging itself, NOT crystalos.lib.constants
+        # directly (fixed 2026-07-07) — see test_pipeline.py's identical fix for
+        # the full rationale: response_tagging.py binds this name ONCE at ITS OWN
+        # import time, frozen thereafter regardless of any later AGENTS_ENV change
+        # elsewhere in the suite (e.g. crystalos.main's dotenv.load_dotenv()).
+        from crystalos.lib.response_tagging import TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
 
         cur = _RespCursor(untagged_rows=[_untagged_row("r1")], survey_row=_open_text_survey())
         embed_mock = AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.9, 0.1]} for t in texts])
@@ -677,7 +683,6 @@ class TestNewTopicDiscoveryFlush:
         cluster_mock.assert_called_once()
         _, kwargs = cluster_mock.call_args
         assert kwargs["threshold"] == TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
-        assert kwargs["threshold"] != 0.72
         assert kwargs["min_cluster_size"] == 7  # the resolved value, not cluster_texts's own default of 2
 
     @pytest.mark.asyncio

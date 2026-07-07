@@ -36,12 +36,15 @@ very first-ever topic set still only comes from the full pipeline's bootstrap ru
 which looks at the whole corpus at once — that is not something a per-response
 sweep can meaningfully replicate.
 
-Discovery clustering uses ``TOPIC_DISCOVERY_SIMILARITY_THRESHOLD`` (0.80, stricter
-than ``TOPIC_ASSIGNMENT_THRESHOLD``'s 0.72) and a resolved
-``topic_discovery_min_cluster_size`` (platform default 5, not 2) — a brand-new,
-permanently-stored, LLM-named topic is a costlier mistake than a nudge to an
-already-vetted centroid, so discovery is deliberately more conservative than
-assignment (added 2026-07-06).
+Discovery clustering uses ``TOPIC_DISCOVERY_SIMILARITY_THRESHOLD`` and a resolved
+``topic_discovery_min_cluster_size`` — a brand-new, permanently-stored, LLM-named
+topic is a costlier mistake than a nudge to an already-vetted centroid, so
+discovery is deliberately more conservative than assignment in prod/staging
+(added 2026-07-06). Both are env-tiered (fixed 2026-07-07) — prod/staging keep
+the original conservative 0.80/5 bar, dev/local relaxes to 0.72/2 (matching
+bootstrap's own exploratory first pass) since auto-generated sample responses
+are deliberately diverse and almost never produce 5+ near-duplicate embeddings
+at 0.80 — see ``lib/constants.py``'s definitions for the full per-env rationale.
 
 Two terminal-vs-retriable states share the same ``ai_enriched_at IS NOT NULL``
 surface but must never be confused (added 2026-07-14): a response with no
