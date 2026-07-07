@@ -102,6 +102,11 @@ export interface SurveyResponse {
   ai_emotion?: string | null;
   ai_effort_score?: number | null;
   ai_topics?: string[] | null;
+  // TRUE when this response couldn't be assigned/clustered by manual Catch
+  // Up Tagging after real attempts — shown as "Uncategorized" instead of a
+  // blank cell; ai_topics still takes precedence if a real topic is found
+  // later (see supabase/migrations/20260715090000_topic_uncategorized_bucket.sql).
+  ai_topics_pending?: boolean | null;
   // Device / metadata
   country?: string | null;
   city?: string | null;

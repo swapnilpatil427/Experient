@@ -11,6 +11,7 @@ from crystalos.lib.topic_registry import (
     assign_batch_to_nearest,
     dedupe_unassigned_to_one_per_response,
     group_assignments_by_response,
+    mark_candidates_uncategorized,
     update_centroids_welford_batch,
 )
 
@@ -324,3 +325,66 @@ class TestAddCandidatesBatch:
         assert response_id == "resp-z"
         # Embedding is formatted as pgvector string
         assert emb_str.startswith("[")
+
+
+# ── mark_candidates_uncategorized ("Uncategorized" bucket, added 2026-07-15) ──
+
+class TestMarkCandidatesUncategorized:
+    @pytest.mark.asyncio
+    async def test_flags_currently_buffered_candidates_and_returns_count(self):
+        cur = AsyncMock()
+        cur.__aenter__ = AsyncMock(return_value=cur)
+        cur.__aexit__ = AsyncMock(return_value=None)
+        cur.fetchall = AsyncMock(return_value=[("r1",), ("r2",), ("r3",)])
+        conn = MagicMock()
+        conn.cursor = MagicMock(return_value=cur)
+
+        count = await mark_candidates_uncategorized("s1", "org1", conn)
+
+        assert count == 3
+        cur.execute.assert_called_once()
+        sql, params = cur.execute.call_args[0]
+        assert "UPDATE responses" in sql
+        assert "ai_topics_pending = TRUE" in sql
+        assert params == ("org1", "s1")
+
+    @pytest.mark.asyncio
+    async def test_query_reads_from_topic_candidates_and_excludes_already_resolved(self):
+        """Regression test: must never downgrade a response that a concurrent
+        discovery flush JUST resolved back to "pending" — the WHERE clause
+        guards ai_topics IS NULL, and selects response_ids from
+        topic_candidates (not e.g. all untagged responses generally)."""
+        cur = AsyncMock()
+        cur.__aenter__ = AsyncMock(return_value=cur)
+        cur.__aexit__ = AsyncMock(return_value=None)
+        cur.fetchall = AsyncMock(return_value=[])
+        conn = MagicMock()
+        conn.cursor = MagicMock(return_value=cur)
+
+        await mark_candidates_uncategorized("s1", "org1", conn)
+
+        sql, _ = cur.execute.call_args[0]
+        assert "ai_topics IS NULL" in sql
+        assert "topic_candidates" in sql
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_on_db_error_without_raising(self):
+        conn = MagicMock()
+        conn.cursor = MagicMock(side_effect=RuntimeError("connection lost"))
+
+        count = await mark_candidates_uncategorized("s1", "org1", conn)
+
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_zero_matching_candidates_returns_zero(self):
+        cur = AsyncMock()
+        cur.__aenter__ = AsyncMock(return_value=cur)
+        cur.__aexit__ = AsyncMock(return_value=None)
+        cur.fetchall = AsyncMock(return_value=[])
+        conn = MagicMock()
+        conn.cursor = MagicMock(return_value=cur)
+
+        count = await mark_candidates_uncategorized("s1", "org1", conn)
+
+        assert count == 0

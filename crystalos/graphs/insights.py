@@ -2768,8 +2768,16 @@ async def node_topics(state: dict) -> dict:
             updates = [(json.dumps(tlist), rid) for rid, tlist in resp_topics.items()]
             async with db._pool_conn().connection() as conn:
                 async with conn.cursor() as cur:
+                    # ai_topics_pending=FALSE (added 2026-07-15): a response
+                    # previously flagged "Uncategorized" by the manual Catch
+                    # Up Tagging job's evidence-collection-stall handling
+                    # (lib/topic_backfill.py) that THIS full-pipeline run
+                    # successfully clusters into a real topic must stop
+                    # showing as pending — see
+                    # lib/topic_registry.py::mark_candidates_uncategorized's
+                    # docstring for the full rationale.
                     await cur.executemany(
-                        "UPDATE responses SET ai_topics=%s, ai_enriched_at=NOW() WHERE id=%s",
+                        "UPDATE responses SET ai_topics=%s, ai_enriched_at=NOW(), ai_topics_pending=FALSE WHERE id=%s",
                         updates,
                     )
                 await conn.commit()

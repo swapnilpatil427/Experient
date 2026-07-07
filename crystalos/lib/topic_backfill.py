@@ -195,6 +195,27 @@ async def _mark_run(run_id: str, status: str) -> None:
         logger.error("topic_backfill_mark_run_failed", run_id=run_id, error=str(exc))
 
 
+async def _mark_uncategorized(survey_id: str, org_id: str) -> int:
+    """Opens its own connection to call ``topic_registry.mark_candidates_
+    uncategorized`` — see that function's docstring for the "Uncategorized"
+    bucket's full rationale (added 2026-07-15). Never raises: this runs at
+    the tail of an "evidence-collection stall" (this survey's remaining
+    backlog genuinely can't be resolved by this job), and a failure to flag
+    it for visibility must not turn an otherwise-correct 'completed' outcome
+    into an unhandled exception — worst case, the flag just doesn't get set
+    this time and the responses stay exactly as invisible as they already
+    were, no worse off."""
+    try:
+        async with db._pool_conn().connection() as conn:
+            count = await topic_registry.mark_candidates_uncategorized(survey_id, org_id, conn)
+            await conn.commit()
+            return count
+    except Exception as exc:
+        logger.warning("topic_backfill_mark_uncategorized_failed",
+                        survey_id=survey_id, error=str(exc))
+        return 0
+
+
 async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
     """Drain a survey's entire untagged-response backlog, chunked at
     ``RESPONSE_TAGGING_SWEEP_CAP`` per call, reporting progress into
@@ -233,6 +254,19 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
     the case that actually matters (chunks producing literally zero effect
     of ANY kind — tagged, quarantined, assigned, discovered, OR buffered —
     which is the real bug signature this valve exists to catch).
+
+    "Uncategorized" bucket (added 2026-07-15, customer-requested follow-up):
+    on an evidence-collection stall, ``topic_registry.mark_candidates_
+    uncategorized`` flags every still-buffered response's
+    ``ai_topics_pending`` so it's visible (the Data page shows "Uncategorized"
+    instead of a blank Topics cell) and filterable for manual review — the
+    customer's own stated goal being able to look at that bucket later and
+    spot a common thread the automated clustering missed. Deliberately does
+    NOT touch ``ai_topics`` itself or remove anything from
+    ``topic_candidates`` — the response stays exactly as eligible for a real,
+    LLM-named topic on a future manual click or once enough similar live
+    traffic accumulates as it always was; this is a purely additive
+    visibility layer on top of the existing, unmodified discovery mechanism.
 
     Stall detection uses PER-CHUNK activity (``tagged + quarantined > 0`` this
     chunk — i.e. did the backlog actually shrink, deliberately excluding
@@ -381,13 +415,25 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
                         # identically unresolved either way, but 'failed' is
                         # an alarming, incorrect signal for "waiting on more
                         # data," not "something is broken."
+                        #
+                        # Also flags these as ai_topics_pending ("Uncategorized",
+                        # added 2026-07-15) so they're visible/filterable on the
+                        # Data page instead of silently sitting in the
+                        # topic_candidates buffer forever with no user-facing
+                        # signal — see topic_registry.mark_candidates_
+                        # uncategorized's docstring for why this is a SEPARATE
+                        # flag rather than a synthetic ai_topics value, and why
+                        # they stay in topic_candidates (still eligible for a
+                        # real topic later).
+                        uncategorized_count = await _mark_uncategorized(survey_id, org_id)
                         logger.info("topic_backfill_evidence_collection_stall",
-                                     run_id=run_id, survey_id=survey_id, remaining=remaining)
+                                     run_id=run_id, survey_id=survey_id, remaining=remaining,
+                                     uncategorized_count=uncategorized_count)
                         await _mark_run(run_id, "completed")
                         await _emit_event(run_id, "backfill_complete", {
                             "total_untagged": total_at_start, "processed": processed,
                             "quarantined": quarantined_total, "bootstrap_pending": bootstrap_pending,
-                            "topics_pending_discovery": remaining,
+                            "topics_pending_discovery": uncategorized_count,
                         })
                         return
                     logger.error("topic_backfill_no_progress_stopping",

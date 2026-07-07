@@ -3273,6 +3273,8 @@ const en = {
     colSentiment: 'Sentiment',
     colEmotion: 'Emotion',
     colTopics: 'Topics',
+    topicUncategorized: 'Uncategorized',
+    topicUncategorizedHint: "Couldn't be matched to an existing topic or grouped with enough similar responses yet — worth a manual look.",
     colEffortScore: 'Effort',
     colDevice: 'Device',
     colCountry: 'Country',

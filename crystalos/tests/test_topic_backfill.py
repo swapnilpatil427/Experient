@@ -15,11 +15,15 @@ from crystalos.lib.topic_backfill import run_topic_backfill, _MAX_NO_PROGRESS_CH
 # chunk without needing a real database.
 
 class _BackfillCursor:
-    def __init__(self, remaining_sequence, run_status="running", has_topics=True):
+    def __init__(self, remaining_sequence, run_status="running", has_topics=True, uncategorized_ids=None):
         self._remaining_sequence = list(remaining_sequence)
         self._run_status = run_status
         self._has_topics = has_topics
+        # Rows "RETURNING id" from mark_candidates_uncategorized's UPDATE —
+        # simulates however many currently-buffered candidates matched.
+        self._uncategorized_ids = list(uncategorized_ids or [])
         self._last_fetchone = None
+        self._last_fetchall = []
         self.execute_calls = []
 
     async def execute(self, sql, params=None):
@@ -31,9 +35,14 @@ class _BackfillCursor:
             self._last_fetchone = (self._run_status,)
         elif "survey_topic_centroids" in sql:
             self._last_fetchone = (1,) if self._has_topics else None
+        elif "ai_topics_pending = TRUE" in sql:
+            self._last_fetchall = [(rid,) for rid in self._uncategorized_ids]
 
     async def fetchone(self):
         return self._last_fetchone
+
+    async def fetchall(self):
+        return self._last_fetchall
 
     async def __aenter__(self):
         return self
@@ -53,6 +62,9 @@ class _BackfillConn:
     async def execute(self, sql, params=None):
         self.executed.append((sql, params))
 
+    async def commit(self):
+        return None
+
     async def __aenter__(self):
         return self
 
@@ -60,8 +72,8 @@ class _BackfillConn:
         return False
 
 
-def _backfill_pool(remaining_sequence, run_status="running", has_topics=True):
-    cur = _BackfillCursor(remaining_sequence, run_status, has_topics)
+def _backfill_pool(remaining_sequence, run_status="running", has_topics=True, uncategorized_ids=None):
+    cur = _BackfillCursor(remaining_sequence, run_status, has_topics, uncategorized_ids)
     conn = _BackfillConn(cur)
     pool = MagicMock()
     pool.connection = MagicMock(return_value=conn)
@@ -274,7 +286,8 @@ class TestStallDetection:
         mark 'completed' instead, with topics_pending_discovery disclosing
         what's still unresolved."""
         remaining_sequence = [57] * (_MAX_NO_PROGRESS_CHUNKS + 2)
-        pool, conn = _backfill_pool(remaining_sequence=remaining_sequence)
+        uncategorized_ids = [f"r{i}" for i in range(57)]
+        pool, conn = _backfill_pool(remaining_sequence=remaining_sequence, uncategorized_ids=uncategorized_ids)
         # Every chunk: nothing tagged/assigned/discovered, but 57 candidates
         # buffered (unassignable to any existing centroid, not yet enough
         # evidence to discover a new one) — the exact log signature reported.
@@ -291,12 +304,45 @@ class TestStallDetection:
         assert ("completed", "run-1") in status_updates
         assert ("failed", "run-1") not in status_updates
 
+        # "Uncategorized" bucket (added 2026-07-15): the 57 still-buffered
+        # candidates must actually get flagged ai_topics_pending, not just
+        # counted — topics_pending_discovery reflects the real DB-confirmed
+        # count from mark_candidates_uncategorized, not an assumed number.
+        uncategorized_calls = [
+            c for c in conn.cursor().execute_calls if "ai_topics_pending = TRUE" in c[0]
+        ]
+        assert len(uncategorized_calls) == 1
+
         complete_events = _events_of_type(conn, "backfill_complete")
         assert len(complete_events) == 1
         assert complete_events[0]["data"]["topics_pending_discovery"] == 57
 
         stalled_events = _events_of_type(conn, "backfill_stalled")
         assert stalled_events == []
+
+    @pytest.mark.asyncio
+    async def test_evidence_collection_stall_reports_actual_flagged_count_not_remaining(self):
+        """topics_pending_discovery must reflect what mark_candidates_
+        uncategorized ACTUALLY flagged (e.g. some candidates may have been
+        concurrently resolved between the count and the flag, or excluded by
+        its own ai_topics IS NULL guard), not just echo `remaining`."""
+        remaining_sequence = [57] * (_MAX_NO_PROGRESS_CHUNKS + 2)
+        # Only 40 of the 57 "remaining" actually got flagged (e.g. 17 were
+        # resolved by a concurrent process in between) — the reported count
+        # must reflect the real DB result, not silently assume 57.
+        uncategorized_ids = [f"r{i}" for i in range(40)]
+        pool, conn = _backfill_pool(remaining_sequence=remaining_sequence, uncategorized_ids=uncategorized_ids)
+        tag_mock = AsyncMock(return_value=_chunk(topics_buffered=57))
+
+        with (
+            patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.topic_backfill.tag_untagged_responses", tag_mock),
+            patch("crystalos.lib.topic_backfill.asyncio.sleep", AsyncMock()),
+        ):
+            await run_topic_backfill("run-1", "s1", "o1")
+
+        complete_events = _events_of_type(conn, "backfill_complete")
+        assert complete_events[0]["data"]["topics_pending_discovery"] == 40
 
     @pytest.mark.asyncio
     async def test_stall_with_zero_buffering_still_fails_exactly_as_before(self):

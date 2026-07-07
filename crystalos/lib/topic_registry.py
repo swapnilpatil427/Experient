@@ -397,6 +397,46 @@ async def flush_candidates(survey_id: str, conn) -> list[dict]:
         return []
 
 
+async def mark_candidates_uncategorized(survey_id: str, org_id: str, conn) -> int:
+    """Flag every response CURRENTLY buffered in ``topic_candidates`` for this
+    survey as ``ai_topics_pending`` (added 2026-07-15) — added when
+    ``run_topic_backfill`` determines this batch has been genuinely retried
+    and still can't match an existing topic or cluster into a new one (see
+    that function's "evidence-collection stall" handling). Deliberately does
+    NOT remove them from ``topic_candidates`` — they stay eligible for a
+    later real cluster once more similar responses accumulate (via either
+    live traffic or a future manual backfill click); this is purely a
+    visibility flag ("Uncategorized" on the Data page instead of a blank
+    cell) layered on top of the existing, unmodified discovery mechanism.
+
+    ``AND ai_topics IS NULL`` guards against a race where a response was
+    JUST resolved by a concurrent discovery flush between this survey's
+    candidate SELECT and this UPDATE — never downgrade an already-real topic
+    back to "pending."
+
+    Returns the number of responses newly flagged (for the ``backfill_complete``
+    event's ``topics_pending_discovery`` count and tests).
+    """
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE responses
+                   SET ai_topics_pending = TRUE
+                   WHERE org_id = %s AND ai_topics IS NULL
+                   AND id IN (SELECT response_id FROM topic_candidates WHERE survey_id = %s)
+                   RETURNING id""",
+                (org_id, survey_id),
+            )
+            rows = await cur.fetchall()
+            return len(rows)
+    except Exception as exc:
+        logger.warning(
+            "topic_registry_mark_candidates_uncategorized_failed",
+            survey_id=survey_id, error=str(exc),
+        )
+        return 0
+
+
 # ── Topic health windows ──────────────────────────────────────────────────────
 
 def _current_week_bounds() -> tuple[datetime, datetime]:

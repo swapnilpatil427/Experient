@@ -164,7 +164,7 @@ function renderAnswerValue(value: unknown, type: string | undefined): ReactNode 
   }
 }
 
-function renderEnrichmentCell(resp: SurveyResponse, colId: string): ReactNode {
+function renderEnrichmentCell(resp: SurveyResponse, colId: string, t: (key: string) => string): ReactNode {
   switch (colId) {
     case 'nps_score':         return <NpsBadge score={resp.nps_score} />;
     case 'ai_sentiment':      return <SentimentBadge value={resp.ai_sentiment} />;
@@ -172,12 +172,41 @@ function renderEnrichmentCell(resp: SurveyResponse, colId: string): ReactNode {
       ? <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold capitalize"
           style={{ background: 'rgba(139,52,200,0.08)', color: 'var(--color-tertiary)' }}>{resp.ai_emotion}</span>
       : <span className="text-on-surface-variant/30">—</span>;
-    case 'ai_topics':         return resp.ai_topics?.length
-      ? <div className="flex flex-wrap gap-1">{resp.ai_topics.slice(0, 3).map((t, i) => (
-          <span key={i} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-            style={{ background: 'rgba(8,145,178,0.08)', color: '#0891b2' }}>{t}</span>
-        ))}</div>
-      : <span className="text-on-surface-variant/30">—</span>;
+    case 'ai_topics': {
+      if (resp.ai_topics?.length) {
+        return (
+          <div className="flex flex-wrap gap-1">
+            {resp.ai_topics.slice(0, 3).map((topic, i) => (
+              <span key={i} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                style={{ background: 'rgba(8,145,178,0.08)', color: '#0891b2' }}>{topic}</span>
+            ))}
+          </div>
+        );
+      }
+      // ai_topics_pending ("Uncategorized" — added 2026-07-15): flagged by
+      // lib/topic_backfill.py's manual Catch Up Tagging job when a response
+      // genuinely can't be matched or clustered after real attempts. Distinct
+      // from the plain "—" empty state below — this response HAS been tried
+      // and is a deliberate candidate for manual review, not just untagged.
+      if (resp.ai_topics_pending) {
+        // Self-contained TooltipProvider (matches TruncatedText's pattern
+        // above) — the table isn't wrapped by one at the page level.
+        return (
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium cursor-help"
+                  style={{ background: 'rgba(217,119,6,0.08)', color: '#b45309' }}>
+                  {t('data.topicUncategorized')}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{t('data.topicUncategorizedHint')}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        );
+      }
+      return <span className="text-on-surface-variant/30">—</span>;
+    }
     case 'ai_effort_score':   return resp.ai_effort_score != null
       ? <span className="font-semibold tabular-nums">{Number(resp.ai_effort_score).toFixed(1)}</span>
       : <span className="text-on-surface-variant/30">—</span>;
@@ -649,7 +678,7 @@ export function DataPage() {
                         if (col.group === 'enrichment') {
                           return (
                             <TableCell key={col.id} style={{ minWidth: col.minWidth }}>
-                              {renderEnrichmentCell(resp, col.id)}
+                              {renderEnrichmentCell(resp, col.id, t)}
                             </TableCell>
                           );
                         }

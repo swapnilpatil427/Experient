@@ -367,6 +367,32 @@ class TestTopicAssignment:
         add_cand_mock.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_successful_assignment_clears_ai_topics_pending(self):
+        """Regression test (2026-07-15): a response previously flagged
+        "Uncategorized" (ai_topics_pending=TRUE by lib/topic_backfill.py's
+        evidence-collection-stall handling) that a LATER manual click
+        successfully matches to an existing topic must have that flag
+        cleared in the SAME UPDATE — otherwise it would keep showing as
+        "Uncategorized" on the Data page even after a real topic is found."""
+        cur = _RespCursor(untagged_rows=[_orphan_row("r1")], survey_row=_open_text_survey())
+
+        with (
+            patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_pool_for(cur)),
+            patch("crystalos.lib.response_tagging.get_or_create_embeddings",
+                  AsyncMock(side_effect=lambda texts, conn: [{**t, "embedding": [0.1, 0.2]} for t in texts])),
+            patch("crystalos.lib.response_tagging.run_absa_llm", AsyncMock()),
+            patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=True)),
+            patch("crystalos.lib.topic_registry.assign_batch_to_nearest",
+                  AsyncMock(return_value=({"r1::q1": "Billing"}, []))),
+            patch("crystalos.lib.topic_registry.update_centroids_welford_batch", AsyncMock()),
+        ):
+            await tag_untagged_responses("s1", "o1", include_retriable=True, has_centroids=True)
+
+        topic_calls = [c for c in cur.executemany_calls if "ai_topics" in c[0]]
+        assert len(topic_calls) == 1
+        assert "ai_topics_pending=FALSE" in topic_calls[0][0]
+
+    @pytest.mark.asyncio
     async def test_response_with_two_open_text_answers_can_get_two_different_topics(self):
         """The core fix (2026-07-06): topic matching used to dedupe to ONE
         embedding per response before calling assign_batch_to_nearest, so a
@@ -722,6 +748,12 @@ class TestNewTopicDiscoveryFlush:
         assert len(topic_calls) == 1
         tagged_rids = {p[1] for p in topic_calls[0][1]}
         assert tagged_rids == {"r1", "r2"}
+        # ai_topics_pending=FALSE (added 2026-07-15): responses newly
+        # promoted into a discovered topic must stop showing as
+        # "Uncategorized" on the Data page — same clear as nearest-centroid
+        # assignment (TestTopicAssignment::test_successful_assignment_
+        # clears_ai_topics_pending).
+        assert "ai_topics_pending=FALSE" in topic_calls[0][0]
 
     @pytest.mark.asyncio
     async def test_unclustered_candidates_are_requeued_not_dropped(self):

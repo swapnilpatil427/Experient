@@ -368,7 +368,17 @@ async def _flush_and_discover_topics(
 
     if topic_updates:
         async with conn.cursor() as cur:
-            await cur.executemany("UPDATE responses SET ai_topics=%s WHERE id=%s", topic_updates)
+            # ai_topics_pending=FALSE (added 2026-07-15): a response
+            # previously flagged "Uncategorized" (topic_registry.mark_
+            # candidates_uncategorized) that a LATER discovery flush
+            # successfully clusters into a real, LLM-named topic must stop
+            # showing as pending — the real topic name now takes over. Safe
+            # to unconditionally clear even for responses that were never
+            # flagged (already FALSE, a no-op).
+            await cur.executemany(
+                "UPDATE responses SET ai_topics=%s, ai_topics_pending=FALSE WHERE id=%s",
+                topic_updates,
+            )
 
     return len(new_topics)
 
@@ -657,8 +667,14 @@ async def _process_batch(
                         topic_emb_groups[tname].append(embeddings_by_key[key])
                     try:
                         async with conn.cursor() as cur:
+                            # ai_topics_pending=FALSE (added 2026-07-15): a
+                            # previously-"Uncategorized" orphan that a LATER
+                            # manual click successfully matches to an
+                            # existing topic must stop showing as pending —
+                            # see _flush_and_discover_topics's identical
+                            # clear for the discovery-promotion path.
                             await cur.executemany(
-                                "UPDATE responses SET ai_topics=%s WHERE id=%s",
+                                "UPDATE responses SET ai_topics=%s, ai_topics_pending=FALSE WHERE id=%s",
                                 topic_updates,
                             )
                         await topic_registry.update_centroids_welford_batch(
