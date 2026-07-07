@@ -142,17 +142,88 @@ def _repair_truncated_json_array(text: str) -> str:
     return candidate
 
 
+# One flat ABSA object per response (i, aspect, sentiment, score, emotion —
+# all scalars, never nested) — a non-greedy, no-nested-brace match is exactly
+# this batch's actual shape, so this only ever mis-splits an object whose OWN
+# string field contains a literal '{' or '}' (e.g. a verbatim quoting "the
+# {submit} button") — a bounded, rare mis-split, not a source of false matches.
+_OBJECT_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _extract_valid_absa_objects(text: str) -> list[dict]:
+    """Last-resort recovery when the array-level parse fails even after the
+    truncation repair above: a SINGLE malformed object anywhere in the batch
+    (not just the last one) — e.g. the LLM emitted an unescaped quote or a raw
+    newline inside a string field — corrupts `json.loads` for the WHOLE array,
+    even though every OTHER object in the response is perfectly well-formed.
+
+    Scans for individual ``{...}`` substrings and parses each independently,
+    silently discarding any that don't parse — the caller (`_parse_absa_batch`)
+    already degrades a missing/invalid item to `_heuristic_item` via its
+    `i_lookup` fallback, so losing ONE corrupted object here still preserves
+    every other object's real LLM sentiment/emotion, instead of the entire
+    batch falling back to the weaker keyword heuristic just because one
+    response's text happened to break the JSON.
+
+    Returns whatever objects parse — an empty list if NONE do, in which case
+    the caller re-raises the original error instead of treating this as
+    success (see `_parse_absa_batch`): a genuinely unusable response should
+    still surface as a real failure (logged, heuristic-batch fallback via
+    `run_absa_llm`'s own except-block), not silently look identical to "the
+    LLM legitimately returned zero items."
+    """
+    results = []
+    for match in _OBJECT_RE.finditer(text):
+        try:
+            obj = json.loads(match.group(0), strict=False)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            results.append(obj)
+    return results
+
+
 def _parse_absa_batch(raw: str, batch: list[dict]) -> list[dict]:
     """Parse LLM response. Uses 'i'-key lookup for positional safety; falls back to order."""
     cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```\s*$", "", cleaned, flags=re.DOTALL).strip()
 
     try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Attempt to recover a truncated JSON array before giving up
-        repaired = _repair_truncated_json_array(cleaned)
-        parsed = json.loads(repaired)  # raises JSONDecodeError if still broken → caught upstream
+        # strict=False (fixed 2026-07-07): permits raw control characters
+        # (e.g. a literal newline) inside a string value — the LLM
+        # occasionally emits one instead of the escaped `\n` JSON requires,
+        # which under strict parsing raises "Invalid control character", not
+        # the "Unterminated string" case handled below, but the same
+        # single-item corruption risk applies, so it's handled at the same
+        # layer.
+        parsed = json.loads(cleaned, strict=False)
+    except json.JSONDecodeError as exc:
+        try:
+            # Attempt to recover a truncated JSON array before giving up —
+            # the LLM hit its token limit mid-response.
+            repaired = _repair_truncated_json_array(cleaned)
+            parsed = json.loads(repaired, strict=False)
+        except json.JSONDecodeError:
+            # Fixed 2026-07-07 (production incident: "Unterminated string
+            # starting at: line 6 column 5"): a single malformed object
+            # ANYWHERE in the batch — not just a truncated tail — e.g. one
+            # response's own text contained an unescaped quote or a raw
+            # newline that broke that ONE object's string, corrupts
+            # json.loads for the entire array even though every other
+            # object is perfectly well-formed. Recovers whichever
+            # individual objects DO parse instead of discarding the whole
+            # batch's real LLM sentiment for one bad item.
+            parsed = _extract_valid_absa_objects(cleaned)
+            if not parsed:
+                # Nothing at all was recoverable — re-raise the ORIGINAL
+                # error rather than silently proceeding with an empty
+                # array. _process_batch's caller (run_absa_llm) still logs
+                # "absa_batch_failed" with the real traceback and falls
+                # back to the full heuristic batch, exactly as it did
+                # before this fix — that observability signal (a
+                # genuinely-unusable LLM response, not just one bad item)
+                # must not go silent.
+                raise exc
     if isinstance(parsed, dict):
         for v in parsed.values():
             if isinstance(v, list):
