@@ -352,7 +352,36 @@ async def _record_batch_failure(response_ids: list[str], error_msg: str) -> list
     to fail. Runs in its OWN fresh connection since the connection tied to the
     failed sweep may itself be left in an aborted transaction state.
 
-    Returns the list of response_ids that were quarantined this call (for tests).
+    Returns the list of response_ids NEWLY quarantined by this call (for
+    tests, and for the caller's own progress/stall accounting — see below).
+
+    The ``WHERE`` guard matches never-touched responses (``ai_enriched_at IS
+    NULL``) AND already-quarantined ones being retried by the manual Catch Up
+    Tagging job's ``include_retriable`` mode that failed AGAIN (added
+    2026-07-14) — without the second branch, a response manually retried after
+    being quarantined would silently no-op here on a repeat failure: its
+    ``ai_tagging_attempts``/``ai_tagging_last_error`` would go stale (ops loses
+    visibility that a retry was even attempted) since ``ai_enriched_at`` is
+    already set from the ORIGINAL quarantine. Still excludes
+    ``ai_no_scorable_text`` — a confirmed-no-text response never reaches this
+    function (nothing there can raise), so it must never match either branch.
+
+    The returned list deliberately EXCLUDES a response that was ALREADY
+    quarantined before this call (``ai_enriched_at`` already set) even though
+    its attempts/error just got bumped — added 2026-07-14, closing a livelock
+    this exact fix would otherwise reopen: ``lib/topic_backfill.py``'s stall
+    detection treats a non-empty ``quarantined`` count as "this chunk made
+    real progress" (deliberately, since quarantining IS supposed to be a
+    one-time, backlog-shrinking event). If a repeat failure of an
+    already-quarantined response counted again every time it's retried,
+    run_topic_backfill's ``while True`` loop would see non-zero "progress"
+    on every single chunk forever for a survey whose entire remaining backlog
+    is permanently-broken retriable responses — its stall safety valve would
+    never trip, the run would never terminate on its own, and the same
+    handful of responses would be double/triple/quadruple-counted into the
+    user-facing "N responses were quarantined" total across chunks. Only a
+    response crossing the quarantine threshold for the FIRST time genuinely
+    shrinks the backlog and belongs in this list.
     """
     if not response_ids:
         return []
@@ -363,12 +392,25 @@ async def _record_batch_failure(response_ids: list[str], error_msg: str) -> list
                     """UPDATE responses
                        SET ai_tagging_attempts = ai_tagging_attempts + 1,
                            ai_tagging_last_error = %s
-                       WHERE id = ANY(%s) AND ai_enriched_at IS NULL
-                       RETURNING id, ai_tagging_attempts""",
+                       WHERE id = ANY(%s)
+                       AND (
+                         ai_enriched_at IS NULL
+                         OR (
+                           ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
+                           AND (ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL)
+                         )
+                       )
+                       RETURNING id, ai_tagging_attempts, ai_enriched_at IS NOT NULL AS already_enriched""",
                     (error_msg[:500], response_ids),
                 )
                 rows = await cur.fetchall()
-                quarantine_ids = [str(r[0]) for r in rows if r[1] >= MAX_RESPONSE_TAGGING_ATTEMPTS]
+                # ai_enriched_at is untouched by the SET clause above, so
+                # `already_enriched` reflects this row's state BEFORE this
+                # call — True only for a retried, already-quarantined response.
+                quarantine_ids = [
+                    str(r[0]) for r in rows
+                    if r[1] >= MAX_RESPONSE_TAGGING_ATTEMPTS and not r[2]
+                ]
                 if quarantine_ids:
                     await cur.executemany(
                         "UPDATE responses SET ai_enriched_at = NOW() WHERE id = %s",

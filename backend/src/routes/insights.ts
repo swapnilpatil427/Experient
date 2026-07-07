@@ -729,7 +729,7 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
        AND (
          ai_enriched_at IS NULL
          OR (
-           ai_no_scorable_text = FALSE
+           ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
            AND (ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL)
          )
        )`,

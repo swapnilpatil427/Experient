@@ -997,7 +997,8 @@ class TestQuarantineCircuitBreaker:
     async def test_below_max_attempts_bumps_counter_but_does_not_quarantine(self):
         from crystalos.lib.response_tagging import _record_batch_failure
 
-        cur = _AttemptsCursor(returning_rows=[("r1", 1)])  # 1st failure, MAX is 3
+        # (id, attempts, already_enriched) — 1st failure, MAX is 3, never touched before.
+        cur = _AttemptsCursor(returning_rows=[("r1", 1, False)])
         with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_attempts_pool(cur)):
             quarantined = await _record_batch_failure(["r1"], "boom")
 
@@ -1010,7 +1011,7 @@ class TestQuarantineCircuitBreaker:
         from crystalos.lib.response_tagging import _record_batch_failure
         from crystalos.lib.constants import MAX_RESPONSE_TAGGING_ATTEMPTS
 
-        cur = _AttemptsCursor(returning_rows=[("r1", MAX_RESPONSE_TAGGING_ATTEMPTS)])
+        cur = _AttemptsCursor(returning_rows=[("r1", MAX_RESPONSE_TAGGING_ATTEMPTS, False)])
         with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_attempts_pool(cur)):
             quarantined = await _record_batch_failure(["r1"], "boom")
 
@@ -1018,6 +1019,72 @@ class TestQuarantineCircuitBreaker:
         update_calls = [c for c in cur.executemany_calls if "ai_enriched_at" in c[0]]
         assert len(update_calls) == 1
         assert update_calls[0][1] == [("r1",)]
+
+    @pytest.mark.asyncio
+    async def test_attempts_guard_also_matches_retried_quarantined_responses(self):
+        """Regression test (2026-07-14): a response already quarantined
+        (ai_enriched_at set) that gets manually retried via Catch Up Tagging's
+        include_retriable mode and fails AGAIN must still have this UPDATE's
+        WHERE clause match it. The old guard (ai_enriched_at IS NULL alone)
+        would silently match zero rows for an already-quarantined response —
+        ai_tagging_attempts/ai_tagging_last_error would go stale, and ops
+        would have no visibility that a retry was even attempted."""
+        from crystalos.lib.response_tagging import _record_batch_failure
+
+        cur = _AttemptsCursor(returning_rows=[("r1", 4, True)])  # already_enriched=True: a repeat failure
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_attempts_pool(cur)):
+            await _record_batch_failure(["r1"], "boom again")
+
+        sql = cur.execute_calls[0][0]
+        assert "ai_enriched_at IS NULL" in sql
+        assert "ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE" in sql
+        assert "ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL" in sql
+
+    @pytest.mark.asyncio
+    async def test_repeat_failure_of_an_already_quarantined_response_is_not_counted_as_new(self):
+        """THE critical regression test (2026-07-14): without this exclusion,
+        fixing the "stale attempts on retry" gap above would silently reopen a
+        livelock in a different layer. lib/topic_backfill.py::run_topic_backfill
+        treats a non-empty quarantined count as "this chunk made real
+        progress" and resets its stall-detection counter accordingly — that's
+        correct ONLY because quarantining used to be a one-time event. Once a
+        manually-retried, already-quarantined response can be "quarantined"
+        again on every repeat failure, counting it here every time would make
+        every future chunk look like it's progressing even though the exact
+        same permanently-broken responses are being retried forever — the
+        run's own stall safety valve would never trip, and the user-facing
+        "N responses were quarantined" total would double/triple/quadruple
+        count the same handful of responses across chunks."""
+        from crystalos.lib.response_tagging import _record_batch_failure
+        from crystalos.lib.constants import MAX_RESPONSE_TAGGING_ATTEMPTS
+
+        # already_enriched=True (it was quarantined before this call) even
+        # though attempts is now well past MAX — must NOT be treated as new.
+        cur = _AttemptsCursor(returning_rows=[("r1", MAX_RESPONSE_TAGGING_ATTEMPTS + 5, True)])
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_attempts_pool(cur)):
+            quarantined = await _record_batch_failure(["r1"], "boom yet again")
+
+        assert quarantined == []
+        # Still no redundant ai_enriched_at re-set for a row that already has one.
+        update_calls = [c for c in cur.executemany_calls if "ai_enriched_at" in c[0]]
+        assert update_calls == []
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_only_counts_the_genuinely_new_quarantine(self):
+        """A batch containing both a never-touched response crossing the
+        threshold for the first time and an already-quarantined response
+        failing again must only report the former."""
+        from crystalos.lib.response_tagging import _record_batch_failure
+        from crystalos.lib.constants import MAX_RESPONSE_TAGGING_ATTEMPTS
+
+        cur = _AttemptsCursor(returning_rows=[
+            ("new", MAX_RESPONSE_TAGGING_ATTEMPTS, False),
+            ("retry", MAX_RESPONSE_TAGGING_ATTEMPTS + 2, True),
+        ])
+        with patch("crystalos.lib.response_tagging.db._pool_conn", return_value=_attempts_pool(cur)):
+            quarantined = await _record_batch_failure(["new", "retry"], "boom")
+
+        assert quarantined == ["new"]
 
     @pytest.mark.asyncio
     async def test_empty_response_ids_is_a_noop(self):
