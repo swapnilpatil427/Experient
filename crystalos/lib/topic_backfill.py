@@ -127,47 +127,51 @@ async def _has_topics_yet(survey_id: str) -> bool:
         return True  # fail open: don't block/mislabel a real run over a transient check failure
 
 
-async def _count_untagged(survey_id: str, org_id: str) -> int:
+async def _count_untagged(survey_id: str, org_id: str, has_centroids: bool = False) -> int:
     """Counts both never-swept responses AND retriable ones — quarantined
     responses (``ai_enriched_at`` set, but sentiment/emotion/effort still NULL
-    because every automatic attempt failed) and "topic orphans" (fully
-    sentiment/emotion/effort-scored, only ``ai_topics`` missing — see
-    ``lib/response_tagging.py::_fetch_untagged_responses``'s docstring) —
-    since this job runs with ``include_retriable=True`` (added 2026-07-14,
-    closing the gap where a manual Catch Up Tagging run could report "nothing
-    to backfill" while quarantined/orphaned responses sat with permanently-
-    missing data). Excludes ``ai_no_scorable_text`` responses — those are a
-    terminal "nothing to score" state, not a retriable failure; counting them
-    here would make this job re-charge for the exact same textless backlog on
-    every click. The orphan branch is additionally gated on this survey
-    actually having topic centroids yet — reselecting them before that would
-    be pure wasted cost with no possible outcome (topic assignment can't run
-    at all without centroids; ``bootstrap_pending`` already tells the user to
-    fix that first). Must stay in sync with backend/src/routes/insights.ts's
-    own pre-check query for the SAME reason the 2026-07-13 bootstrap-gap bug
-    existed: Node's short-circuit and this job's own count must never
-    disagree about what "untagged" means, or one reports complete while the
-    other still has work.
+    because every automatic attempt failed) and, when ``has_centroids`` is
+    True, "topic orphans" (fully sentiment/emotion/effort-scored, only
+    ``ai_topics`` missing — see ``lib/response_tagging.py::
+    _fetch_untagged_responses``'s docstring) — since this job runs with
+    ``include_retriable=True`` (added 2026-07-14, closing the gap where a
+    manual Catch Up Tagging run could report "nothing to backfill" while
+    quarantined/orphaned responses sat with permanently-missing data).
+    Excludes ``ai_no_scorable_text`` responses — those are a terminal
+    "nothing to score" state, not a retriable failure; counting them here
+    would make this job re-charge for the exact same textless backlog on
+    every click.
+
+    ``has_centroids`` is a plain caller-supplied boolean (added 2026-07-14,
+    self-review finding), not a fresh check here — ``run_topic_backfill``
+    already computes it exactly once per run via ``_has_topics_yet`` for
+    ``bootstrap_pending``, and this function is called on EVERY chunk inside
+    that run's loop. An earlier version instead ran a correlated
+    ``EXISTS (SELECT 1 FROM survey_topic_centroids …)`` subquery inline in
+    the WHERE clause below — same unchanging answer, re-evaluated on every
+    row of every chunk's COUNT(*) scan, for a survey's entire remaining
+    backlog, every single chunk, for zero benefit over passing in the one
+    value already known.
+
+    Must stay in sync with backend/src/routes/insights.ts's own pre-check
+    query for the SAME reason the 2026-07-13 bootstrap-gap bug existed:
+    Node's short-circuit and this job's own count must never disagree about
+    what "untagged" means, or one reports complete while the other still has
+    work.
     """
     try:
+        orphan_clause = " OR ai_topics IS NULL" if has_centroids else ""
         async with db._pool_conn().connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    """SELECT COUNT(*) FROM responses
+                    f"""SELECT COUNT(*) FROM responses
                        WHERE survey_id = %s AND org_id = %s
                        AND (
                          ai_enriched_at IS NULL
                          OR (
                            ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
                            AND (
-                             ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL
-                             OR (
-                               ai_topics IS NULL
-                               AND EXISTS (
-                                 SELECT 1 FROM survey_topic_centroids stc
-                                 WHERE stc.survey_id = responses.survey_id
-                               )
-                             )
+                             ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL{orphan_clause}
                            )
                          )
                        )""",
@@ -244,8 +248,16 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
     stuck 'running' until the zombie sweep reaps it up to 30 minutes later.
     Catching everything here gives the user an immediate, accurate result.
     """
-    total_at_start = await _count_untagged(survey_id, org_id)
-    bootstrap_pending = not await _has_topics_yet(survey_id)
+    # Computed ONCE up front and threaded through every _count_untagged/
+    # tag_untagged_responses call below (fixed 2026-07-14, self-review
+    # finding) — this survey's centroids can't be created mid-run by
+    # anything this loop does (the only path that could, discovery, is
+    # itself gated on has_centroids already being True inside
+    # _process_batch), so re-checking it per chunk — let alone per row via a
+    # SQL subquery — would just repeat an already-settled answer.
+    has_centroids = await _has_topics_yet(survey_id)
+    bootstrap_pending = not has_centroids
+    total_at_start = await _count_untagged(survey_id, org_id, has_centroids=has_centroids)
     await _emit_event(run_id, "backfill_started", {
         "total_untagged": total_at_start, "bootstrap_pending": bootstrap_pending,
     })
@@ -268,7 +280,8 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
                 return
 
             chunk_result = await tag_untagged_responses(
-                survey_id, org_id, max_batch=RESPONSE_TAGGING_SWEEP_CAP, include_retriable=True,
+                survey_id, org_id, max_batch=RESPONSE_TAGGING_SWEEP_CAP,
+                include_retriable=True, has_centroids=has_centroids,
             )
             await _update_heartbeat(run_id)
 
@@ -298,7 +311,7 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
                 + chunk_result.get("topics_assigned", 0)
                 + chunk_result.get("topics_discovered", 0)
             )
-            remaining = await _count_untagged(survey_id, org_id)
+            remaining = await _count_untagged(survey_id, org_id, has_centroids=has_centroids)
 
             await _emit_event(run_id, "backfill_progress", {
                 "total_untagged":    total_at_start,

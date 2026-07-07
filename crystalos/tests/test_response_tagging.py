@@ -495,7 +495,7 @@ class TestTopicOrphans:
                   AsyncMock(return_value=({"r1::q1": "Wait Time"}, []))),
             patch("crystalos.lib.topic_registry.update_centroids_welford_batch", welford_mock),
         ):
-            result = await tag_untagged_responses("s1", "o1", include_retriable=True)
+            result = await tag_untagged_responses("s1", "o1", include_retriable=True, has_centroids=True)
 
         # No re-scoring: the orphan's sentiment/emotion/effort was already
         # correct — an ABSA call here would just re-pay for a known answer.
@@ -515,9 +515,13 @@ class TestTopicOrphans:
     @pytest.mark.asyncio
     async def test_orphan_without_centroids_yet_does_nothing_and_is_not_an_error(self):
         """If centroids somehow don't exist despite the row being fetched
-        (e.g. a race with bootstrap, or a test calling tag_untagged_responses
-        directly without going through the EXISTS-gated SQL), topic
-        assignment is a no-op — never re-scores, never crashes."""
+        (e.g. a race with bootstrap creating the very first centroid mid-run,
+        or a direct test call bypassing the caller's own has_centroids
+        check), topic assignment is a no-op — never re-scores, never
+        crashes. has_centroids=True here simulates the CALLER believing
+        centroids exist (so it fetched this orphan at all); has_centroids
+        (the live topic_registry check inside _process_batch itself) is
+        mocked False to simulate the race/staleness."""
         cur = _RespCursor(untagged_rows=[_orphan_row("r1")], survey_row=_open_text_survey())
         absa_mock = AsyncMock()
 
@@ -528,7 +532,7 @@ class TestTopicOrphans:
             patch("crystalos.lib.response_tagging.run_absa_llm", absa_mock),
             patch("crystalos.lib.topic_registry.has_centroids", AsyncMock(return_value=False)),
         ):
-            result = await tag_untagged_responses("s1", "o1", include_retriable=True)
+            result = await tag_untagged_responses("s1", "o1", include_retriable=True, has_centroids=True)
 
         absa_mock.assert_not_called()
         assert result["tagged"] == 0
@@ -556,7 +560,7 @@ class TestTopicOrphans:
                   AsyncMock(return_value=({"fresh::q1": "Support", "orphan::q1": "Support"}, []))),
             patch("crystalos.lib.topic_registry.update_centroids_welford_batch", AsyncMock()),
         ):
-            result = await tag_untagged_responses("s1", "o1", include_retriable=True)
+            result = await tag_untagged_responses("s1", "o1", include_retriable=True, has_centroids=True)
 
         absa_mock.assert_awaited_once()
         called_texts = absa_mock.call_args[0][0]
@@ -959,16 +963,28 @@ class TestIncludeRetriable:
         response missing only ai_topics (a "topic orphan") must be reselected
         too — this is the actual customer-reported bug (Data table showing
         sentiment/emotion/effort populated but Topics empty even after Catch
-        Up Tagging reports success). Gated on this survey's topic centroids
-        actually existing (EXISTS subquery) — before that, topic assignment
-        can't run at all, so reselecting would just waste cost for no outcome."""
+        Up Tagging reports success). Gated on the caller-supplied
+        has_centroids — before centroids exist, topic assignment can't run at
+        all, so reselecting would just waste cost for no outcome. Deliberately
+        a plain boolean threaded through by the caller (who already knows the
+        answer — see run_topic_backfill's has_centroids), not a fresh
+        EXISTS (SELECT …) subquery evaluated per row here (fixed 2026-07-14,
+        self-review finding)."""
         cur = _RespCursor(untagged_rows=[])
         conn = _RespConn(cur)
-        await _fetch_untagged_responses("s1", "o1", 10, conn, include_retriable=True)
+        await _fetch_untagged_responses("s1", "o1", 10, conn, include_retriable=True, has_centroids=True)
         sql = cur.execute_calls[0][0]
         assert "ai_topics IS NULL" in sql
-        assert "EXISTS" in sql
-        assert "survey_topic_centroids" in sql
+        assert "EXISTS" not in sql
+        assert "survey_topic_centroids" not in sql
+
+    @pytest.mark.asyncio
+    async def test_include_retriable_omits_topic_orphan_clause_when_centroids_dont_exist(self):
+        cur = _RespCursor(untagged_rows=[])
+        conn = _RespConn(cur)
+        await _fetch_untagged_responses("s1", "o1", 10, conn, include_retriable=True, has_centroids=False)
+        sql = cur.execute_calls[0][0]
+        assert "ai_topics" not in sql
 
     @pytest.mark.asyncio
     async def test_fetch_untagged_responses_selects_enrichment_columns(self):

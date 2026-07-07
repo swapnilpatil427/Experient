@@ -107,7 +107,8 @@ async def _llm_raw(prompt: str, max_tokens: int = 2500) -> str:
 
 
 async def _fetch_untagged_responses(
-    survey_id: str, org_id: str, limit: int, conn, include_retriable: bool = False,
+    survey_id: str, org_id: str, limit: int, conn,
+    include_retriable: bool = False, has_centroids: bool = False,
 ) -> list[dict]:
     """Untagged = ``ai_enriched_at IS NULL``. Oldest first, so a persistent backlog
     (or a response whose scoring previously failed) surfaces before brand-new ones.
@@ -136,14 +137,23 @@ async def _fetch_untagged_responses(
     topic centroids existed (``graphs/insights.py``'s full pipeline calls
     these the same thing — see its own ``ai_enriched_at and not ai_topics``
     bootstrap-orphan check), or whose cluster fell below
-    ``min_cluster_size`` on a prior run. Gated on
-    ``EXISTS (SELECT 1 FROM survey_topic_centroids …)`` for THIS survey —
-    while centroids don't exist yet, topic assignment structurally cannot
-    happen (see the module docstring's terminal-vs-retriable note and
-    ``lib/topic_backfill.py::_has_topics_yet``), so reselecting these orphans
-    before that would just be wasted cost on every manual click with no
-    possible outcome; the existing ``bootstrap_pending`` disclosure already
-    tells the user to fix that first via Generate Report.
+    ``min_cluster_size`` on a prior run. Gated on the CALLER-supplied
+    ``has_centroids`` — while centroids don't exist yet, topic assignment
+    structurally cannot happen (see the module docstring's terminal-vs-
+    retriable note and ``lib/topic_backfill.py::_has_topics_yet``), so
+    reselecting these orphans before that would just be wasted cost on every
+    manual click with no possible outcome; the existing ``bootstrap_pending``
+    disclosure already tells the user to fix that first via Generate Report.
+    Deliberately a plain boolean, not an ``EXISTS (SELECT 1 FROM
+    survey_topic_centroids …)`` subquery inline in this WHERE clause (fixed
+    2026-07-14, self-review finding) — every caller in this module's call
+    chain already computes "does this survey have centroids yet" exactly
+    once per run via ``topic_registry.has_centroids``/``_has_topics_yet``
+    (see ``lib/topic_backfill.py::run_topic_backfill``'s ``bootstrap_pending``
+    and ``backend/src/routes/insights.ts``'s own single check) — a correlated
+    subquery here would re-evaluate the identical, unchanging answer on every
+    row scanned by this query instead of reusing that one already-known
+    value, for zero benefit.
 
     ``FOR UPDATE SKIP LOCKED`` (added 2026-07-13, independent review finding):
     the live stream consumer, the 15-min scheduler backlog sweep, and the manual
@@ -158,18 +168,12 @@ async def _fetch_untagged_responses(
     of any concurrent caller's WHERE clause anyway."""
     retriable_clause = ""
     if include_retriable:
-        retriable_clause = """
+        orphan_clause = " OR ai_topics IS NULL" if has_centroids else ""
+        retriable_clause = f"""
                  OR (
                    ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
                    AND (
-                     ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL
-                     OR (
-                       ai_topics IS NULL
-                       AND EXISTS (
-                         SELECT 1 FROM survey_topic_centroids stc
-                         WHERE stc.survey_id = responses.survey_id
-                       )
-                     )
+                     ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL{orphan_clause}
                    )
                  )"""
     async with conn.cursor() as cur:
@@ -710,6 +714,7 @@ async def tag_untagged_responses(
     org_id: str,
     max_batch: int = RESPONSE_TAGGING_SWEEP_CAP,
     include_retriable: bool = False,
+    has_centroids: bool = False,
 ) -> dict:
     """Score sentiment/emotion/effort and assign to an existing topic (if any) for
     up to ``max_batch`` untagged responses on this survey. Always queries ALL
@@ -719,11 +724,16 @@ async def tag_untagged_responses(
     ``include_retriable`` (manual Catch Up Tagging only — see
     ``_fetch_untagged_responses``'s docstring): also re-attempts responses that
     already went through this sweep but are still missing sentiment/emotion/
-    effort (i.e. were quarantined after repeatedly failing) OR are "topic
-    orphans" (fully scored, only ``ai_topics`` missing — no re-scoring, only
-    topic assignment runs for these). Defaults to False so the automatic
-    stream/scheduler sweep never retries a response quarantine exists
-    specifically to stop retrying.
+    effort (i.e. were quarantined after repeatedly failing) OR (when
+    ``has_centroids`` is also True) are "topic orphans" (fully scored, only
+    ``ai_topics`` missing — no re-scoring, only topic assignment runs for
+    these). Both default to False so the automatic stream/scheduler sweep
+    never retries a response quarantine exists specifically to stop
+    retrying. ``has_centroids`` is a plain caller-supplied boolean, not a
+    fresh DB check here — the caller (``lib/topic_backfill.py::
+    run_topic_backfill``) already computes it once per run via
+    ``_has_topics_yet``; recomputing it per call (let alone per row) would be
+    redundant.
 
     New-topic discovery: responses that don't match an existing topic are buffered
     into the same ``topic_candidates`` table ``node_cluster`` already reads from.
@@ -769,7 +779,8 @@ async def tag_untagged_responses(
 
         async with db._pool_conn().connection() as conn:
             responses = await _fetch_untagged_responses(
-                survey_id, org_id, max_batch, conn, include_retriable=include_retriable,
+                survey_id, org_id, max_batch, conn,
+                include_retriable=include_retriable, has_centroids=has_centroids,
             )
             if not responses:
                 return result

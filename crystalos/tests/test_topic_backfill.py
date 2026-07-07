@@ -164,7 +164,9 @@ class TestSuccessfulDrain:
         ):
             await run_topic_backfill("run-1", "s1", "o1")
 
-        tag_mock.assert_awaited_once_with("s1", "o1", max_batch=50, include_retriable=True)
+        tag_mock.assert_awaited_once_with(
+            "s1", "o1", max_batch=50, include_retriable=True, has_centroids=True,
+        )
 
 
 # ── _count_untagged: retriable (quarantined) responses count too ──────────────
@@ -210,13 +212,30 @@ class TestCountUntaggedIncludesRetriable:
         pool.connection = MagicMock(return_value=conn)
 
         with patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool):
-            count = await _count_untagged("s1", "o1")
+            count = await _count_untagged("s1", "o1", has_centroids=True)
 
         assert count == 7
         sql = cur.execute_calls[0][0]
         assert "ai_topics IS NULL" in sql
-        assert "EXISTS" in sql
-        assert "survey_topic_centroids" in sql
+        # Plain caller-supplied boolean, not a fresh per-row subquery (fixed
+        # 2026-07-14, self-review finding) — run_topic_backfill already knows
+        # this once per run via _has_topics_yet; re-deriving it here on every
+        # chunk's COUNT(*) scan would be redundant.
+        assert "EXISTS" not in sql
+        assert "survey_topic_centroids" not in sql
+
+    @pytest.mark.asyncio
+    async def test_count_query_omits_topic_orphan_clause_when_centroids_dont_exist(self):
+        cur = _BackfillCursor(remaining_sequence=[3])
+        conn = _BackfillConn(cur)
+        pool = MagicMock()
+        pool.connection = MagicMock(return_value=conn)
+
+        with patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool):
+            await _count_untagged("s1", "o1", has_centroids=False)
+
+        sql = cur.execute_calls[0][0]
+        assert "ai_topics" not in sql
 
 
 # ── Stall detection (safety valve) ─────────────────────────────────────────────

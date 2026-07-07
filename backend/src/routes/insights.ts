@@ -708,6 +708,20 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
       return;
     }
 
+    // Computed ONCE up front and reused below for both the untagged-count
+    // query and bootstrap_pending (fixed 2026-07-14, self-review finding) —
+    // an earlier version instead ran a correlated
+    // EXISTS (SELECT 1 FROM survey_topic_centroids …) subquery inline inside
+    // the COUNT(*) query's WHERE clause below (re-evaluating the identical
+    // answer on every response row scanned) AND a separate, second query
+    // for bootstrap_pending — same fact, checked via two different
+    // mechanisms in the same request for no benefit over asking once.
+    const { rows: centroidRows } = await query(
+      `SELECT 1 FROM survey_topic_centroids WHERE survey_id = $1 AND org_id = $2 LIMIT 1`,
+      [surveyId, req.orgId],
+    );
+    const hasCentroids = centroidRows.length > 0;
+
     // Don't charge (or start a job at all) when there's nothing to do — fixed
     // 2026-07-13, independent sales/product review finding. Without this, a
     // customer double-checking "did everything already get tagged?" pays the
@@ -715,22 +729,21 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
     //
     // "Untagged" also counts retriable QUARANTINED responses (ai_enriched_at
     // set, but ai_sentiment/ai_emotion/ai_effort_score still NULL because
-    // every automatic attempt failed) — fixed 2026-07-14 — and "topic
-    // orphans" (fully sentiment/emotion/effort-scored, only ai_topics still
-    // NULL — e.g. swept before this survey's topic centroids existed; see
-    // crystalos/lib/response_tagging.py::_fetch_untagged_responses's
-    // docstring). The orphan branch only counts when centroids already exist
-    // (EXISTS subquery) — before that, topic assignment can't run at all, so
-    // counting them would just inflate the charge for a click that can't
-    // possibly fix anything; bootstrap_pending below already tells the user
-    // to fix that first. Excludes ai_no_scorable_text (a response with no
-    // open-text answer to score, terminal by design — counting those here
-    // would re-charge for the exact same textless backlog on every click).
-    // MUST stay in exact sync with crystalos/lib/topic_backfill.py::
-    // _count_untagged, which this job's CrystalOS side uses independently —
-    // same class of bug as the 2026-07-13 bootstrap-gap incident: if the two
-    // "untagged" definitions ever disagree, one side reports complete while
-    // the other still has work.
+    // every automatic attempt failed) — fixed 2026-07-14 — and, when
+    // hasCentroids, "topic orphans" (fully sentiment/emotion/effort-scored,
+    // only ai_topics still NULL — e.g. swept before this survey's topic
+    // centroids existed; see crystalos/lib/response_tagging.py::
+    // _fetch_untagged_responses's docstring). Before centroids exist, topic
+    // assignment can't run at all, so counting orphans would just inflate
+    // the charge for a click that can't possibly fix anything;
+    // bootstrap_pending below already tells the user to fix that first.
+    // Excludes ai_no_scorable_text (a response with no open-text answer to
+    // score, terminal by design — counting those here would re-charge for
+    // the exact same textless backlog on every click). MUST stay in exact
+    // sync with crystalos/lib/topic_backfill.py::_count_untagged, which this
+    // job's CrystalOS side uses independently — same class of bug as the
+    // 2026-07-13 bootstrap-gap incident: if the two "untagged" definitions
+    // ever disagree, one side reports complete while the other still has work.
     const { rows: [{ untagged_count: untaggedCount }] } = await query(
       `SELECT COUNT(*)::int AS untagged_count FROM responses
        WHERE survey_id = $1 AND org_id = $2
@@ -740,13 +753,7 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
            ai_enriched_at IS NOT NULL AND ai_no_scorable_text = FALSE
            AND (
              ai_sentiment IS NULL OR ai_emotion IS NULL OR ai_effort_score IS NULL
-             OR (
-               ai_topics IS NULL
-               AND EXISTS (
-                 SELECT 1 FROM survey_topic_centroids stc
-                 WHERE stc.survey_id = responses.survey_id
-               )
-             )
+             ${hasCentroids ? 'OR ai_topics IS NULL' : ''}
            )
          )
        )`,
@@ -763,11 +770,7 @@ router.post('/:surveyId/topics/backfill', async (req: Request, res: Response): P
       // here BEFORE run_topic_backfill's own bootstrap_pending disclosure ever
       // runs, so the frontend reports "everything is already tagged" while
       // every response's topics are still permanently empty.
-      const { rows: centroidRows } = await query(
-        `SELECT 1 FROM survey_topic_centroids WHERE survey_id = $1 AND org_id = $2 LIMIT 1`,
-        [surveyId, req.orgId],
-      );
-      res.status(200).json({ status: 'nothing_to_backfill', bootstrap_pending: centroidRows.length === 0 });
+      res.status(200).json({ status: 'nothing_to_backfill', bootstrap_pending: !hasCentroids });
       return;
     }
 

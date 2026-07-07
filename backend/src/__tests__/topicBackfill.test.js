@@ -259,6 +259,7 @@ describe('POST /api/insights/:surveyId/topics/backfill', () => {
     dbQuery = vi.fn(async (text) => {
       if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
       if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+      if (text.includes('FROM survey_topic_centroids')) return { rows: [{ 1: 1 }] }; // centroids exist
       if (text.includes('untagged_count')) {
         capturedSql = text;
         return { rows: [{ untagged_count: 1 }] };
@@ -271,8 +272,31 @@ describe('POST /api/insights/:surveyId/topics/backfill', () => {
     expect(status).toBe(202);
     expect(body.run_id).toBe('run-1');
     expect(capturedSql).toContain('ai_topics IS NULL');
-    expect(capturedSql).toContain('EXISTS');
-    expect(capturedSql).toContain('survey_topic_centroids');
+  });
+
+  it('does not count topic orphans (or run any centroid-existence subquery) when centroids do not exist yet', async () => {
+    // Regression test (2026-07-14, self-review finding): the orphan branch
+    // must be built as a plain conditional in JS from a single up-front
+    // centroid check, not a correlated EXISTS subquery evaluated per row —
+    // confirms the query omits the orphan clause entirely (not just an
+    // always-false EXISTS) when centroids don't exist.
+    let capturedSql = null;
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM surveys')) return { rows: [SURVEY_ROW] };
+      if (text.includes("run_type = 'topic_backfill' AND status = 'running'")) return { rows: [] };
+      if (text.includes('FROM survey_topic_centroids')) return { rows: [] }; // no centroids yet
+      if (text.includes('untagged_count')) {
+        capturedSql = text;
+        return { rows: [{ untagged_count: 1 }] };
+      }
+      if (text.startsWith('INSERT INTO agent_runs')) return { rows: [{ id: 'run-1' }] };
+      return { rows: [] };
+    });
+
+    await api(buildApp(), 'POST', '/api/insights/s1/topics/backfill');
+    expect(capturedSql).not.toContain('ai_topics');
+    expect(capturedSql).not.toContain('EXISTS');
+    expect(capturedSql).not.toContain('survey_topic_centroids');
   });
 
   it('404 when survey not found', async () => {
