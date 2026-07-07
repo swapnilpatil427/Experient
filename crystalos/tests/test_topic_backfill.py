@@ -68,9 +68,9 @@ def _backfill_pool(remaining_sequence, run_status="running", has_topics=True):
     return pool, conn
 
 
-def _chunk(tagged=0, failed=0, quarantined=0, topics_assigned=0, topics_discovered=0):
+def _chunk(tagged=0, failed=0, quarantined=0, topics_assigned=0, topics_discovered=0, topics_buffered=0):
     return {
-        "tagged": tagged, "topics_assigned": topics_assigned, "topics_buffered": 0,
+        "tagged": tagged, "topics_assigned": topics_assigned, "topics_buffered": topics_buffered,
         "topics_discovered": topics_discovered, "skipped_no_survey": False, "failed": failed,
         "quarantined": quarantined,
     }
@@ -259,6 +259,64 @@ class TestStallDetection:
         assert tag_mock.await_count == _MAX_NO_PROGRESS_CHUNKS
         status_updates = [c[1] for c in conn.executed if "status=%s" in c[0]]
         assert ("failed", "run-1") in status_updates
+
+    @pytest.mark.asyncio
+    async def test_stall_caused_by_unresolvable_orphans_completes_instead_of_failing(self):
+        """Regression test (2026-07-14, customer-reported): a batch of "topic
+        orphans" that can't match any existing centroid gets buffered into
+        topic_candidates instead of assigned. If they also never cluster
+        tightly enough to cross min_cluster_size on a discovery flush, every
+        chunk re-fetches the SAME orphans (remaining never drops) and
+        re-buffers them — correctly zero chunk_activity every time (tagged=0,
+        topics_assigned=0, topics_discovered=0), which used to run out
+        _MAX_NO_PROGRESS_CHUNKS and mark the WHOLE RUN 'failed' — an alarming,
+        incorrect status for "waiting on more evidence," not "broken." Must
+        mark 'completed' instead, with topics_pending_discovery disclosing
+        what's still unresolved."""
+        remaining_sequence = [57] * (_MAX_NO_PROGRESS_CHUNKS + 2)
+        pool, conn = _backfill_pool(remaining_sequence=remaining_sequence)
+        # Every chunk: nothing tagged/assigned/discovered, but 57 candidates
+        # buffered (unassignable to any existing centroid, not yet enough
+        # evidence to discover a new one) — the exact log signature reported.
+        tag_mock = AsyncMock(return_value=_chunk(topics_buffered=57))
+
+        with (
+            patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.topic_backfill.tag_untagged_responses", tag_mock),
+            patch("crystalos.lib.topic_backfill.asyncio.sleep", AsyncMock()),
+        ):
+            await run_topic_backfill("run-1", "s1", "o1")
+
+        status_updates = [c[1] for c in conn.executed if "status=%s" in c[0]]
+        assert ("completed", "run-1") in status_updates
+        assert ("failed", "run-1") not in status_updates
+
+        complete_events = _events_of_type(conn, "backfill_complete")
+        assert len(complete_events) == 1
+        assert complete_events[0]["data"]["topics_pending_discovery"] == 57
+
+        stalled_events = _events_of_type(conn, "backfill_stalled")
+        assert stalled_events == []
+
+    @pytest.mark.asyncio
+    async def test_stall_with_zero_buffering_still_fails_exactly_as_before(self):
+        """The safety valve must still fire 'failed' for what it actually
+        exists to catch: chunks with truly zero effect of ANY kind (not even
+        buffering a topic candidate) — e.g. a real bug in the sweep itself."""
+        remaining_sequence = [100] * (_MAX_NO_PROGRESS_CHUNKS + 2)
+        pool, conn = _backfill_pool(remaining_sequence=remaining_sequence)
+        tag_mock = AsyncMock(return_value=_chunk(topics_buffered=0))
+
+        with (
+            patch("crystalos.lib.topic_backfill.db._pool_conn", return_value=pool),
+            patch("crystalos.lib.topic_backfill.tag_untagged_responses", tag_mock),
+            patch("crystalos.lib.topic_backfill.asyncio.sleep", AsyncMock()),
+        ):
+            await run_topic_backfill("run-1", "s1", "o1")
+
+        status_updates = [c[1] for c in conn.executed if "status=%s" in c[0]]
+        assert ("failed", "run-1") in status_updates
+        assert ("completed", "run-1") not in status_updates
 
     @pytest.mark.asyncio
     async def test_orphan_only_progress_is_not_a_false_stall(self):

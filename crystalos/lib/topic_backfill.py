@@ -204,11 +204,35 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
     Stops when: the backlog is empty (success — marks the row 'completed'),
     the run is cancelled/failed out-of-band (returns without touching the
     row further — whatever set that status already did), or
-    ``_MAX_NO_PROGRESS_CHUNKS`` consecutive chunks do zero net work (marks
-    'failed' — should be very rare given ``tag_untagged_responses``'s own
-    quarantine circuit breaker, but a long-running background loop needs its
-    own independent stop condition too, so a future bug can never make this
-    specific loop spin forever).
+    ``_MAX_NO_PROGRESS_CHUNKS`` consecutive chunks do zero net work — marks
+    'failed' UNLESS this run buffered at least one topic candidate along the
+    way (see "Evidence-collection stall" below), should be very rare given
+    ``tag_untagged_responses``'s own quarantine circuit breaker, but a
+    long-running background loop needs its own independent stop condition
+    too, so a future bug can never make this specific loop spin forever.
+
+    Evidence-collection stall is NOT a failure (fixed 2026-07-14, customer-
+    reported): a "topic orphan" batch that can't match any existing centroid
+    gets buffered into ``topic_candidates`` instead (see
+    ``lib/response_tagging.py::_process_batch``'s topic-assignment section).
+    If those responses also never cluster tightly enough to cross
+    ``min_cluster_size`` on a discovery flush, every future chunk re-fetches
+    the SAME oldest orphans (``remaining`` never drops for them) and
+    re-buffers them (a genuine ``ai_topics IS NULL``-until-more-evidence
+    state, not a bug) — correctly zero ``chunk_activity`` every single time,
+    which used to run out ``_MAX_NO_PROGRESS_CHUNKS`` and mark the WHOLE RUN
+    'failed', an alarming and misleading status for something that isn't
+    actually broken (these responses are legitimately waiting on either
+    more similar live traffic or a future full-pipeline run, exactly the
+    same as they'd wait under the automatic sweep with no backfill job
+    running at all). ``buffered_total`` (mirrors ``quarantined_total``'s
+    existing accumulation pattern) tracks whether ANY chunk in this run ever
+    buffered a candidate; if so, the stall is reclassified 'completed' with
+    a ``topics_pending_discovery`` count in the completion event instead of
+    'failed' — the safety valve still fires 'failed' exactly as before for
+    the case that actually matters (chunks producing literally zero effect
+    of ANY kind — tagged, quarantined, assigned, discovered, OR buffered —
+    which is the real bug signature this valve exists to catch).
 
     Stall detection uses PER-CHUNK activity (``tagged + quarantined > 0`` this
     chunk — i.e. did the backlog actually shrink, deliberately excluding
@@ -271,6 +295,7 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
 
     processed = 0
     quarantined_total = 0
+    buffered_total = 0
     no_progress_streak = 0
     try:
         while True:
@@ -287,6 +312,15 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
 
             processed          += chunk_result["tagged"]
             quarantined_total  += chunk_result.get("quarantined", 0)
+            # Tracked (fixed 2026-07-14) but deliberately NOT part of
+            # chunk_activity below — buffering the SAME still-unassignable
+            # orphans every chunk (ai_topics stays NULL, so they're
+            # re-fetched every time) is genuine ongoing work, but treating it
+            # as "activity" would reset no_progress_streak forever and the
+            # loop would never terminate. Used only at the stall decision
+            # point further down, to tell "evidence-collection wait state"
+            # apart from "truly nothing happened."
+            buffered_total     += chunk_result.get("topics_buffered", 0)
             # Activity = backlog actually shrank this chunk (tagged OR
             # quarantined — both set ai_enriched_at). Deliberately excludes
             # `failed`: a failed-but-not-yet-quarantined response is still
@@ -334,6 +368,28 @@ async def run_topic_backfill(run_id: str, survey_id: str, org_id: str) -> None:
             if chunk_activity == 0:
                 no_progress_streak += 1
                 if no_progress_streak >= _MAX_NO_PROGRESS_CHUNKS:
+                    if buffered_total > 0:
+                        # Evidence-collection wait state, not a bug (fixed
+                        # 2026-07-14, customer-reported) — every remaining
+                        # response is sitting in topic_candidates awaiting
+                        # either more similar live traffic or a future full
+                        # bootstrap run to actually cluster; this job cannot
+                        # force that to happen sooner, and there is nothing
+                        # further for it to safely retry. Marking 'completed'
+                        # (with an honest count of what's still pending)
+                        # instead of 'failed' — the underlying data is
+                        # identically unresolved either way, but 'failed' is
+                        # an alarming, incorrect signal for "waiting on more
+                        # data," not "something is broken."
+                        logger.info("topic_backfill_evidence_collection_stall",
+                                     run_id=run_id, survey_id=survey_id, remaining=remaining)
+                        await _mark_run(run_id, "completed")
+                        await _emit_event(run_id, "backfill_complete", {
+                            "total_untagged": total_at_start, "processed": processed,
+                            "quarantined": quarantined_total, "bootstrap_pending": bootstrap_pending,
+                            "topics_pending_discovery": remaining,
+                        })
+                        return
                     logger.error("topic_backfill_no_progress_stopping",
                                  run_id=run_id, survey_id=survey_id, remaining=remaining)
                     await _mark_run(run_id, "failed")
