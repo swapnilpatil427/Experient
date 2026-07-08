@@ -18,6 +18,7 @@ from crystalos.lib.openrouter import (
     OpenRouterError,
     _retry_wait,
     _retry_loop,
+    _raw_call,
     _call_with_backoff,
     _MAX_HTTP_ATTEMPTS,
     _MAX_RETRY_AFTER,
@@ -79,6 +80,102 @@ class TestRetryWait:
         assert _retry_wait(err, attempt=1) == 2.0
         assert _retry_wait(err, attempt=2) == 4.0
         assert _retry_wait(err, attempt=3) == 8.0
+
+
+# ── _raw_call ─────────────────────────────────────────────────────────────────
+
+def _mock_http_response(json_body: dict, status_code: int = 200):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.is_success = 200 <= status_code < 300
+    resp.headers = {}
+    resp.json.return_value = json_body
+    resp.text = str(json_body)
+    return resp
+
+
+class TestRawCallContentExtraction:
+    """Regression tests (2026-07-04): dict.get(key, default) only applies
+    `default` when the key is ABSENT, not when it's present with an explicit
+    null. Real upstream responses can set "content": null (e.g. a tool-call-
+    only response) or return an empty "choices" list (certain content-filtered
+    responses) — either one used to flow None/raise an IndexError all the way
+    into _strip_markdown_fences, crashing deep inside skill execution with
+    "expected string or bytes-like object, got 'NoneType'" (confirmed via a
+    real production log, for two different skills sharing this call path)."""
+
+    @pytest.mark.asyncio
+    async def test_normal_response_returns_content(self, model_cfg):
+        resp = _mock_http_response({
+            "choices": [{"message": {"content": '{"ok": true}'}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+        })
+        with (
+            patch("crystalos.lib.openrouter._API_KEY", "test-key"),
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = resp
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            content, usage = await _raw_call([], model_cfg)
+        assert content == '{"ok": true}'
+        assert usage == {"prompt_tokens": 5, "completion_tokens": 3}
+
+    @pytest.mark.asyncio
+    async def test_explicit_null_content_does_not_crash(self, model_cfg):
+        resp = _mock_http_response({
+            "choices": [{"message": {"content": None}}],
+            "usage": {},
+        })
+        with (
+            patch("crystalos.lib.openrouter._API_KEY", "test-key"),
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = resp
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            content, usage = await _raw_call([], model_cfg)
+        assert content == ""
+
+    @pytest.mark.asyncio
+    async def test_null_message_does_not_crash(self, model_cfg):
+        resp = _mock_http_response({"choices": [{"message": None}], "usage": None})
+        with (
+            patch("crystalos.lib.openrouter._API_KEY", "test-key"),
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = resp
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            content, usage = await _raw_call([], model_cfg)
+        assert content == ""
+        assert usage == {}
+
+    @pytest.mark.asyncio
+    async def test_empty_choices_list_does_not_raise_indexerror(self, model_cfg):
+        resp = _mock_http_response({"choices": [], "usage": {}})
+        with (
+            patch("crystalos.lib.openrouter._API_KEY", "test-key"),
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = resp
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            content, usage = await _raw_call([], model_cfg)
+        assert content == ""
+
+    @pytest.mark.asyncio
+    async def test_missing_choices_key_still_defaults_cleanly(self, model_cfg):
+        resp = _mock_http_response({"usage": {}})
+        with (
+            patch("crystalos.lib.openrouter._API_KEY", "test-key"),
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = resp
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            content, usage = await _raw_call([], model_cfg)
+        assert content == ""
 
 
 # ── _retry_loop ───────────────────────────────────────────────────────────────

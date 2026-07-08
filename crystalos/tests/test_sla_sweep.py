@@ -331,3 +331,225 @@ class TestCxSlaBreachSweep:
         with patch("crystalos.scheduler._pool_conn", return_value=pool), \
              patch("httpx.AsyncClient", return_value=mock_http_client):
             await _cx_sla_breach_sweep()  # must not raise
+
+
+# ── Decoupled cadence (2026-07-04) ────────────────────────────────────────────
+#
+# Fixed: zombie sweep and this CX SLA-breach sweep used to be gated inside
+# run_scheduler_once (checked once per SCHEDULER_POLL_SEC tick). Invisible in
+# dev/staging (POLL_SEC=300s, <= both jobs' 5-min interval), but in prod
+# (POLL_SEC=3600s) it meant a breached customer support case could sit
+# unescalated for up to ~55 extra minutes past its documented 5-minute window.
+# Both now run on their own independent asyncio loops, started from
+# run_scheduler() and never gated by run_scheduler_once/POLL_SEC.
+
+class _StopLoop(Exception):
+    """Sentinel used to break out of an intentionally-infinite `while True` loop
+    after N iterations, by raising it from a mocked asyncio.sleep."""
+
+
+class TestRunScheduilerOnceNoLongerGatesFastJobs:
+    @pytest.mark.asyncio
+    async def test_run_scheduler_once_never_calls_zombie_sweep_or_cx_sla_breach(self):
+        """These two jobs must be entirely absent from run_scheduler_once's body
+        now — they run on their own independent-cadence loops instead."""
+        from crystalos import scheduler as sched
+
+        with (
+            patch("crystalos.scheduler._recover_stale_runs", new=AsyncMock()),
+            patch("crystalos.scheduler._auto_close_by_date", new=AsyncMock()),
+            patch("crystalos.scheduler._auto_close_by_response_count", new=AsyncMock()),
+            patch("crystalos.scheduler._get_surveys_due", new=AsyncMock(return_value=[])),
+            patch("crystalos.scheduler.sweep_zombie_runs", new=AsyncMock()) as zombie_mock,
+            patch("crystalos.scheduler._cx_sla_breach_sweep", new=AsyncMock()) as cx_mock,
+            # Every other interval-gated job would also fire on a cold `now - 0.0`
+            # comparison — no-op them so this test only asserts on the two jobs
+            # under test.
+            patch("crystalos.scheduler.run_org_aggregation", new=AsyncMock()),
+            patch("crystalos.scheduler._check_sla_breaches", new=AsyncMock()),
+            patch("crystalos.scheduler._aggregate_skill_quality", new=AsyncMock()),
+            patch("crystalos.scheduler._flag_low_quality_skills", new=AsyncMock()),
+            patch("crystalos.scheduler._rollup_feedback_hour", new=AsyncMock()),
+            patch("crystalos.scheduler._check_quality_sla_compliance", new=AsyncMock()),
+            patch("crystalos.scheduler._cluster_capability_gaps", new=AsyncMock()),
+            patch("crystalos.scheduler.run_response_tagging_backlog_sweep", new=AsyncMock()),
+        ):
+            await sched.run_scheduler_once()
+
+        zombie_mock.assert_not_called()
+        cx_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_zombie_sweep_loop_runs_immediately_and_repeats_on_its_own_interval(self):
+        from crystalos.scheduler import _run_zombie_sweep_loop, _ZOMBIE_SWEEP_INTERVAL_SEC
+
+        zombie_mock = AsyncMock()
+        sleep_mock = AsyncMock(side_effect=[None, _StopLoop()])
+
+        with (
+            patch("crystalos.scheduler.sweep_zombie_runs", zombie_mock),
+            patch("crystalos.scheduler.asyncio.sleep", sleep_mock),
+        ):
+            with pytest.raises(_StopLoop):
+                await _run_zombie_sweep_loop()
+
+        assert zombie_mock.await_count == 2  # ran before both sleeps, not gated on a slower outer tick
+        sleep_mock.assert_awaited_with(_ZOMBIE_SWEEP_INTERVAL_SEC)
+
+    @pytest.mark.asyncio
+    async def test_cx_sla_breach_loop_runs_immediately_and_repeats_on_its_own_interval(self):
+        from crystalos.scheduler import _run_cx_sla_breach_loop, _CX_SLA_BREACH_INTERVAL_SEC
+
+        cx_mock = AsyncMock()
+        sleep_mock = AsyncMock(side_effect=[None, _StopLoop()])
+
+        with (
+            patch("crystalos.scheduler._cx_sla_breach_sweep", cx_mock),
+            patch("crystalos.scheduler.asyncio.sleep", sleep_mock),
+        ):
+            with pytest.raises(_StopLoop):
+                await _run_cx_sla_breach_loop()
+
+        assert cx_mock.await_count == 2
+        sleep_mock.assert_awaited_with(_CX_SLA_BREACH_INTERVAL_SEC)
+
+    @pytest.mark.asyncio
+    async def test_zombie_sweep_loop_survives_a_failed_sweep(self):
+        """A single failed sweep must be logged and retried next interval, not
+        kill the loop — the whole point of decoupling is a background job that
+        keeps running unattended. _StopLoop must come from the sleep mock, not
+        the job mock — the loop's own `except Exception` would otherwise just
+        swallow it like any other job failure and never stop."""
+        from crystalos.scheduler import _run_zombie_sweep_loop
+
+        zombie_mock = AsyncMock(side_effect=[RuntimeError("db hiccup"), None])
+        sleep_mock = AsyncMock(side_effect=[None, _StopLoop()])
+
+        with (
+            patch("crystalos.scheduler.sweep_zombie_runs", zombie_mock),
+            patch("crystalos.scheduler.asyncio.sleep", sleep_mock),
+        ):
+            with pytest.raises(_StopLoop):
+                await _run_zombie_sweep_loop()
+
+        assert zombie_mock.await_count == 2  # failed once, ran again next interval
+        assert sleep_mock.await_count == 2
+
+
+# ── sweep_zombie_runs retry guard (fixed 2026-07-13) ──────────────────────────
+# The retry branch used to fire unconditionally for ANY zombied run_type. Once
+# 'topic_backfill' became a second real run_type in agent_runs, a zombied
+# backfill job would have been incorrectly "retried" via _trigger_generation
+# (which starts a brand-new INSIGHT run, not a backfill resume) — a different
+# job entirely. Retry must only ever apply to run_type='insight_generation'.
+
+class _ZombieCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def execute(self, sql, params=None):
+        return None
+
+    async def fetchall(self):
+        return self._rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _ZombieConn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.executed = []
+
+    def cursor(self):
+        return self._cursor
+
+    async def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _zombie_pool(rows):
+    cur = _ZombieCursor(rows)
+    conn = _ZombieConn(cur)
+    pool = MagicMock()
+    pool.connection = MagicMock(return_value=conn)
+    return pool
+
+
+class TestSweepZombieRunsRetryGuard:
+    @pytest.mark.asyncio
+    async def test_zombied_insight_generation_run_is_retried(self):
+        from crystalos.scheduler import sweep_zombie_runs
+
+        rows = [("run-1", "survey-1", "org-1", 0, "insight_generation")]
+        trigger_mock = AsyncMock()
+        with (
+            patch("crystalos.scheduler._pool_conn", return_value=_zombie_pool(rows)),
+            patch("crystalos.scheduler._trigger_generation", trigger_mock),
+        ):
+            await sweep_zombie_runs()
+
+        trigger_mock.assert_awaited_once_with("survey-1", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_zombied_topic_backfill_run_is_not_retried(self):
+        """The core fix: a zombied backfill job must NOT trigger a fresh insight
+        run via _trigger_generation — that's the wrong recovery action entirely.
+        It's simply marked failed; the scheduler's own backlog sweep and/or the
+        user clicking the button again are what actually resume the work."""
+        from crystalos.scheduler import sweep_zombie_runs
+
+        rows = [("run-2", "survey-1", "org-1", 0, "topic_backfill")]
+        trigger_mock = AsyncMock()
+        pool = _zombie_pool(rows)
+        with (
+            patch("crystalos.scheduler._pool_conn", return_value=pool),
+            patch("crystalos.scheduler._trigger_generation", trigger_mock),
+        ):
+            await sweep_zombie_runs()
+
+        trigger_mock.assert_not_called()
+        # It's still marked failed like any other zombie, regardless of type.
+        failed_calls = [c for c in pool.connection().executed if "status = 'failed'" in c[0]]
+        assert len(failed_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_count_ceiling_still_respected_for_insight_generation(self):
+        from crystalos.scheduler import sweep_zombie_runs
+
+        rows = [("run-3", "survey-1", "org-1", 2, "insight_generation")]  # already retried twice
+        trigger_mock = AsyncMock()
+        with (
+            patch("crystalos.scheduler._pool_conn", return_value=_zombie_pool(rows)),
+            patch("crystalos.scheduler._trigger_generation", trigger_mock),
+        ):
+            await sweep_zombie_runs()
+
+        trigger_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cx_sla_breach_loop_survives_a_failed_sweep(self):
+        from crystalos.scheduler import _run_cx_sla_breach_loop
+
+        cx_mock = AsyncMock(side_effect=[RuntimeError("slack down"), None])
+        sleep_mock = AsyncMock(side_effect=[None, _StopLoop()])
+
+        with (
+            patch("crystalos.scheduler._cx_sla_breach_sweep", cx_mock),
+            patch("crystalos.scheduler.asyncio.sleep", sleep_mock),
+        ):
+            with pytest.raises(_StopLoop):
+                await _run_cx_sla_breach_loop()
+
+        assert cx_mock.await_count == 2
+        assert sleep_mock.await_count == 2

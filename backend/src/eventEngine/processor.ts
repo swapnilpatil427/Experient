@@ -66,14 +66,17 @@ async function handleEvent(event: NotificationEvent): Promise<void> {
   }
 
   // The same event can drive workflows subscribed to this trigger type
-  // (e.g. alert.fired → "NPS Recovery"). Best-effort; never blocks delivery.
+  // (e.g. alert.fired → "NPS Recovery"). Enqueued onto the dedicated
+  // workflow:triggers stream (lib/workflowQueue.ts) instead of running inline —
+  // a slow/failing workflow action (e.g. a hung webhook) must not delay
+  // notification ACKs for unrelated events. Best-effort; never blocks delivery.
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    await (require('../lib/workflowEngine') as { runWorkflowsForEvent: (orgId: string, type: string, event: NotificationEvent) => Promise<void> })
-      .runWorkflowsForEvent(event.orgId, event.type, event);
+    await (require('../lib/workflowQueue') as { publishWorkflowTrigger: (e: { orgId: string; triggerType: string; event: NotificationEvent }) => Promise<string | null> })
+      .publishWorkflowTrigger({ orgId: event.orgId, triggerType: event.type, event });
   } catch (err: unknown) {
     const error = err instanceof Error ? err : new Error(String(err));
-    log('warn', { event: 'workflow_trigger_failed', type: event.type, err: error.message }, 'workflow trigger failed');
+    log('warn', { event: 'workflow_trigger_publish_failed', type: event.type, err: error.message }, 'workflow trigger publish failed');
   }
 }
 
@@ -148,6 +151,18 @@ export async function start({ consumer = `c-${process.pid}` } = {}): Promise<voi
   await ensureGroup(redis);
   log('info', { consumer }, 'Event Engine: notification processor started');
 
+  // Workflow trigger consumer — separate stream + consumer group (own blocking
+  // XREADGROUP loop), started/stopped alongside the notification processor so
+  // both the backend (ENABLE_EVENT_ENGINE=true) and the standalone Event Engine
+  // service run it identically. Never awaited inline: it has its own infinite
+  // loop and must run concurrently with the notification loop below.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const workflowQueue = require('../lib/workflowQueue') as { start: (opts?: { consumer?: string }) => Promise<void>; stop: () => void };
+  const workflowQueueStarted = workflowQueue.start({ consumer: `wq-${consumer}` }).catch((err: unknown) => {
+    const error = err instanceof Error ? err : new Error(String(err));
+    log('error', { err: error.message }, 'workflow queue processor failed to start');
+  });
+
   // Scheduled alert evaluation (every 15 min) — deterministic rule sweep.
   const alertSweep = setInterval(() => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -170,6 +185,20 @@ export async function start({ consumer = `c-${process.pid}` } = {}): Promise<voi
       });
   }, 60 * 1000);
 
+  // Tag Report Automated-mode due-tags sweep (TRACKER.md §1 Task 15) — same
+  // cadence class as alertSweep (a deterministic rule sweep, not per-minute
+  // precision-critical); jitter is applied per-tag at trigger time inside
+  // sweepDueTagReports itself, not by this interval's cadence.
+  const tagReportSweep = setInterval(() => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    (require('../lib/tagReportScheduler') as { sweepDueTagReports: () => Promise<{ found: number; enqueued: number }> }).sweepDueTagReports()
+      .then(({ found, enqueued }) => { if (found) log('info', { found, enqueued }, 'tag report automated sweep'); })
+      .catch((err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        log('warn', { err: error.message }, 'tag report automated sweep failed');
+      });
+  }, 15 * 60 * 1000);
+
   let ticks = 0;
   while (!_stop) {
     try {
@@ -184,6 +213,9 @@ export async function start({ consumer = `c-${process.pid}` } = {}): Promise<voi
   }
   clearInterval(alertSweep);
   clearInterval(cronTick);
+  clearInterval(tagReportSweep);
+  workflowQueue.stop();
+  await workflowQueueStarted;
   _running = false;
 }
 

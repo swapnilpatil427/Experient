@@ -20,6 +20,12 @@ class CitationRef(BaseModel):
     sentiment:   str  = "neutral"
     relevance:   float = 0.8
     emotion:     str  = "neutral"
+    # Additive (Tag Report, docs/tag-report/TRACKER.md §2 item 11): which survey this
+    # citation was drawn from. Optional/nullable so every existing construction site
+    # (which doesn't set it yet) keeps working unchanged — JSONB storage is untyped,
+    # so this needs no migration. Tag Report's merge_citation_manifest is the first
+    # consumer that requires it to disambiguate citations across many surveys.
+    survey_id:   str | None = None
 
 
 class TrustComponents(BaseModel):

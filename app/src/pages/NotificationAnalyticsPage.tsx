@@ -369,8 +369,8 @@ export function NotificationAnalyticsPage() {
                 label={t('notificationAnalytics.cards.sent')}
                 value={summary.sent.toLocaleString()}
                 icon="send"
-                color="#2a4bd9"
-                bg="rgba(42,75,217,0.08)"
+                color="var(--color-primary)"
+                bg="color-mix(in srgb, var(--color-primary) 8%, transparent)"
               />
               <KpiCard
                 label={t('notificationAnalytics.cards.delivered')}
@@ -383,8 +383,8 @@ export function NotificationAnalyticsPage() {
                 label={t('notificationAnalytics.cards.opened')}
                 value={pct(summary.openRate)}
                 icon="drafts"
-                color="#8329c8"
-                bg="rgba(131,41,200,0.08)"
+                color="var(--color-tertiary)"
+                bg="color-mix(in srgb, var(--color-tertiary) 8%, transparent)"
               />
               <KpiCard
                 label={t('notificationAnalytics.cards.clicked')}

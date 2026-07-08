@@ -11,7 +11,6 @@ import { ResponseDashboardPage } from './pages/ResponseDashboardPage';
 import { SurveyInsightsPage }    from './pages/SurveyInsightsPage';
 import { SampleResponsesPage }  from './pages/SampleResponsesPage';
 import { InsightsDashboardPage } from './pages/InsightsDashboardPage';
-import { TopicsAnalysisPage } from './pages/insights/TopicsAnalysisPage';
 import { InsightTrailPage } from './pages/insights/InsightTrailPage';
 import { InsightReportPage } from './pages/insights/InsightReportPage';
 import { InsightSettingsPage } from './pages/insights/InsightSettingsPage';
@@ -27,18 +26,27 @@ import { BrandSettingsPage } from './pages/BrandSettingsPage';
 import { TemplateLibraryPage } from './pages/TemplateLibraryPage';
 import { TemplateEditorPage } from './pages/TemplateEditorPage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
+import { WorkflowBuilderPage } from './pages/WorkflowBuilderPage';
+import { WorkflowCanvasPage } from './pages/WorkflowCanvasPage';
+import { WorkflowNLBuilderPage } from './pages/WorkflowNLBuilderPage';
 import { DataPage } from './pages/DataPage';
 import { PrismHomePage } from './pages/prism/PrismHomePage';
 import { PrismConnectPage } from './pages/prism/PrismConnectPage';
 import { PrismJobPage } from './pages/prism/PrismJobPage';
 import { PrismJobsPage } from './pages/prism/PrismJobsPage';
 import { ExperienceHubPage } from './pages/experience/ExperienceHubPage';
+import { TopicsAnalysisPage } from './pages/experience/TopicsAnalysisPage';
 import { SurveyIntelligencePage } from './pages/experience/SurveyIntelligencePage';
 import { SurveyReportPage } from './pages/experience/SurveyReportPage';
 import { TopicAnalysisHubPage } from './pages/experience/TopicAnalysisHubPage';
 import { TopicDeepDivePage } from './pages/experience/TopicDeepDivePage';
 import { SurveyTrendsPage } from './pages/experience/SurveyTrendsPage';
 import { OrgTrendsPage } from './pages/experience/OrgTrendsPage';
+import { TagReportsIndexPage } from './pages/experience/TagReportsIndexPage';
+import { TagReportNewPage } from './pages/experience/TagReportNewPage';
+import { TagReportPage } from './pages/experience/TagReportPage';
+import { TagReportTrailPage } from './pages/experience/TagReportTrailPage';
+import { ResponseDetailPage } from './pages/ResponseDetailPage';
 import { SignInPage } from './pages/SignInPage';
 import { SurveyFillPage } from './pages/SurveyFillPage';
 import { ErrorPage } from './pages/ErrorPage';
@@ -51,6 +59,7 @@ import { CasesPage } from './pages/CasesPage';
 import { CaseDetailPage } from './pages/CaseDetailPage';
 import { OwnershipRoutingPage } from './pages/OwnershipRoutingPage';
 import { SettingsConnectionsPage } from './pages/SettingsConnectionsPage';
+import { IntegrationsSettingsPage } from './pages/settings/IntegrationsSettingsPage';
 import { NotificationAnalyticsPage } from './pages/NotificationAnalyticsPage';
 import { BillingPage } from './pages/BillingPage';
 import { BroadcastsPage } from './pages/BroadcastsPage';
@@ -115,7 +124,6 @@ export default function App() {
             <Route path={ROUTES.SURVEY_INSIGHTS}    element={<ErrorBoundary inline><SurveyInsightsPage /></ErrorBoundary>} />
             <Route path={ROUTES.SAMPLE_RESPONSES}   element={<ErrorBoundary inline><SampleResponsesPage /></ErrorBoundary>} />
             <Route path={ROUTES.INSIGHTS}           element={<ErrorBoundary inline><InsightsDashboardPage /></ErrorBoundary>} />
-            <Route path={ROUTES.INSIGHTS_TOPICS}    element={<ErrorBoundary inline><TopicsAnalysisPage /></ErrorBoundary>} />
             <Route path={ROUTES.INSIGHT_TRAIL}      element={<ErrorBoundary inline><InsightTrailPage /></ErrorBoundary>} />
             <Route path={ROUTES.INSIGHT_REPORT}     element={<ErrorBoundary inline><InsightReportPage /></ErrorBoundary>} />
             <Route path={ROUTES.INSIGHT_SETTINGS}   element={<ErrorBoundary inline><InsightSettingsPage /></ErrorBoundary>} />
@@ -130,6 +138,9 @@ export default function App() {
             <Route path={ROUTES.TEMPLATES}          element={<ErrorBoundary inline><TemplateLibraryPage /></ErrorBoundary>} />
             <Route path={ROUTES.TEMPLATE_EDITOR}    element={<ErrorBoundary inline><TemplateEditorPage /></ErrorBoundary>} />
             <Route path={ROUTES.WORKFLOWS}          element={<ErrorBoundary inline><WorkflowsPage /></ErrorBoundary>} />
+            <Route path={ROUTES.WORKFLOW_BUILD}     element={<ErrorBoundary inline><WorkflowBuilderPage /></ErrorBoundary>} />
+            <Route path={ROUTES.WORKFLOW_CANVAS}    element={<ErrorBoundary inline><WorkflowCanvasPage /></ErrorBoundary>} />
+            <Route path={ROUTES.WORKFLOW_NL_BUILD}  element={<ErrorBoundary inline><WorkflowNLBuilderPage /></ErrorBoundary>} />
             <Route path={ROUTES.SETTINGS}           element={<ErrorBoundary inline><BrandSettingsPage /></ErrorBoundary>} />
             <Route path={ROUTES.DATA}               element={<ErrorBoundary inline><DataPage /></ErrorBoundary>} />
 
@@ -139,12 +150,21 @@ export default function App() {
             <Route path={ROUTES.PRISM_JOBS}    element={<ErrorBoundary inline><PrismJobsPage /></ErrorBoundary>} />
             <Route path={ROUTES.PRISM_JOB}     element={<ErrorBoundary inline><PrismJobPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE}              element={<ErrorBoundary inline><ExperienceHubPage /></ErrorBoundary>} />
+            <Route path={ROUTES.EXPERIENCE_TOPICS}       element={<ErrorBoundary inline><TopicsAnalysisPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_ORG_TRENDS}   element={<ErrorBoundary inline><OrgTrendsPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY}       element={<ErrorBoundary inline><SurveyIntelligencePage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY_REPORT} element={<ErrorBoundary inline><SurveyReportPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY_TOPICS} element={<ErrorBoundary inline><TopicAnalysisHubPage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY_TOPIC}  element={<ErrorBoundary inline><TopicDeepDivePage /></ErrorBoundary>} />
             <Route path={ROUTES.EXPERIENCE_SURVEY_TRENDS} element={<ErrorBoundary inline><SurveyTrendsPage /></ErrorBoundary>} />
+
+            {/* Tag Report — cross-survey AI insight rollups (nested under Experience) */}
+            <Route path={ROUTES.TAG_REPORTS_INDEX} element={<ErrorBoundary inline><TagReportsIndexPage /></ErrorBoundary>} />
+            <Route path={ROUTES.TAG_REPORT_TRAIL}  element={<ErrorBoundary inline><TagReportTrailPage /></ErrorBoundary>} />
+            <Route path={ROUTES.TAG_REPORT_NEW}    element={<ErrorBoundary inline><TagReportNewPage /></ErrorBoundary>} />
+            <Route path={ROUTES.TAG_REPORT_LATEST} element={<ErrorBoundary inline><TagReportPage /></ErrorBoundary>} />
+            <Route path={ROUTES.TAG_REPORT}        element={<ErrorBoundary inline><TagReportPage /></ErrorBoundary>} />
+            <Route path={ROUTES.RESPONSE_DETAIL}   element={<ErrorBoundary inline><ResponseDetailPage /></ErrorBoundary>} />
 
             {/* Tier 3 — Closed-Loop Action Platform */}
             <Route path={ROUTES.CONTACTS}            element={<ErrorBoundary inline><ContactsPage /></ErrorBoundary>} />
@@ -154,6 +174,7 @@ export default function App() {
             <Route path={ROUTES.CASE_DETAIL}         element={<ErrorBoundary inline><CaseDetailPage /></ErrorBoundary>} />
             <Route path={ROUTES.SETTINGS_OWNERSHIP}     element={<ErrorBoundary inline><OwnershipRoutingPage /></ErrorBoundary>} />
             <Route path={ROUTES.SETTINGS_CONNECTIONS}   element={<ErrorBoundary inline><SettingsConnectionsPage /></ErrorBoundary>} />
+            <Route path={ROUTES.SETTINGS_INTEGRATIONS}  element={<ErrorBoundary inline><IntegrationsSettingsPage /></ErrorBoundary>} />
             <Route path={ROUTES.NOTIFICATION_ANALYTICS} element={<ErrorBoundary inline><NotificationAnalyticsPage /></ErrorBoundary>} />
             <Route path={ROUTES.BILLING}                element={<ErrorBoundary inline><BillingPage /></ErrorBoundary>} />
             <Route path={ROUTES.BROADCASTS}          element={<ErrorBoundary inline><BroadcastsPage /></ErrorBoundary>} />

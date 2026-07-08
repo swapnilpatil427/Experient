@@ -67,17 +67,17 @@ export function ConversationView({ insights: _insights, scope, surveys }: ViewPr
       <div className="flex flex-wrap gap-2 mb-10">
         {isAll ? (
           <>
-            <SuggestionChip icon="compare" iconColor="#2a4bd9" label="Which survey has the highest churn risk?" />
+            <SuggestionChip icon="compare" iconColor="var(--color-primary)" label="Which survey has the highest churn risk?" />
             <SuggestionChip icon="trending_up" iconColor="#059669" label="Show me themes appearing in 3+ surveys" />
             <SuggestionChip icon="balance" iconColor="#b41340" label="Are my surveys over-sampling one segment?" />
-            <SuggestionChip icon="lightbulb" iconColor="#8329c8" label="Which action moves portfolio NPS the most?" />
+            <SuggestionChip icon="lightbulb" iconColor="var(--color-tertiary)" label="Which action moves portfolio NPS the most?" />
           </>
         ) : (
           <>
-            <SuggestionChip icon="trending_down" iconColor="#8329c8" label="Why did NPS drop on May 10?" />
+            <SuggestionChip icon="trending_down" iconColor="var(--color-tertiary)" label="Why did NPS drop on May 10?" />
             <SuggestionChip icon="warning" iconColor="#d97706" label="Which segment is at highest churn risk?" />
             <SuggestionChip icon="lightbulb" iconColor="#059669" label="What action would raise CSAT most?" />
-            <SuggestionChip icon="compare" iconColor="#2a4bd9" label="Compare this to last quarter" />
+            <SuggestionChip icon="compare" iconColor="var(--color-primary)" label="Compare this to last quarter" />
           </>
         )}
       </div>
@@ -92,7 +92,7 @@ export function ConversationView({ insights: _insights, scope, surveys }: ViewPr
         <motion.div variants={fadeUp} initial="hidden" animate="visible" className="flex justify-end">
           <div
             className="rounded-2xl rounded-br-sm px-5 py-3 max-w-[80%] text-white"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <div className="text-[10px] font-bold uppercase tracking-widest opacity-80 mb-0.5">You · 2 min ago</div>
             <div className="text-sm font-medium">Why did NPS drop on May 10?</div>
@@ -103,7 +103,7 @@ export function ConversationView({ insights: _insights, scope, surveys }: ViewPr
         <motion.div variants={fadeUp} initial="hidden" animate="visible" className="flex gap-3">
           <div
             className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <Icon name="diamond" size={18} style={{ color: 'white' }} />
           </div>
@@ -147,7 +147,7 @@ export function ConversationView({ insights: _insights, scope, surveys }: ViewPr
                       className="w-full rounded-t"
                       style={{
                         height: `${h}%`,
-                        background: i === 3 ? '#d97706' : i === 4 ? 'rgba(217,119,6,0.6)' : 'rgba(42,75,217,0.6)',
+                        background: i === 3 ? '#d97706' : i === 4 ? 'rgba(217,119,6,0.6)' : 'color-mix(in srgb, var(--color-primary) 60%, transparent)',
                       }}
                     />
                     {i === 3 && (
@@ -213,7 +213,7 @@ export function ConversationView({ insights: _insights, scope, surveys }: ViewPr
         <div className="space-y-3">
           <AutoFinding
             icon="lightbulb"
-            iconColor="#8329c8"
+            iconColor="var(--color-tertiary)"
             tag="DRIVER · 2h AGO"
             tagColor="text-tertiary"
             confidence={89}
@@ -240,7 +240,7 @@ export function ConversationView({ insights: _insights, scope, surveys }: ViewPr
           />
           <AutoFinding
             icon="insights"
-            iconColor="#2a4bd9"
+            iconColor="var(--color-primary)"
             tag="PREDICT · 8h AGO"
             tagColor="text-primary"
             confidence={81}
@@ -274,14 +274,14 @@ function Crystal() {
       style={{
         width: 220,
         height: 220,
-        filter: 'drop-shadow(0 20px 50px rgba(42,75,217,0.25))',
+        filter: 'drop-shadow(0 20px 50px color-mix(in srgb, var(--color-primary) 25%, transparent))',
       }}
     >
       <div
         className="absolute inset-0"
         style={{
           background:
-            'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)',
+            'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)',
           clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
           animation: 'spin-crystal 24s linear infinite',
           filter: 'blur(0.5px)',
@@ -292,7 +292,7 @@ function Crystal() {
         style={{
           inset: '22%',
           background:
-            'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)',
+            'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)',
           clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
           animation: 'spin-crystal 12s linear infinite reverse',
           opacity: 0.7,
@@ -302,7 +302,7 @@ function Crystal() {
         className="absolute"
         style={{
           inset: '40%',
-          background: 'radial-gradient(circle, #ffffff, #82deff)',
+          background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))',
           borderRadius: '50%',
           filter: 'blur(6px)',
           animation: 'pulse-glow 2.5s ease-in-out infinite',

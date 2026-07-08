@@ -179,7 +179,7 @@ function StatBar({ responseCount, extra }: StatBarProps) {
   if (!responseCount && !extra) return null;
   return (
     <div className="flex items-center gap-4 px-4 py-3 rounded-2xl mb-4"
-      style={{ background: 'rgba(42,75,217,0.05)', border: '1px solid rgba(42,75,217,0.1)' }}>
+      style={{ background: 'color-mix(in srgb, var(--color-primary) 5%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}>
       {responseCount > 0 && (
         <div className="flex items-center gap-2">
           <Icon name="bar_chart" size={16} style={{ color: 'var(--color-primary)' }} />
@@ -191,7 +191,7 @@ function StatBar({ responseCount, extra }: StatBarProps) {
       )}
       {extra && (
         <div className="flex items-center gap-2 ml-auto">
-          <Icon name={extra.icon} size={15} style={{ color: '#8329c8' }} />
+          <Icon name={extra.icon} size={15} style={{ color: 'var(--color-tertiary)' }} />
           <span className="text-xs font-semibold text-muted-foreground">{extra.label}</span>
         </div>
       )}
@@ -212,9 +212,15 @@ function WhatHappensBox({ heading, children }: WhatHappensBoxProps) {
 }
 
 function FooterNote({ icon, iconColor, iconBg, children }: FooterNoteProps) {
+  // Wave 19b (WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md §5 item 1): `${iconColor}22`
+  // hex-alpha-suffix only works when `iconColor` is a literal hex string — some
+  // callers now pass `var(--color-primary)`/`var(--color-tertiary)`, which would
+  // silently produce invalid CSS (`var(--color-primary)22`). `color-mix()` works
+  // identically for both hex strings and CSS var references (13% ≈ the old
+  // 0x22/0xff alpha).
   return (
     <div className="flex items-center gap-2.5 px-4 py-3 rounded-2xl"
-      style={{ background: iconBg, border: `1px solid ${iconColor}22` }}>
+      style={{ background: iconBg, border: `1px solid color-mix(in srgb, ${iconColor} 13%, transparent)` }}>
       <Icon name={icon} size={16} style={{ color: iconColor }} />
       <p className="text-xs text-muted-foreground leading-relaxed">{children}</p>
     </div>
@@ -338,15 +344,15 @@ export function PublishModal({ open, onClose, onConfirm, busy, surveyTitle, ques
               <WhatHappensBox heading={t(`${m}.bodyHeading`)}>
                 <CheckRow icon="public" color="#059669" bg="rgba(5,150,105,0.1)"
                   text={t(`${m}.row1text`)} sub={t(`${m}.row1sub`)} />
-                <CheckRow icon="bar_chart" color="#2a4bd9" bg="rgba(42,75,217,0.1)"
+                <CheckRow icon="bar_chart" color="var(--color-primary)" bg="color-mix(in srgb, var(--color-primary) 10%, transparent)"
                   text={t(`${m}.row2text`)} sub={t(`${m}.row2sub`)} />
-                <CheckRow icon="auto_awesome" color="#8329c8" bg="rgba(131,41,200,0.1)"
+                <CheckRow icon="auto_awesome" color="var(--color-tertiary)" bg="color-mix(in srgb, var(--color-tertiary) 10%, transparent)"
                   text={t(`${m}.row3text`)} sub={t(`${m}.row3sub`)} />
                 <CheckRow icon="pause_circle" color="#d97706" bg="rgba(217,119,6,0.1)"
                   text={t(`${m}.row4text`)} sub={t(`${m}.row4sub`)} />
               </WhatHappensBox>
               <div className="rounded-2xl p-4"
-                style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.12)' }}>
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)' }}>
                 <p className="text-[10px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--color-primary)' }}>
                   {t(`${m}.channelsHeading`)}
                 </p>
@@ -357,7 +363,7 @@ export function PublishModal({ open, onClose, onConfirm, busy, surveyTitle, ques
                     { icon: 'mail',      label: t(`${m}.channel3Label`), sub: t(`${m}.channel3Sub`) },
                   ].map(({ icon, label, sub }) => (
                     <div key={label} className="flex flex-col items-center text-center gap-1.5 p-2.5 rounded-xl"
-                      style={{ background: 'rgba(42,75,217,0.06)' }}>
+                      style={{ background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)' }}>
                       <Icon name={icon} size={18} style={{ color: 'var(--color-primary)' }} />
                       <span className="text-xs font-bold text-foreground">{label}</span>
                       <span className="text-[10px] text-muted-foreground">{sub}</span>
@@ -448,8 +454,8 @@ export function PublishModal({ open, onClose, onConfirm, busy, surveyTitle, ques
 
         {tab === 'preview' && (
           <div className="px-7 pb-5">
-            <FooterNote icon="auto_awesome" iconColor="#8329c8" iconBg="rgba(131,41,200,0.05)">
-              <strong style={{ color: '#8329c8' }}>{t(`${m}.footerBold`)}</strong>{' '}{t(`${m}.footerNote`)}
+            <FooterNote icon="auto_awesome" iconColor="var(--color-tertiary)" iconBg="color-mix(in srgb, var(--color-tertiary) 5%, transparent)">
+              <strong style={{ color: 'var(--color-tertiary)' }}>{t(`${m}.footerBold`)}</strong>{' '}{t(`${m}.footerNote`)}
             </FooterNote>
           </div>
         )}
@@ -544,7 +550,7 @@ export function PublishSuccessModal({ open, onClose, shareUrl, onViewSurvey, onG
                 style={{
                   background: copied ? '#059669' : 'var(--color-primary)',
                   color: 'white',
-                  boxShadow: copied ? '0 4px 16px rgba(5,150,105,0.3)' : '0 4px 16px rgba(42,75,217,0.3)',
+                  boxShadow: copied ? '0 4px 16px rgba(5,150,105,0.3)' : '0 4px 16px color-mix(in srgb, var(--color-primary) 30%, transparent)',
                 }}
               >
                 <Icon name={copied ? 'check' : 'content_copy'} size={14} />
@@ -560,7 +566,7 @@ export function PublishSuccessModal({ open, onClose, shareUrl, onViewSurvey, onG
               { icon: 'share',     label: t(`${m}.channel3Label`), hint: t(`${m}.channel3Hint`) },
             ].map(({ icon, label, hint }) => (
               <div key={label} className="flex flex-col items-center text-center gap-1.5 p-3 rounded-xl"
-                style={{ background: 'rgba(42,75,217,0.05)', border: '1px solid rgba(42,75,217,0.1)' }}>
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 5%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}>
                 <Icon name={icon} size={18} style={{ color: 'var(--color-primary)' }} />
                 <span className="text-xs font-bold text-foreground">{label}</span>
                 <span className="text-[10px] text-muted-foreground">{hint}</span>
@@ -626,9 +632,9 @@ export function PauseModal({ open, onClose, onConfirm, busy, surveyTitle, respon
               text={t(`${m}.row1text`)} sub={t(`${m}.row1sub`)} />
             <CheckRow icon="shield" color="#059669" bg="rgba(5,150,105,0.1)"
               text={t(`${m}.row2text`)} sub={t(`${m}.row2sub`)} />
-            <CheckRow icon="insights" color="#8329c8" bg="rgba(131,41,200,0.1)"
+            <CheckRow icon="insights" color="var(--color-tertiary)" bg="color-mix(in srgb, var(--color-tertiary) 10%, transparent)"
               text={t(`${m}.row3text`)} sub={t(`${m}.row3sub`)} />
-            <CheckRow icon="play_circle" color="#2a4bd9" bg="rgba(42,75,217,0.1)"
+            <CheckRow icon="play_circle" color="var(--color-primary)" bg="color-mix(in srgb, var(--color-primary) 10%, transparent)"
               text={t(`${m}.row4text`)} sub={t(`${m}.row4sub`)} />
           </WhatHappensBox>
 
@@ -668,9 +674,9 @@ export function ResumeModal({ open, onClose, onConfirm, busy, surveyTitle, respo
           <DialogHeader className="mb-5">
             <div className="flex items-start gap-4">
               <ModalIcon
-                gradient="linear-gradient(135deg, #2a4bd9, #8329c8)"
+                gradient="linear-gradient(135deg, var(--color-primary), var(--color-tertiary))"
                 icon="play_circle"
-                shadow="0 8px 24px rgba(42,75,217,0.3)"
+                shadow="0 8px 24px color-mix(in srgb, var(--color-primary) 30%, transparent)"
               />
               <div>
                 <DialogTitle className="text-xl font-extrabold font-headline text-foreground">
@@ -688,16 +694,16 @@ export function ResumeModal({ open, onClose, onConfirm, busy, surveyTitle, respo
           <WhatHappensBox heading={t(`${m}.bodyHeading`)}>
             <CheckRow icon="public" color="#059669" bg="rgba(5,150,105,0.1)"
               text={t(`${m}.row1text`)} sub={t(`${m}.row1sub`)} />
-            <CheckRow icon="add_circle" color="#2a4bd9" bg="rgba(42,75,217,0.1)"
+            <CheckRow icon="add_circle" color="var(--color-primary)" bg="color-mix(in srgb, var(--color-primary) 10%, transparent)"
               text={t(`${m}.row2text`)} sub={t(`${m}.row2sub`)} />
-            <CheckRow icon="auto_awesome" color="#8329c8" bg="rgba(131,41,200,0.1)"
+            <CheckRow icon="auto_awesome" color="var(--color-tertiary)" bg="color-mix(in srgb, var(--color-tertiary) 10%, transparent)"
               text={t(`${m}.row3text`)} sub={t(`${m}.row3sub`)} />
             <CheckRow icon="notifications" color="#d97706" bg="rgba(217,119,6,0.1)"
               text={t(`${m}.row4text`)} sub={t(`${m}.row4sub`)} />
           </WhatHappensBox>
 
-          <FooterNote icon="bolt" iconColor="#2a4bd9" iconBg="rgba(42,75,217,0.05)">
-            <strong style={{ color: '#2a4bd9' }}>{t(`${m}.footerBold`)}</strong>{' '}{t(`${m}.footerNote`)}
+          <FooterNote icon="bolt" iconColor="var(--color-primary)" iconBg="color-mix(in srgb, var(--color-primary) 5%, transparent)">
+            <strong style={{ color: 'var(--color-primary)' }}>{t(`${m}.footerBold`)}</strong>{' '}{t(`${m}.footerNote`)}
           </FooterNote>
         </div>
 
@@ -709,8 +715,8 @@ export function ResumeModal({ open, onClose, onConfirm, busy, surveyTitle, respo
             busyLabel={t(`${m}.confirmingButton`)}
             icon="play_arrow"
             label={t(`${m}.confirmButton`)}
-            gradient="linear-gradient(135deg, #2a4bd9, #8329c8)"
-            shadow="0 8px 24px rgba(42,75,217,0.3)"
+            gradient="linear-gradient(135deg, var(--color-primary), var(--color-tertiary))"
+            shadow="0 8px 24px color-mix(in srgb, var(--color-primary) 30%, transparent)"
           />
         </DialogFooter>
       </DialogContent>
@@ -757,14 +763,14 @@ export function CloseModal({ open, onClose, onConfirm, busy, surveyTitle, respon
               text={t(`${m}.row1text`)} sub={t(`${m}.row1sub`)} />
             <CheckRow icon="shield" color="#059669" bg="rgba(5,150,105,0.1)"
               text={t(`${m}.row2text`)} sub={t(`${m}.row2sub`)} />
-            <CheckRow icon="lock_open" color="#2a4bd9" bg="rgba(42,75,217,0.1)"
+            <CheckRow icon="lock_open" color="var(--color-primary)" bg="color-mix(in srgb, var(--color-primary) 10%, transparent)"
               text={t(`${m}.row3text`)} sub={t(`${m}.row3sub`)} />
-            <CheckRow icon="compare_arrows" color="#8329c8" bg="rgba(131,41,200,0.1)"
+            <CheckRow icon="compare_arrows" color="var(--color-tertiary)" bg="color-mix(in srgb, var(--color-tertiary) 10%, transparent)"
               text={t(`${m}.row4text`)} sub={t(`${m}.row4sub`)} />
           </WhatHappensBox>
 
           <div className="rounded-2xl p-4 mb-4"
-            style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.1)' }}>
+            style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}>
             <p className="text-[10px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--color-primary)' }}>
               {t(`${m}.afterHeading`)}
             </p>
@@ -775,7 +781,7 @@ export function CloseModal({ open, onClose, onConfirm, busy, surveyTitle, respon
                 { icon: 'lock_open', label: t(`${m}.after3Label`), sub: t(`${m}.after3Sub`) },
               ].map(({ icon, label, sub }) => (
                 <div key={label} className="flex flex-col items-center text-center gap-1 p-2.5 rounded-xl"
-                  style={{ background: 'rgba(42,75,217,0.06)' }}>
+                  style={{ background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)' }}>
                   <Icon name={icon} size={16} style={{ color: 'var(--color-primary)' }} />
                   <span className="text-xs font-bold text-foreground">{label}</span>
                   <span className="text-[10px] text-muted-foreground">{sub}</span>
@@ -820,9 +826,9 @@ export function ReopenModal({ open, onClose, onConfirm, busy, surveyTitle, respo
           <DialogHeader className="mb-5">
             <div className="flex items-start gap-4">
               <ModalIcon
-                gradient="linear-gradient(135deg, #2a4bd9, #8329c8)"
+                gradient="linear-gradient(135deg, var(--color-primary), var(--color-tertiary))"
                 icon="lock_open"
-                shadow="0 8px 24px rgba(42,75,217,0.3)"
+                shadow="0 8px 24px color-mix(in srgb, var(--color-primary) 30%, transparent)"
               />
               <div>
                 <DialogTitle className="text-xl font-extrabold font-headline text-foreground">
@@ -843,16 +849,16 @@ export function ReopenModal({ open, onClose, onConfirm, busy, surveyTitle, respo
           <WhatHappensBox heading={t(`${m}.bodyHeading`)}>
             <CheckRow icon="public" color="#059669" bg="rgba(5,150,105,0.1)"
               text={t(`${m}.row1text`)} sub={t(`${m}.row1sub`)} />
-            <CheckRow icon="add_circle" color="#2a4bd9" bg="rgba(42,75,217,0.1)"
+            <CheckRow icon="add_circle" color="var(--color-primary)" bg="color-mix(in srgb, var(--color-primary) 10%, transparent)"
               text={t(`${m}.row2text`)} sub={t(`${m}.row2sub`)} />
-            <CheckRow icon="auto_awesome" color="#8329c8" bg="rgba(131,41,200,0.1)"
+            <CheckRow icon="auto_awesome" color="var(--color-tertiary)" bg="color-mix(in srgb, var(--color-tertiary) 10%, transparent)"
               text={t(`${m}.row3text`)} sub={t(`${m}.row3sub`)} />
             <CheckRow icon="pause_circle" color="#d97706" bg="rgba(217,119,6,0.1)"
               text={t(`${m}.row4text`)} sub={t(`${m}.row4sub`)} />
           </WhatHappensBox>
 
-          <FooterNote icon="bolt" iconColor="#2a4bd9" iconBg="rgba(42,75,217,0.05)">
-            <strong style={{ color: '#2a4bd9' }}>{t(`${m}.footerBold`)}</strong>{' '}{t(`${m}.footerNote`)}
+          <FooterNote icon="bolt" iconColor="var(--color-primary)" iconBg="color-mix(in srgb, var(--color-primary) 5%, transparent)">
+            <strong style={{ color: 'var(--color-primary)' }}>{t(`${m}.footerBold`)}</strong>{' '}{t(`${m}.footerNote`)}
           </FooterNote>
         </div>
 
@@ -864,8 +870,8 @@ export function ReopenModal({ open, onClose, onConfirm, busy, surveyTitle, respo
             busyLabel={t(`${m}.confirmingButton`)}
             icon="lock_open"
             label={t(`${m}.confirmButton`)}
-            gradient="linear-gradient(135deg, #2a4bd9, #8329c8)"
-            shadow="0 8px 24px rgba(42,75,217,0.3)"
+            gradient="linear-gradient(135deg, var(--color-primary), var(--color-tertiary))"
+            shadow="0 8px 24px color-mix(in srgb, var(--color-primary) 30%, transparent)"
           />
         </DialogFooter>
       </DialogContent>

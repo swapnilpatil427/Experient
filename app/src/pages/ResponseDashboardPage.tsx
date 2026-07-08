@@ -95,12 +95,12 @@ export function ResponseDashboardPage() {
   const npsTotal = dist.promoters + dist.passives + dist.detractors;
   const sentimentBars = npsTotal > 0
     ? [
-        { label: t('responseDashboard.sentimentLabels.positive'), pct: Math.round((dist.promoters  / npsTotal) * 100), color: 'linear-gradient(to top, #2a4bd9, #879aff)' },
+        { label: t('responseDashboard.sentimentLabels.positive'), pct: Math.round((dist.promoters  / npsTotal) * 100), color: 'linear-gradient(to top, var(--color-primary), var(--color-primary-container))' },
         { label: t('responseDashboard.sentimentLabels.neutral'),  pct: Math.round((dist.passives   / npsTotal) * 100), color: 'linear-gradient(to top, #94a3b8, #cbd5e1)' },
         { label: t('responseDashboard.sentimentLabels.negative'), pct: Math.round((dist.detractors / npsTotal) * 100), color: 'linear-gradient(to top, #b41340, #f74b6d)' },
       ]
     : [
-        { label: t('responseDashboard.sentimentLabels.positive'), pct: 0, color: 'linear-gradient(to top, #2a4bd9, #879aff)' },
+        { label: t('responseDashboard.sentimentLabels.positive'), pct: 0, color: 'linear-gradient(to top, var(--color-primary), var(--color-primary-container))' },
         { label: t('responseDashboard.sentimentLabels.neutral'),  pct: 0, color: 'linear-gradient(to top, #94a3b8, #cbd5e1)' },
         { label: t('responseDashboard.sentimentLabels.negative'), pct: 0, color: 'linear-gradient(to top, #b41340, #f74b6d)' },
       ];
@@ -164,7 +164,7 @@ export function ResponseDashboardPage() {
             <p className="font-medium text-sm text-on-surface-variant">{t('responseDashboard.completionRate')}</p>
             <div className="mt-4 space-y-3">
               {[
-                { label: t('responseDashboard.promoters'),  count: dist.promoters,  color: '#2a4bd9' },
+                { label: t('responseDashboard.promoters'),  count: dist.promoters,  color: 'var(--color-primary)' },
                 { label: t('responseDashboard.passives'),   count: dist.passives,   color: '#94a3b8' },
                 { label: t('responseDashboard.detractors'), count: dist.detractors, color: '#b41340' },
               ].map((row) => {
@@ -193,7 +193,7 @@ export function ResponseDashboardPage() {
             <div className="relative inline-block">
               <svg className="w-24 h-24 transform -rotate-90" viewBox="0 0 96 96">
                 <circle cx="48" cy="48" r="40" fill="transparent" stroke="rgba(99,102,241,0.3)" strokeWidth="8" />
-                <circle cx="48" cy="48" r="40" fill="transparent" stroke="#82deff" strokeWidth="8"
+                <circle cx="48" cy="48" r="40" fill="transparent" stroke="var(--color-secondary-container)" strokeWidth="8"
                   strokeDasharray="251.2" strokeDashoffset={npsDashOffset(avgNps)} strokeLinecap="round" />
               </svg>
               <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-3xl font-black font-headline">
@@ -213,7 +213,7 @@ export function ResponseDashboardPage() {
               </button>
             )}
           </div>
-          <div className="absolute top-0 right-0 w-32 h-32 rounded-full" style={{ background: 'rgba(42,75,217,0.2)', filter: 'blur(60px)' }} />
+          <div className="absolute top-0 right-0 w-32 h-32 rounded-full" style={{ background: 'color-mix(in srgb, var(--color-primary) 20%, transparent)', filter: 'blur(60px)' }} />
         </Card>
       </section>
 
@@ -237,8 +237,8 @@ export function ResponseDashboardPage() {
             <AreaChart data={series.map(d => ({ ...d, label: formatDay(d.day) }))} margin={{ top: 5, right: 16, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="responseGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#2a4bd9" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="#2a4bd9" stopOpacity={0} />
+                  <stop offset="5%"  stopColor="var(--color-primary)" stopOpacity={0.25} />
+                  <stop offset="95%" stopColor="var(--color-primary)" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
@@ -248,7 +248,7 @@ export function ResponseDashboardPage() {
                 contentStyle={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: 12 }}
                 formatter={(v) => [v, 'Responses']}
               />
-              <Area type="monotone" dataKey="count" stroke="#2a4bd9" strokeWidth={2} fill="url(#responseGrad)" dot={false} />
+              <Area type="monotone" dataKey="count" stroke="var(--color-primary)" strokeWidth={2} fill="url(#responseGrad)" dot={false} />
             </AreaChart>
           </ResponsiveContainer>
         </Card>

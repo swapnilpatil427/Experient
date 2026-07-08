@@ -56,7 +56,7 @@ class CrystalContext:
     org_id:          str
     user_id:         str
     survey_id:       str | None
-    scope:           Literal["survey", "org", "group"]
+    scope:           Literal["survey", "org", "group", "tag"]
     run_id:          str | None = None
     has_open_text:   bool = True
     tag_ids:         tuple[str, ...] | None = None

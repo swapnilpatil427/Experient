@@ -1,7 +1,7 @@
 // TopicDetailPanel — full deep-dive view for a single selected topic.
 // Layout: hero strip → 2-col analysis grid → verbatims section.
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AreaChart,
@@ -54,6 +54,38 @@ interface TopicDetailPanelProps {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+// Wave 19b (WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md §4.4): Recharts `stroke`/
+// `stopColor` props are JS/SVG props, not CSS rules — a literal
+// 'var(--color-primary)' string doesn't reliably resolve the way it does in a
+// `style` object. Resolve the brand-reactive CSS custom properties via
+// `getComputedStyle` at mount time instead (same pattern as
+// components/three/NLThinkingCrystal.tsx / HeroCanvas.tsx, deliberately
+// duplicated locally per spec guidance rather than a cross-module import).
+const DEFAULT_PRIMARY_COLOR = '#2a4bd9';
+const DEFAULT_TERTIARY_COLOR = '#8329c8';
+
+function resolveCssVarColor(varName: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  return value || fallback;
+}
+
+function useResolvedBrandColors() {
+  const [colors, setColors] = useState(() => ({
+    primary: DEFAULT_PRIMARY_COLOR,
+    tertiary: DEFAULT_TERTIARY_COLOR,
+  }));
+
+  useEffect(() => {
+    setColors({
+      primary: resolveCssVarColor('--color-primary', DEFAULT_PRIMARY_COLOR),
+      tertiary: resolveCssVarColor('--color-tertiary', DEFAULT_TERTIARY_COLOR),
+    });
+  }, []);
+
+  return colors;
+}
 
 function npsColor(score: number | null): string {
   if (score == null) return '#9ca3af';
@@ -179,7 +211,7 @@ function SubtopicRow({
       <div className="flex-1 max-w-[120px] h-1.5 rounded-full overflow-hidden bg-gray-100">
         <div
           className="h-full rounded-full"
-          style={{ width: `${pct}%`, background: '#2a4bd9' }}
+          style={{ width: `${pct}%`, background: 'var(--color-primary)' }}
         />
       </div>
       <span className="text-xs font-mono text-muted-foreground w-8 text-right">
@@ -248,8 +280,8 @@ function VerbatimCard({
                 onClick={() => onTopicClick?.(topic)}
                 className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold transition-colors hover:bg-primary/10"
                 style={{
-                  background: 'rgba(42,75,217,0.07)',
-                  color: '#2a4bd9',
+                  background: 'color-mix(in srgb, var(--color-primary) 7%, transparent)',
+                  color: 'var(--color-primary)',
                 }}
               >
                 {topic}
@@ -308,6 +340,7 @@ export function TopicDetailPanel({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [verbatimFilter, setVerbatimFilter] = useState<'all' | 'positive' | 'neutral' | 'negative'>('all');
+  const brandColors = useResolvedBrandColors();
 
   // NPS display value
   const npsDisplayVal = useMemo(() => {
@@ -359,7 +392,7 @@ export function TopicDetailPanel({
   const trendingColor =
     topic.trending === 'up' ? '#059669' :
     topic.trending === 'down' ? '#dc2626' :
-    topic.trending === 'new' ? '#2a4bd9' : '#9ca3af';
+    topic.trending === 'new' ? 'var(--color-primary)' : '#9ca3af';
 
   return (
     <motion.div
@@ -391,7 +424,7 @@ export function TopicDetailPanel({
                 {topic.theme && (
                   <span
                     className="px-2 py-0.5 rounded-full text-[11px] font-semibold"
-                    style={{ background: 'rgba(42,75,217,0.09)', color: '#2a4bd9' }}
+                    style={{ background: 'color-mix(in srgb, var(--color-primary) 9%, transparent)', color: 'var(--color-primary)' }}
                   >
                     {topic.theme}
                   </span>
@@ -500,12 +533,12 @@ export function TopicDetailPanel({
                 >
                   <defs>
                     <linearGradient id="gradVolume" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2a4bd9" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#2a4bd9" stopOpacity={0} />
+                      <stop offset="5%" stopColor={brandColors.primary} stopOpacity={0.25} />
+                      <stop offset="95%" stopColor={brandColors.primary} stopOpacity={0} />
                     </linearGradient>
                     <linearGradient id="gradNps" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#8329c8" stopOpacity={0.2} />
-                      <stop offset="95%" stopColor="#8329c8" stopOpacity={0} />
+                      <stop offset="5%" stopColor={brandColors.tertiary} stopOpacity={0.2} />
+                      <stop offset="95%" stopColor={brandColors.tertiary} stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" />
@@ -546,7 +579,7 @@ export function TopicDetailPanel({
                     yAxisId="volume"
                     type="monotone"
                     dataKey="volume"
-                    stroke="#2a4bd9"
+                    stroke={brandColors.primary}
                     strokeWidth={2}
                     fill="url(#gradVolume)"
                     name="Volume"
@@ -556,7 +589,7 @@ export function TopicDetailPanel({
                     yAxisId="nps"
                     type="monotone"
                     dataKey="avg_nps"
-                    stroke="#8329c8"
+                    stroke={brandColors.tertiary}
                     strokeWidth={1.5}
                     fill="url(#gradNps)"
                     name="Avg NPS"
@@ -595,9 +628,9 @@ export function TopicDetailPanel({
                     type="button"
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-colors hover:bg-primary/10"
                     style={{
-                      background: 'rgba(42,75,217,0.07)',
-                      color: '#2a4bd9',
-                      border: '1px solid rgba(42,75,217,0.12)',
+                      background: 'color-mix(in srgb, var(--color-primary) 7%, transparent)',
+                      color: 'var(--color-primary)',
+                      border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     }}
                     onClick={() =>
                       onAskCrystal(
@@ -609,7 +642,7 @@ export function TopicDetailPanel({
                     {co.name}
                     <span
                       className="text-[9px] px-1 py-0.5 rounded-full font-bold"
-                      style={{ background: 'rgba(42,75,217,0.12)', color: '#2a4bd9' }}
+                      style={{ background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)', color: 'var(--color-primary)' }}
                     >
                       {co.co_count}
                     </span>
@@ -727,7 +760,7 @@ export function TopicDetailPanel({
                   style={
                     verbatimFilter === key
                       ? {
-                          background: key === 'positive' ? '#059669' : key === 'negative' ? '#dc2626' : '#2a4bd9',
+                          background: key === 'positive' ? '#059669' : key === 'negative' ? '#dc2626' : 'var(--color-primary)',
                           color: '#fff',
                         }
                       : { color: 'var(--color-on-surface-variant, #6b7280)' }

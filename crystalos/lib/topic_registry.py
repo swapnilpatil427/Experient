@@ -17,11 +17,18 @@ from typing import Any
 
 import structlog
 
+from crystalos.lib.constants import TOPIC_ASSIGNMENT_THRESHOLD
+
 logger = structlog.get_logger()
 
 # Cosine similarity threshold: new responses with sim >= this are assigned to
 # the nearest existing topic. Responses below go into the candidate buffer.
-ASSIGNMENT_THRESHOLD = 0.72
+# Re-exported from lib.constants (fixed 2026-07-04) — this used to be a second,
+# independently-maintained literal that only matched constants.py's copy by
+# coincidence; changing one silently stopped applying to nearest-centroid
+# assignment. Keep the name ASSIGNMENT_THRESHOLD for backward compatibility
+# (existing imports/call sites use it as assign_batch_to_nearest's default param).
+ASSIGNMENT_THRESHOLD = TOPIC_ASSIGNMENT_THRESHOLD
 
 
 # ── Vector helpers ────────────────────────────────────────────────────────────
@@ -106,6 +113,19 @@ async def assign_batch_to_nearest(
     Returns:
         assignments:    {rid: topic_name} for responses above threshold
         unassigned_rids: rids that fell below threshold → go to candidate buffer
+
+    Fault isolation (fixed 2026-07-13): a single malformed embedding (wrong
+    dimension, non-numeric element, etc — far likelier to surface on an old
+    survey's deep backlog than on fresh data) used to raise straight out of
+    this function with no handling at all. Since callers run this inside a
+    single all-or-nothing transaction alongside an already-committed-looking
+    sentiment writeback, one bad row aborted the ENTIRE batch — and because
+    the caller always re-selects the oldest-untagged rows first, the exact
+    same poison row got re-fetched and re-failed forever, permanently
+    starving every response behind it (including brand-new ones). Each row's
+    similarity computation is now isolated: a bad row is logged and treated
+    as unassigned (safe — it just falls into the candidate buffer / retry
+    path) instead of taking the whole batch down with it.
     """
     if not embeddings_by_rid:
         return {}, []
@@ -116,25 +136,89 @@ async def assign_batch_to_nearest(
 
     assignments: dict[str, str] = {}
     unassigned_rids: list[str] = []
+    poisoned_count = 0
 
     for rid, embedding in embeddings_by_rid.items():
         best_topic: str | None = None
         best_sim = -1.0
-        for c in centroids:
-            c_vec = c["centroid"]
-            if c_vec is None:
-                continue
-            sim = sum(a * b for a, b in zip(embedding, c_vec))
-            if sim > best_sim:
-                best_sim = sim
-                best_topic = c["topic_name"]
+        try:
+            for c in centroids:
+                c_vec = c["centroid"]
+                if c_vec is None:
+                    continue
+                sim = sum(a * b for a, b in zip(embedding, c_vec))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_topic = c["topic_name"]
+        except (TypeError, ValueError):
+            poisoned_count += 1
+            unassigned_rids.append(rid)
+            continue
 
         if best_sim >= threshold and best_topic:
             assignments[rid] = best_topic
         else:
             unassigned_rids.append(rid)
 
+    if poisoned_count:
+        logger.warning(
+            "topic_registry_assign_skipped_malformed_embeddings",
+            survey_id=survey_id, count=poisoned_count,
+        )
+
     return assignments, unassigned_rids
+
+
+# ── Multi-topic-per-response support (added 2026-07-06) ────────────────────────
+# assign_batch_to_nearest above is deliberately key-agnostic — it does pure
+# per-key nearest-centroid math and doesn't care whether a key is a plain
+# response_id or something else. That's what lets a caller assign PER OPEN-TEXT
+# ANSWER instead of per-response (composite key: "{response_id}::{question_id}"),
+# so a response with two open-text questions about two different things can
+# genuinely match two different existing topics — previously every call site
+# deduped to one embedding per response before calling assign_batch_to_nearest,
+# so a response could only ever get one topic no matter how many open-text
+# answers it had. These two helpers do the regrouping; no change to
+# assign_batch_to_nearest's contract or callers that still pass plain
+# response_id keys (there are none left after this fix, but the function
+# itself doesn't require the composite-key convention).
+
+def group_assignments_by_response(assignments: dict[str, str]) -> dict[str, list[str]]:
+    """Regroup per-answer assignments (keyed "response_id::question_id") into
+    per-response topic name lists — deduped, first-seen order preserved (a
+    response with 3 answers all matching "Shipping Costs" gets that topic
+    once, not three times).
+    """
+    by_response: dict[str, list[str]] = {}
+    for key, topic_name in assignments.items():
+        rid = key.split("::", 1)[0]
+        names = by_response.setdefault(rid, [])
+        if topic_name not in names:
+            names.append(topic_name)
+    return by_response
+
+
+def dedupe_unassigned_to_one_per_response(
+    unassigned_keys: list[str],
+    embeddings_by_key: dict[str, list[float]],
+) -> list[tuple[str, list[float]]]:
+    """topic_candidates has UNIQUE(survey_id, response_id) — only one pending
+    "unmatched, might seed a new topic" slot can exist per response. When a
+    response has multiple unmatched answers, keep only the first encountered
+    as that response's candidate. This does not lose the response's OTHER
+    answers' topic assignments — those are handled entirely separately by
+    group_assignments_by_response above; this only caps how many of a
+    response's UNMATCHED answers get a shot at seeding a brand-new topic.
+    """
+    seen_rids: set[str] = set()
+    result: list[tuple[str, list[float]]] = []
+    for key in unassigned_keys:
+        rid = key.split("::", 1)[0]
+        if rid in seen_rids:
+            continue
+        seen_rids.add(rid)
+        result.append((rid, embeddings_by_key[key]))
+    return result
 
 
 async def update_centroids_welford_batch(
@@ -311,6 +395,46 @@ async def flush_candidates(survey_id: str, conn) -> list[dict]:
     except Exception as exc:
         logger.warning("topic_registry_flush_candidates_failed", survey_id=survey_id, error=str(exc))
         return []
+
+
+async def mark_candidates_uncategorized(survey_id: str, org_id: str, conn) -> int:
+    """Flag every response CURRENTLY buffered in ``topic_candidates`` for this
+    survey as ``ai_topics_pending`` (added 2026-07-15) — added when
+    ``run_topic_backfill`` determines this batch has been genuinely retried
+    and still can't match an existing topic or cluster into a new one (see
+    that function's "evidence-collection stall" handling). Deliberately does
+    NOT remove them from ``topic_candidates`` — they stay eligible for a
+    later real cluster once more similar responses accumulate (via either
+    live traffic or a future manual backfill click); this is purely a
+    visibility flag ("Uncategorized" on the Data page instead of a blank
+    cell) layered on top of the existing, unmodified discovery mechanism.
+
+    ``AND ai_topics IS NULL`` guards against a race where a response was
+    JUST resolved by a concurrent discovery flush between this survey's
+    candidate SELECT and this UPDATE — never downgrade an already-real topic
+    back to "pending."
+
+    Returns the number of responses newly flagged (for the ``backfill_complete``
+    event's ``topics_pending_discovery`` count and tests).
+    """
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE responses
+                   SET ai_topics_pending = TRUE
+                   WHERE org_id = %s AND ai_topics IS NULL
+                   AND id IN (SELECT response_id FROM topic_candidates WHERE survey_id = %s)
+                   RETURNING id""",
+                (org_id, survey_id),
+            )
+            rows = await cur.fetchall()
+            return len(rows)
+    except Exception as exc:
+        logger.warning(
+            "topic_registry_mark_candidates_uncategorized_failed",
+            survey_id=survey_id, error=str(exc),
+        )
+        return 0
 
 
 # ── Topic health windows ──────────────────────────────────────────────────────

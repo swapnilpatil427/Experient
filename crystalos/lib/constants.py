@@ -110,7 +110,89 @@ MANUAL_REFRESH_MAX_DAILY = 3               # max manual refreshes per survey per
 # Per-survey/per-org overrides take precedence; these are the floor.
 DEFAULT_PRIOR_CHECKPOINT_LOOKBACK:        int = int(os.getenv("DEFAULT_PRIOR_CHECKPOINT_LOOKBACK",        "5"))
 DEFAULT_PRIOR_CHECKPOINT_MAX_AGE_DAYS:    int = int(os.getenv("DEFAULT_PRIOR_CHECKPOINT_MAX_AGE_DAYS",    "90"))
-DEFAULT_STREAM_THRESHOLD:                 int = int(os.getenv("DEFAULT_STREAM_THRESHOLD",                 "10"))
+DEFAULT_STREAM_THRESHOLD:                 int = int(os.getenv("DEFAULT_STREAM_THRESHOLD",                 "100"))
+# response_tagging_batch_size (04 §14 extension, added 2026-07-04) — how many new
+# response-stream events accumulate before the streaming consumer runs a lightweight
+# sentiment/emotion/effort/topic tagging sweep (see lib/response_tagging.py). Separate
+# from DEFAULT_STREAM_THRESHOLD, which still gates full report+checkpoint generation.
+DEFAULT_RESPONSE_TAGGING_BATCH_SIZE:      int = int(os.getenv("DEFAULT_RESPONSE_TAGGING_BATCH_SIZE",      "1"))
+# Safety ceiling on how many untagged responses a single tagging sweep call processes,
+# independent of response_tagging_batch_size (which only controls trigger cadence).
+# Keeps a large backlog sweep (scheduler catch-up, or a survey that's been silent for a
+# while) from doing unbounded work in one call — mirrors INGEST_NEW_RESPONSE_ABSA_CAP.
+# Env-tiered (fixed 2026-07-13, was flat 50 — inconsistent with every sibling constant in
+# this section): larger in prod/staging so a real backlog drains in fewer scheduler ticks,
+# smaller in dev for fast iteration and to keep local LLM-call volume low.
+if _ENV == "prod":
+    _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT = "200"
+elif _ENV == "staging":
+    _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT = "100"
+elif _ENV == "dev-paid":
+    _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT = "75"
+else:                                             # dev / local / test
+    _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT = "50"
+
+RESPONSE_TAGGING_SWEEP_CAP: int = int(os.getenv("RESPONSE_TAGGING_SWEEP_CAP", _RESPONSE_TAGGING_SWEEP_CAP_DEFAULT))
+# Circuit breaker (added 2026-07-13): a response that fails tagging this many times in a
+# row gets quarantined (ai_enriched_at set with no scores) instead of being retried
+# forever. Without this, a single permanently-poisoned response — malformed answers,
+# a corrupted embedding, anything that reliably throws — would be re-selected by every
+# future sweep's oldest-first query and block every response behind it, indefinitely.
+# See lib/response_tagging.py::_record_batch_failure.
+MAX_RESPONSE_TAGGING_ATTEMPTS:            int = int(os.getenv("MAX_RESPONSE_TAGGING_ATTEMPTS",            "3"))
+# Candidate-buffer floor before a new topic gets clustered + LLM-named (was an
+# adaptive max(5, 3% of total responses) formula inline in node_cluster; simplified to
+# one flat number shared by node_cluster AND lib/response_tagging.py's lightweight
+# sweep, 2026-07-04 — clustering validity doesn't scale with survey size, so going
+# flat WRT survey size was correct. But this is still a cost/latency knob (how often
+# we pay for an LLM topic-naming call) like every sibling in the ingest section above,
+# so — fixed same day — it's env-tiered like they are, AND resolvable per survey/org
+# as a real setting (see lib/insight_settings.py::resolve_topic_discovery_candidate_
+# threshold); this constant is now only the platform-default floor of that resolution.
+if _ENV == "prod":
+    _TOPIC_DISCOVERY_CANDIDATE_DEFAULT = "30"   # matches the codebase's own n>=30 "reliable" bar
+elif _ENV == "staging":
+    _TOPIC_DISCOVERY_CANDIDATE_DEFAULT = "20"
+elif _ENV == "dev-paid":
+    _TOPIC_DISCOVERY_CANDIDATE_DEFAULT = "15"
+else:                                            # dev / local / test
+    _TOPIC_DISCOVERY_CANDIDATE_DEFAULT = "10"
+
+TOPIC_DISCOVERY_CANDIDATE_THRESHOLD:      int = int(os.getenv("TOPIC_DISCOVERY_CANDIDATE_THRESHOLD",      _TOPIC_DISCOVERY_CANDIDATE_DEFAULT))
+# Minimum size a candidate cluster must reach before it's promoted to a real,
+# permanently-stored, LLM-named topic — separate from the buffer-count floor above,
+# which only gates WHEN clustering runs, not how big the resulting cluster has to be.
+# Added 2026-07-04: a flush of 25+ candidates can fragment into several 2-item
+# clusters via cluster_texts's own min_cluster_size=2 default, and each one used to
+# get promoted regardless — below even this codebase's own "low confidence" floor
+# (n<10) elsewhere.
+#
+# Env-tiered (fixed 2026-07-07, was flat at 5 for all envs — customer-reported):
+# a survey seeded with auto-generated sample responses (agents/response_generator.py
+# explicitly prompts the LLM for "realistic, DISTINCT synthetic responses") almost
+# never produces 5+ genuinely near-duplicate embeddings within a reasonably-sized
+# buffer — incremental discovery correctly kept re-buffering real evidence
+# (leftover_rids) instead of losing it, but topics_discovered stayed at 0 sweep
+# after sweep, which looked identical to "discovery is broken" from the Data page
+# even though nothing was actually silently dropped. dev/local gets the SAME floor
+# (2) bootstrap's own exploratory first pass already uses on a survey's very first
+# run (cluster_texts's own default — see TOPIC_DISCOVERY_SIMILARITY_THRESHOLD below)
+# — validating the pipeline end-to-end matters more than protecting a live topic
+# list from noise there. prod/staging keep the original conservative n>=5 bar
+# (still above the n<10 "low confidence" floor referenced above) — real customer
+# data must not get diluted by one-off "topics." Also resolvable per survey/org as
+# a real setting — see resolve_topic_discovery_min_cluster_size.
+# Applies ONLY to incremental (post-bootstrap) discovery.
+if _ENV == "prod":
+    _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT = "5"
+elif _ENV == "staging":
+    _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT = "5"
+elif _ENV == "dev-paid":
+    _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT = "3"
+else:                                            # dev / local / test
+    _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT = "2"
+
+DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE: int = int(os.getenv("DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE", _TOPIC_DISCOVERY_MIN_CLUSTER_DEFAULT))
 DEFAULT_REPORT_REGEN_THRESHOLD:           int = int(os.getenv("DEFAULT_REPORT_REGEN_THRESHOLD",           "25"))
 DEFAULT_FULL_CHECKPOINT_THRESHOLD:        int = int(os.getenv("DEFAULT_FULL_CHECKPOINT_THRESHOLD",        "200"))
 DEFAULT_MEANINGFUL_DELTA_NPS_POINTS:    float = float(os.getenv("DEFAULT_MEANINGFUL_DELTA_NPS_POINTS",    "2.0"))
@@ -158,7 +240,40 @@ INSIGHT_PROFILES: frozenset[str] = frozenset({
 })
 
 # ── Topic clustering ──────────────────────────────────────────────────────────
+# Nearest-centroid ASSIGNMENT (matching a response to an EXISTING topic) compares
+# a raw embedding against a Welford running-mean centroid averaged over many prior
+# examples — low noise, and cheap to get wrong (just nudges an already-vetted
+# topic's centroid). New-topic DISCOVERY (forming a brand-new cluster from raw
+# individual embeddings) is noisier and expensive to get wrong — it mints a
+# permanent, LLM-named, customer-visible topic. These used to share one threshold
+# (both 0.72, by coincidence of one constant's value); split 2026-07-04 so
+# discovery can be more conservative than assignment, matching each operation's
+# actual error cost.
 TOPIC_ASSIGNMENT_THRESHOLD = 0.72          # cosine similarity threshold for topic assignment
+
+# Env-tiered (fixed 2026-07-07, was a flat 0.80 for all envs — see
+# DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE above for the full incident writeup;
+# same root cause, same fix shape). dev/local relaxes to TOPIC_ASSIGNMENT_THRESHOLD
+# itself (0.72) — the exact value bootstrap's own exploratory first pass already
+# uses, so incremental discovery in dev is no MORE conservative than a survey's
+# very first clustering pass, which has the identical "no established topic list
+# to protect yet" justification. prod/staging keep the original 0.80 — a
+# customer-visible, permanent, LLM-named topic is a costlier mistake there than a
+# nudge to an existing centroid, and that asymmetry is exactly why this constant
+# was split from TOPIC_ASSIGNMENT_THRESHOLD in the first place.
+if _ENV == "prod":
+    _TOPIC_DISCOVERY_SIMILARITY_DEFAULT = "0.80"
+elif _ENV == "staging":
+    _TOPIC_DISCOVERY_SIMILARITY_DEFAULT = "0.80"
+elif _ENV == "dev-paid":
+    _TOPIC_DISCOVERY_SIMILARITY_DEFAULT = "0.75"
+else:                                             # dev / local / test
+    _TOPIC_DISCOVERY_SIMILARITY_DEFAULT = "0.72"
+
+TOPIC_DISCOVERY_SIMILARITY_THRESHOLD = float(
+    os.getenv("TOPIC_DISCOVERY_SIMILARITY_THRESHOLD", _TOPIC_DISCOVERY_SIMILARITY_DEFAULT)
+)  # incremental (post-bootstrap) new-cluster formation only;
+   # bootstrap's exploratory first pass stays on TOPIC_ASSIGNMENT_THRESHOLD
 WINDOW_MIN_RESPONSES = {                   # min responses needed per window
     "all_time": 1,
     "last_30d": 10,

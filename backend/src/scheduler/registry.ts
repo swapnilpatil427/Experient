@@ -8,6 +8,8 @@ import { reconciliation } from './jobs/reconciliation';
 import { costDownDividend } from './jobs/costDownDividend';
 import { creditLedgerMaintenance } from './jobs/creditLedgerMaintenance';
 import { credentialHealth } from './jobs/credentialHealth';
+import { reNotifyStaleApprovals } from './jobs/reNotifyStaleApprovals';
+import { resumeDelayedExecutions } from './jobs/resumeDelayedExecutions';
 
 export interface JobResult { affected?: number; note?: string }
 
@@ -60,5 +62,32 @@ export const JOBS: Job[] = [
     intervalSec: intSec('JOB_CREDENTIAL_HEALTH_SEC', 21_600), // every 6h
     enabled: flag('JOB_CREDENTIAL_HEALTH', true),
     handler: () => credentialHealth(),
+  },
+  {
+    // Approval TTL — simple expiry + re-notify (never auto-reject; see
+    // jobs/reNotifyStaleApprovals.ts's header for the full design rationale).
+    // Mirrors expire-stale-broadcasts's shape exactly; runs hourly (much shorter
+    // than the 72h re-notify cadence itself — the SQL predicate inside the job,
+    // not this interval, is what prevents re-spamming an approver).
+    name: 'renotify-stale-approvals',
+    description: 'Re-notify the owner of workflow_approvals stuck pending past WORKFLOW_APPROVAL_RENOTIFY_HOURS (default 72h). Never auto-rejects.',
+    intervalSec: intSec('JOB_RENOTIFY_STALE_APPROVALS_SEC', 3_600), // hourly
+    enabled: flag('JOB_RENOTIFY_STALE_APPROVALS', true),
+    handler: reNotifyStaleApprovals,
+  },
+  {
+    // flow.delay auto-resume (Priya, Wave 11, DEEP_AUDIT_UX_FINDINGS.md W-1).
+    // Unlike renotify-stale-approvals (a human nudge), this job actively
+    // continues execution once a delay's resume_at has passed — a delay has no
+    // human in the loop at all. Ticks much tighter than the approval nudge
+    // (default 60s, not hourly) since a delay is a promise to resume near-
+    // exactly on time, not "eventually within a day"; the per-row idempotent
+    // claim in workflowEngine.ts::resumeDelayedExecution (not this interval)
+    // is what makes closely-spaced ticks safe under overlap.
+    name: 'resume-delayed-executions',
+    description: 'Auto-resume workflow_executions waiting on a flow.delay pause whose resume_at has passed. Never touches flow.approval waits.',
+    intervalSec: intSec('JOB_RESUME_DELAYED_EXECUTIONS_SEC', 60), // every minute
+    enabled: flag('JOB_RESUME_DELAYED_EXECUTIONS', true),
+    handler: resumeDelayedExecutions,
   },
 ];

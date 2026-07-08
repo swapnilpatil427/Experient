@@ -26,7 +26,7 @@ import type { Insight, Survey, AgenticInsight, SurveyTopic } from '../types';
 
 // Streaming is always enabled — no env flag needed.
 // Falls back to REST only when the streaming endpoint is unreachable.
-const CRYSTAL_STREAMING = import.meta.env.VITE_CRYSTAL_STREAMING === 'true';
+const CRYSTAL_STREAMING = true;
 
 interface Message {
   id: string;
@@ -85,7 +85,56 @@ interface CrystalPanelProps {
   initialMode?: 'support' | 'analyst';
 }
 
-function classifyAsSupport(message: string): boolean {
+// Wave 18 (docs/automation-hub/TRACKER.md): reference/enumeration-style questions
+// about the PRODUCT ITSELF ("what types of trigger exist", "which plans are
+// available") were falling through classifyAsSupport entirely — no keyword
+// matched — and landing on a data-analysis skill with no platform knowledge,
+// which hallucinated an answer citing fake survey data.
+//
+// These patterns deliberately match the enumeration SHAPE ("what/which
+// type(s)/kind(s) of ___ (exist|are there|are available)") rather than adding
+// bare words like "types" or "kinds" as substrings — a bare-word match would
+// also fire on genuine survey-data questions like "what types of responses
+// mention pricing", which are real data questions about the user's own
+// survey, not product/platform questions, and must stay OUT of support mode.
+//
+// The regexes below still can't distinguish "what types of triggers exist"
+// (product question) from "what types of NPS detractors exist in my data"
+// (data question) on phrasing alone, so the DATA_OBJECT_EXCLUSION list
+// filters out the enumeration match when the noun being enumerated is
+// clearly the user's own survey data (responses, answers, feedback, scores,
+// verbatims, detractors, segments, etc.) rather than a platform/product
+// concept (triggers, surveys, plans, credits, workflows, actions, roles...).
+// This mirrors this wave's explicit routing split: workflow/trigger/action
+// REFERENCE questions are hard-forced to `workflow-analyst` server-side
+// (Amara, CrystalOS); this list intentionally does NOT special-case those —
+// it only needs to stop hallucinating on the OTHER reference phrasings
+// ("what types of surveys can I create", "what plans are available", "what
+// does the credits system do") that are genuine support/product questions.
+const ENUMERATION_PATTERNS: RegExp[] = [
+  // "what/which type(s)/kind(s) of X (exist(s)|are there|are available|can I ...)"
+  // "exists" (singular verb, matching "what types of trigger exists" — the
+  // exact reported phrasing, subject/verb-number mismatch and all) must be
+  // covered alongside the grammatically-plural "exist".
+  /\b(what|which)\s+(types?|kinds?)\s+of\s+.+\b(exists?|are there|are available|can i)\b/,
+  // "what/which X are available" (e.g. "which plans are available")
+  /\b(what|which)\s+.+\b(are|is)\s+available\b/,
+];
+
+// Nouns that mean "the enumeration is about the user's OWN survey data," not
+// the product/platform — these must NOT be routed into support mode even
+// when they match an ENUMERATION_PATTERNS shape above.
+const DATA_OBJECT_EXCLUSIONS = [
+  'response', 'responses', 'answer', 'answers', 'feedback', 'score', 'scores',
+  'verbatim', 'verbatims', 'detractor', 'detractors', 'promoter', 'promoters',
+  'segment', 'segments', 'comment', 'comments', 'sentiment', 'theme', 'themes',
+  'topic', 'topics',
+];
+
+// Exported for isolated unit testing (see CrystalPanel.test.tsx) — this is a
+// pure function with no component state, so it doesn't need full-component
+// rendering to verify its keyword/pattern precision boundary.
+export function classifyAsSupport(message: string): boolean {
   const lower = message.toLowerCase();
   const keywords = [
     'help', 'error', 'broken', 'issue', 'problem', 'not working', 'bug', 'crash',
@@ -93,7 +142,12 @@ function classifyAsSupport(message: string): boolean {
     'configure', 'stuck', 'fails', 'failing', "can't", 'cannot', 'wrong',
     'unexpected', 'missing feature', 'feature request',
   ];
-  return keywords.some((kw) => lower.includes(kw));
+  if (keywords.some((kw) => lower.includes(kw))) return true;
+
+  const isDataQuestion = DATA_OBJECT_EXCLUSIONS.some((noun) => lower.includes(noun));
+  if (isDataQuestion) return false;
+
+  return ENUMERATION_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
 const SINGLE_PROMPTS = [
@@ -122,6 +176,17 @@ export function CrystalPanel({
     // Context-injected data from the active page (falls back to prop values)
     agenticInsights: ctxAgentic,
     topics: ctxTopics,
+    // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §4) — registered by a builder
+    // page (WorkflowBuilderPage/WorkflowCanvasPage) while mounted; `null`
+    // everywhere else, which is what keeps executeAction's new branch below a
+    // no-op for every existing non-builder call site.
+    builderDraftHydrator,
+    // Wave 15 (docs/automation-hub/TRACKER.md) — same builder-page lifecycle
+    // as builderDraftHydrator above: `builderContext` is `null` and
+    // `builderDraft` is `null` everywhere except an active builder page.
+    // Consumed below in submitQuery's streaming request body.
+    builderContext,
+    builderDraft,
   } = useCrystalPanel();
 
   // Prefer prop values (page explicitly passed richer data) over context values
@@ -257,7 +322,10 @@ export function CrystalPanel({
           // called together from the hub page survey chip handler).
           const currentScope = scopeRef.current;
           const currentIsAll = currentScope === 'all';
-          const streamScope = currentIsAll ? 'org' : 'survey';
+          // A page-injected tag focus (Tag Report pages) wins over the
+          // survey/org scope distinction — a user can be tag-focused while
+          // `scope` itself is still 'all' (tag pages never touch SurveyScope).
+          const streamScope = activeCtx.focused_tag_id ? 'tag' : (currentIsAll ? 'org' : 'survey');
           // IMPORTANT: never send 'all' as survey_id — the agents service treats
           // any non-empty survey_id as a UUID and runs check_survey_access on it.
           // Org scope passes '' so the access check is skipped entirely.
@@ -287,6 +355,20 @@ export function CrystalPanel({
                 scope: streamScope,
                 window: activeCtx.window,
                 focused_topic: activeCtx.focused_topic,
+                // Only present when streamScope === 'tag' — omitted (undefined
+                // values are dropped by JSON.stringify) for survey/org scope.
+                tag_id: streamScope === 'tag' ? activeCtx.focused_tag_id : undefined,
+                // Wave 15 (docs/automation-hub/TRACKER.md) — signal builder
+                // context to backend/src/routes/experience.ts, which hard-
+                // matches `body.surface === 'workflow_builder'` and relays
+                // `body.builder_draft` byte-unchanged into CrystalInput. Spread
+                // an empty object (not `surface: undefined`) when not in
+                // builder context so the keys are ABSENT, not present-as-
+                // undefined — every other page's request body stays exactly
+                // as it was before this wave.
+                ...(builderContext?.kind === 'workflow_builder'
+                  ? { surface: 'workflow_builder', builder_draft: builderDraft }
+                  : {}),
               }),
             },
           );
@@ -552,7 +634,7 @@ export function CrystalPanel({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isAll, isThinking, api, scope, crystalCtx, getToken, agenticInsights, topics, focusSurvey, responseCount, messages],
+    [isAll, isThinking, api, scope, crystalCtx, getToken, agenticInsights, topics, focusSurvey, responseCount, messages, builderContext, builderDraft],
   );
 
   // Auto-submit when panel opens with a pre-loaded query.
@@ -719,7 +801,54 @@ export function CrystalPanel({
           break;
         }
         case 'create_workflow': {
+          // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §4) — checked BEFORE the
+          // `!surveyId` guard below: the builder page's scope is
+          // `workflow_builder`, not a survey ID, so `focusSurvey`/`surveyId`
+          // are correctly undefined there — the guard would otherwise block
+          // this path entirely. If a builder page has registered a hydration
+          // callback, this proposal is being applied from INSIDE an open
+          // builder draft — route it through the callback (which only updates
+          // the page's own local state) instead of persisting a second
+          // workflow. The existing Save button on that page remains the one
+          // and only persist action — unchanged.
+          if (builderDraftHydrator) {
+            const handled = builderDraftHydrator(proposal);
+            if (handled) {
+              track('succeeded');  // no outcomeRef — nothing persisted yet, correctly
+              note(`Applied "${proposal.title}" to the current draft below. Review, then click Save when you're ready.`);
+              break;
+            }
+            // Registered but declined (e.g. proposal shape it doesn't
+            // recognize) — fall through to today's exact existing behavior
+            // below as a safety net, rather than silently dropping it.
+          }
+
           if (!surveyId) { track('failed', undefined, 'no survey in scope'); break; }
+          // Primary path: modern graph shape emitted by CrystalOS's reconciled
+          // `execute_propose_workflow` (Wave 3) — `params.nodes`/`params.edges`/
+          // `params.trigger_type` (snake_case on the wire; `_normalize_proposal`
+          // passes `params` through untouched). Falls back to the legacy flat
+          // `trigger`/`action_type`/`action_config` shape only so a stale/cached
+          // proposal from before this fix doesn't crash — new proposals always
+          // carry `nodes`/`edges` and take the primary path.
+          const nodes = proposal.params.nodes as unknown[] | undefined;
+          const edges = proposal.params.edges as unknown[] | undefined;
+          if (Array.isArray(nodes) && Array.isArray(edges)) {
+            const created = await api.createGraphWorkflow({
+              name:        (proposal.params.name as string) || proposal.title,
+              description: (proposal.params.description as string) || proposal.description,
+              triggerType: (proposal.params.trigger_type as string) || 'manual',
+              nodes,
+              edges,
+              status:      'draft',
+            });
+            invalidate('workflows');
+            track('succeeded', (created as { workflow?: { id?: string } })?.workflow?.id);
+            note(`Workflow created: "${proposal.title}". Open Workflows to manage it.`);
+            break;
+          }
+
+          // Legacy fallback — old flat shape, kept only for stale proposals.
           const wf = {
             name:          (proposal.params.name as string) || proposal.title,
             trigger:       (proposal.params.trigger as string) || proposal.params.trigger_event as string,
@@ -765,6 +894,47 @@ export function CrystalPanel({
         case 'view_template': {
           track('succeeded');
           navigate(ROUTES.TEMPLATES);
+          break;
+        }
+
+        // ── Tag Report — cross-survey AI insight rollups ────────────────────────
+        case 'view_tag_report': {
+          const tagId = (proposal.params.tag_id as string | undefined) ?? crystalCtx.focused_tag_id;
+          if (!tagId) { track('failed', undefined, 'no tag_id in proposal params or context'); break; }
+          track('succeeded', tagId);
+          navigate(toPath(ROUTES.TAG_REPORT_LATEST, { tagId }));
+          break;
+        }
+        case 'generate_tag_report': {
+          const tagId = (proposal.params.tag_id as string | undefined) ?? crystalCtx.focused_tag_id;
+          if (!tagId) { track('failed', undefined, 'no tag_id in proposal params or context'); break; }
+          try {
+            const result = await api.generateTagReport({
+              tag_id:         tagId,
+              run_mode:       (proposal.params.run_mode as 'manual' | 'custom_range') || 'manual',
+              window_start:   proposal.params.window_start as string | undefined,
+              window_end:     proposal.params.window_end as string | undefined,
+              parent_run_id:  proposal.params.parent_run_id as string | undefined,
+            });
+            invalidate('tagReports');
+            track('succeeded', result.run_id);
+            // Fixed 2026-07-03 (customer-journey review finding:
+            // "InFlightRunBanner unreachable") — same fix as
+            // TagReportNewPage: forward the authoritative attached_to_existing
+            // signal through navigation state so TagReportPage's fresh hook
+            // instance can show the banner. `trigger` isn't currently rendered
+            // by InFlightRunBanner (only startedAt is) — 'manual' is an honest
+            // placeholder for "a user-initiated action caused this call",
+            // which is true regardless of what triggered the run it attached to.
+            const inFlightNotice = result.attached_to_existing
+              ? { startedAt: result.created_at, trigger: 'manual' as const }
+              : null;
+            navigate(toPath(ROUTES.TAG_REPORT, { tagId, runId: result.run_id }), { state: { inFlightNotice } });
+            note(t('crystal.tagReportGenerating', { title: proposal.title }));
+          } catch (err) {
+            track('failed', undefined, String(err));
+            throw err;
+          }
           break;
         }
 
@@ -842,7 +1012,7 @@ export function CrystalPanel({
     } finally {
       setExecutingAction(null);
     }
-  }, [api, executingAction, focusSurvey, navigate, submitQuery, note]);
+  }, [api, executingAction, focusSurvey, navigate, submitQuery, note, crystalCtx, t, builderDraftHydrator]);
 
   // "Ticket" button on a Crystal answer → create a CX case (ticket) from the insight.
   // The click is itself the confirmation gesture, so we run the wired create_case path directly.
@@ -963,7 +1133,7 @@ export function CrystalPanel({
                 right: 'calc((100vw - var(--sidebar-width)) * 0.28)',
                 width: 64,
                 background:
-                  'linear-gradient(to right, transparent, rgba(42,75,217,0.06) 50%, rgba(42,75,217,0.10))',
+                  'linear-gradient(to right, transparent, color-mix(in srgb, var(--color-primary) 6%, transparent) 50%, color-mix(in srgb, var(--color-primary) 10%, transparent))',
               }}
             />
           )}
@@ -981,9 +1151,9 @@ export function CrystalPanel({
               bottom: 0,
               right: 0,
               width: panelWidth,
-              borderLeft: '1px solid rgba(42,75,217,0.18)',
+              borderLeft: '1px solid color-mix(in srgb, var(--color-primary) 18%, transparent)',
               background: 'var(--surface, #fff)',
-              boxShadow: '-8px 0 40px rgba(0,0,0,0.10), -2px 0 8px rgba(42,75,217,0.07)',
+              boxShadow: '-8px 0 40px rgba(0,0,0,0.10), -2px 0 8px color-mix(in srgb, var(--color-primary) 7%, transparent)',
               transition: 'width 0.3s cubic-bezier(0.22,1,0.36,1)',
             }}
           >
@@ -991,15 +1161,15 @@ export function CrystalPanel({
             <div
               className="flex-shrink-0 flex items-center gap-3 px-5 py-3.5 border-b"
               style={{
-                borderColor: 'rgba(42,75,217,0.12)',
+                borderColor: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
                 background:
-                  'linear-gradient(to bottom, rgba(42,75,217,0.035) 0%, transparent 100%)',
+                  'linear-gradient(to bottom, color-mix(in srgb, var(--color-primary) 3.5%, transparent) 0%, transparent 100%)',
               }}
             >
               {/* Crystal gem icon */}
               <div
                 className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               >
                 <Icon name="diamond" size={16} style={{ color: 'white' }} />
               </div>
@@ -1010,7 +1180,7 @@ export function CrystalPanel({
                   <span className="font-black text-sm text-on-surface">Crystal</span>
                   <span
                     className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-                    style={{ background: 'rgba(42,75,217,0.08)', color: '#2a4bd9' }}
+                    style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}
                   >
                     Xperiq Copilot
                   </span>
@@ -1024,11 +1194,13 @@ export function CrystalPanel({
                   )}
                 </div>
                 <div className="text-[10px] text-on-surface-variant truncate">
-                  {isAll
-                    ? `Ask across ${activeSurveys.length} active survey${activeSurveys.length !== 1 ? 's' : ''}${nps != null ? ` · Portfolio NPS ${nps}` : ''}`
-                    : focusSurvey
-                      ? `${focusSurvey.title} · ${responseCount.toLocaleString()} responses${nps != null ? ` · NPS ${nps}` : ''}${crystalCtx.focused_topic ? ` · ${crystalCtx.focused_topic}` : ''}`
-                      : 'Ask anything about this survey'}
+                  {crystalCtx.focused_tag_id
+                    ? t('crystal.tagScopeSubtitle', { name: crystalCtx.focused_tag_name ?? crystalCtx.focused_tag_id })
+                    : isAll
+                      ? `Ask across ${activeSurveys.length} active survey${activeSurveys.length !== 1 ? 's' : ''}${nps != null ? ` · Portfolio NPS ${nps}` : ''}`
+                      : focusSurvey
+                        ? `${focusSurvey.title} · ${responseCount.toLocaleString()} responses${nps != null ? ` · NPS ${nps}` : ''}${crystalCtx.focused_topic ? ` · ${crystalCtx.focused_topic}` : ''}`
+                        : 'Ask anything about this survey'}
                 </div>
               </div>
 
@@ -1065,9 +1237,18 @@ export function CrystalPanel({
 
             {/* ── Agent mode + context strip ────────────────────────────── */}
             <div className="flex-shrink-0 flex items-center gap-2 px-5 py-2 flex-wrap"
-              style={{ background: 'rgba(42,75,217,0.04)', borderBottom: '1px solid rgba(42,75,217,0.08)' }}>
+              style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 8%, transparent)' }}>
               {/* What Crystal is looking at — derived from scope, not hardcoded */}
-              <Icon name="diamond" size={11} style={{ color: '#2a4bd9', flexShrink: 0 }} />
+              <Icon name="diamond" size={11} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />
+              {/* Tag focus — shown independent of isAll, since a Tag Report page
+                  keeps `scope` at 'all' and carries the tag via crystalCtx instead. */}
+              {crystalCtx.focused_tag_id && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-1"
+                  style={{ background: '#eef2ff', color: '#4f46e5' }}>
+                  <Icon name="sell" size={10} />
+                  {t('crystal.tagScopeChip', { name: crystalCtx.focused_tag_name ?? crystalCtx.focused_tag_id })}
+                </span>
+              )}
               {isAll ? (
                 <span className="text-[10px] text-on-surface-variant">
                   {activeSurveys.length > 0
@@ -1111,8 +1292,9 @@ export function CrystalPanel({
                     Portfolio
                   </button>
                 )}
-                {/* Clear filters */}
-                {!isAll && (crystalCtx.window || crystalCtx.focused_topic) && (
+                {/* Clear filters — also shown for a tag focus even though scope stays 'all' */}
+                {(!isAll || crystalCtx.focused_tag_id) &&
+                  (crystalCtx.window || crystalCtx.focused_topic || crystalCtx.focused_tag_id) && (
                   <button className="text-[10px] text-on-surface-variant hover:text-on-surface"
                     onClick={() => setCrystalCtx({})}>
                     clear
@@ -1268,13 +1450,13 @@ export function CrystalPanel({
             {/* ── Input bar ──────────────────────────────────────────────── */}
             <div
               className="flex-shrink-0 px-4 py-3 border-t"
-              style={{ borderColor: 'rgba(42,75,217,0.1)' }}
+              style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
             >
               <div
                 className="flex items-end gap-2 p-2 rounded-xl"
                 style={{
-                  background: 'rgba(42,75,217,0.04)',
-                  border: '1px solid rgba(42,75,217,0.14)',
+                  background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--color-primary) 14%, transparent)',
                 }}
               >
                 <button
@@ -1315,7 +1497,7 @@ export function CrystalPanel({
                     background:
                       !input.trim() || isThinking
                         ? undefined
-                        : 'linear-gradient(135deg, #2a4bd9, #8329c8)',
+                        : 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
                   }}
                 >
                   <Icon name="arrow_upward" size={15} />
@@ -1409,7 +1591,7 @@ function MiniCrystal() {
         style={{
           width: 64,
           height: 64,
-          filter: 'drop-shadow(0 8px 20px rgba(42,75,217,0.3))',
+          filter: 'drop-shadow(0 8px 20px color-mix(in srgb, var(--color-primary) 30%, transparent))',
         }}
       >
         <div
@@ -1417,7 +1599,7 @@ function MiniCrystal() {
             position: 'absolute',
             inset: 0,
             background:
-              'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)',
+              'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)',
             clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
             animation: 'spin-crystal-panel 20s linear infinite',
             filter: 'blur(0.5px)',
@@ -1428,7 +1610,7 @@ function MiniCrystal() {
             position: 'absolute',
             inset: '20%',
             background:
-              'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)',
+              'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)',
             clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
             animation: 'spin-crystal-panel 10s linear infinite reverse',
             opacity: 0.75,
@@ -1438,7 +1620,7 @@ function MiniCrystal() {
           style={{
             position: 'absolute',
             inset: '38%',
-            background: 'radial-gradient(circle, #ffffff, #82deff)',
+            background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))',
             borderRadius: '50%',
             filter: 'blur(3px)',
             animation: 'pulse-glow 2.5s ease-in-out infinite',
@@ -1455,7 +1637,7 @@ function UserBubble({ message }: { message: Message }) {
     <div className="flex justify-end">
       <div
         className="rounded-2xl rounded-br-sm px-4 py-3 max-w-[85%] text-white"
-        style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+        style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
       >
         <div className="text-[10px] font-bold uppercase tracking-widest opacity-70 mb-0.5">You</div>
         <div className="text-sm font-medium leading-relaxed">{message.content}</div>
@@ -1567,7 +1749,7 @@ function InlineCitation({ citation, index }: { citation: CrystalCitation; index:
       <button
         className="font-bold px-1 py-0 rounded transition-colors leading-none"
         style={{
-          background: open ? 'var(--color-primary)' : 'rgba(42,75,217,0.10)',
+          background: open ? 'var(--color-primary)' : 'color-mix(in srgb, var(--color-primary) 10%, transparent)',
           color: open ? 'white' : 'var(--color-primary)',
         }}
         onMouseEnter={() => setOpen(true)}
@@ -1584,7 +1766,7 @@ function InlineCitation({ citation, index }: { citation: CrystalCitation; index:
           style={{
             transform: 'translateX(-50%)',
             background: 'var(--color-surface)',
-            border: '1px solid rgba(42,75,217,0.15)',
+            border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
           }}
           onMouseEnter={() => setOpen(true)}
           onMouseLeave={() => setOpen(false)}
@@ -1728,7 +1910,7 @@ function VerbatimList({ verbatims }: { verbatims: CrystalVerbatim[] }) {
           }}>
           {v.topic && (
             <span className="inline-block text-[9px] font-bold px-1.5 py-0.5 rounded mb-1 mr-1"
-              style={{ background: 'rgba(42,75,217,0.08)', color: '#2a4bd9' }}>
+              style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}>
               {v.topic}
             </span>
           )}
@@ -1806,13 +1988,13 @@ function SourcesFooter({ citations, isAll }: { citations: CrystalCitation[]; isA
 
             return (
               <div key={c.id} className="rounded-xl overflow-hidden border"
-                style={{ borderColor: 'rgba(42,75,217,0.10)', background: 'var(--color-surface-container, rgba(0,0,0,0.02))' }}>
+                style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', background: 'var(--color-surface-container, rgba(0,0,0,0.02))' }}>
 
                 {/* Survey + layer header */}
                 <div className="flex items-center gap-2 px-3 py-2"
                   style={{ background: `${layerColor}0c`, borderBottom: `1px solid ${layerColor}18` }}>
                   <span className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-                    style={{ background: 'rgba(42,75,217,0.10)', color: '#2a4bd9', minWidth: 18, textAlign: 'center' }}>
+                    style={{ background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', color: 'var(--color-primary)', minWidth: 18, textAlign: 'center' }}>
                     {i + 1}
                   </span>
                   <span className="text-[10px] font-semibold truncate text-on-surface">
@@ -1843,7 +2025,7 @@ function SourcesFooter({ citations, isAll }: { citations: CrystalCitation[]; isA
                     <button
                       className="text-[10px] font-bold flex items-center gap-1 px-2.5 py-1 rounded-full transition-colors"
                       style={{
-                        background: showing ? 'var(--color-primary)' : 'rgba(42,75,217,0.08)',
+                        background: showing ? 'var(--color-primary)' : 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
                         color: showing ? 'white' : 'var(--color-primary)',
                       }}
                       onClick={() => setShowResponsesFor(showing ? null : c.id)}
@@ -1897,7 +2079,7 @@ function CrystalBubble({
     <div className="flex gap-3">
       <div
         className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center mt-0.5"
-        style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+        style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
       >
         <Icon name="diamond" size={14} style={{ color: 'white' }} />
       </div>
@@ -2002,8 +2184,8 @@ function CrystalBubble({
 
 // ── Tool metadata — human labels, icons, accent colours per Crystal tool ──────
 const TOOL_META: Record<string, { label: string; icon: string; color: string }> = {
-  get_survey_overview:      { label: 'Reading survey overview',        icon: 'analytics',       color: '#2a4bd9' },
-  get_topic_details:        { label: 'Exploring topic details',        icon: 'account_tree',    color: '#8329c8' },
+  get_survey_overview:      { label: 'Reading survey overview',        icon: 'analytics',       color: 'var(--color-primary)' },
+  get_topic_details:        { label: 'Exploring topic details',        icon: 'account_tree',    color: 'var(--color-tertiary)' },
   get_metric_history:       { label: 'Pulling metric history',         icon: 'trending_up',     color: '#059669' },
   get_insights_list:        { label: 'Loading AI insights',            icon: 'auto_awesome',    color: '#d97706' },
   get_verbatims:            { label: 'Reading customer voices',        icon: 'format_quote',    color: '#0284c7' },
@@ -2012,8 +2194,8 @@ const TOOL_META: Record<string, { label: string; icon: string; color: string }> 
   get_segment_breakdown:    { label: 'Breaking down segments',         icon: 'donut_small',     color: '#ea580c' },
   get_checkpoint_history:   { label: 'Reviewing historical trend',     icon: 'history',         color: '#0891b2' },
   compare_surveys:          { label: 'Comparing surveys side-by-side', icon: 'compare',         color: '#9333ea' },
-  get_org_portfolio:        { label: 'Scanning your portfolio',        icon: 'corporate_fare',  color: '#2a4bd9' },
-  get_cross_survey_themes:  { label: 'Finding shared themes',          icon: 'bubble_chart',    color: '#8329c8' },
+  get_org_portfolio:        { label: 'Scanning your portfolio',        icon: 'corporate_fare',  color: 'var(--color-primary)' },
+  get_cross_survey_themes:  { label: 'Finding shared themes',          icon: 'bubble_chart',    color: 'var(--color-tertiary)' },
   get_anomaly_events:       { label: 'Checking for anomalies',         icon: 'warning',         color: '#dc2626' },
 };
 
@@ -2151,7 +2333,7 @@ function CrystalThinkingBubble({
           <div
             style={{
               width: 32, height: 32, position: 'relative',
-              filter: `drop-shadow(0 0 8px rgba(42,75,217,${isSynthesizing ? 0.7 : 0.4}))`,
+              filter: `drop-shadow(0 0 8px color-mix(in srgb, var(--color-primary) ${isSynthesizing ? 70 : 40}%, transparent))`,
               animation: isSynthesizing
                 ? 'crystal-pulse 1.5s ease-in-out infinite'
                 : 'crystal-spin 4s linear infinite',
@@ -2160,12 +2342,12 @@ function CrystalThinkingBubble({
           >
             <div style={{
               position: 'absolute', inset: 0,
-              background: 'conic-gradient(from 0deg, #879aff 0%, #d299ff 30%, #82deff 55%, #d299ff 78%, #879aff 100%)',
+              background: 'conic-gradient(from 0deg, var(--color-primary-container) 0%, var(--color-tertiary-container) 30%, var(--color-secondary-container) 55%, var(--color-tertiary-container) 78%, var(--color-primary-container) 100%)',
               clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
             }} />
             <div style={{
               position: 'absolute', inset: '32%',
-              background: 'radial-gradient(circle, #fff, #82deff)',
+              background: 'radial-gradient(circle, #fff, var(--color-secondary-container))',
               borderRadius: '50%', filter: 'blur(2px)',
             }} />
           </div>
@@ -2176,24 +2358,24 @@ function CrystalThinkingBubble({
           className="flex-1 min-w-0 rounded-2xl rounded-tl-sm overflow-hidden"
           style={{
             background: 'var(--color-surface-container, rgba(255,255,255,0.05))',
-            border: '1px solid rgba(42,75,217,0.15)',
+            border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
           }}
         >
           {/* Header bar — aurora gradient while synthesizing */}
           <div
             className="px-4 py-2.5 flex items-center justify-between"
             style={isSynthesizing ? {
-              background: 'linear-gradient(270deg, #2a4bd9, #8329c8, #0284c7, #2a4bd9)',
+              background: 'linear-gradient(270deg, var(--color-primary), var(--color-tertiary), #0284c7, var(--color-primary))',
               backgroundSize: '300% 300%',
               animation: 'aurora-flow 3s ease infinite',
             } : {
-              background: 'rgba(42,75,217,0.07)',
-              borderBottom: '1px solid rgba(42,75,217,0.09)',
+              background: 'color-mix(in srgb, var(--color-primary) 7%, transparent)',
+              borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 9%, transparent)',
             }}
           >
             <span
               className="text-[10px] font-bold uppercase tracking-widest"
-              style={{ color: isSynthesizing ? 'rgba(255,255,255,0.9)' : 'var(--color-primary, #2a4bd9)' }}
+              style={{ color: isSynthesizing ? 'rgba(255,255,255,0.9)' : 'var(--color-primary)' }}
             >
               {isSynthesizing
                 ? 'Crystal · Writing your answer'
@@ -2220,7 +2402,7 @@ function CrystalThinkingBubble({
                       key={i}
                       style={{
                         width: 5, height: 5, borderRadius: '50%',
-                        background: 'var(--color-primary, #2a4bd9)',
+                        background: 'var(--color-primary)',
                         animation: `dot-pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
                       }}
                     />
@@ -2236,8 +2418,8 @@ function CrystalThinkingBubble({
                 const isDone    = step.completedAt != null;
                 const isActive  = !isDone && idx === steps.length - 1;
                 const stepColor = meta?.color ?? (
-                  step.phase === 'synthesizing' ? '#2a4bd9' :
-                  step.phase === 'observation'  ? '#059669' : '#8329c8'
+                  step.phase === 'synthesizing' ? 'var(--color-primary)' :
+                  step.phase === 'observation'  ? '#059669' : 'var(--color-tertiary)'
                 );
                 const stepDuration = isDone
                   ? ((step.completedAt! - step.startedAt) / 1000).toFixed(1) + 's'
@@ -2295,7 +2477,7 @@ function CrystalThinkingBubble({
                                 ? 'var(--color-on-surface, #111)'
                                 : 'var(--color-on-surface-variant, #888)',
                             ...(isActive && !isDone ? {
-                              background: `linear-gradient(90deg, ${stepColor}, #8329c8, ${stepColor})`,
+                              background: `linear-gradient(90deg, ${stepColor}, var(--color-tertiary), ${stepColor})`,
                               backgroundSize: '200% auto',
                               WebkitBackgroundClip: 'text',
                               WebkitTextFillColor: 'transparent',
@@ -2328,13 +2510,13 @@ function CrystalThinkingBubble({
 
           {/* Bottom progress bar — fills as steps complete */}
           {totalSteps > 0 && (
-            <div style={{ height: 2, background: 'rgba(42,75,217,0.08)' }}>
+            <div style={{ height: 2, background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)' }}>
               <div
                 style={{
                   height: '100%',
                   background: isSynthesizing
-                    ? 'linear-gradient(90deg, #2a4bd9, #8329c8, #82deff)'
-                    : `linear-gradient(90deg, #2a4bd9, #8329c8)`,
+                    ? 'linear-gradient(90deg, var(--color-primary), var(--color-tertiary), var(--color-secondary-container))'
+                    : `linear-gradient(90deg, var(--color-primary), var(--color-tertiary))`,
                   backgroundSize: isSynthesizing ? '200% 100%' : '100% 100%',
                   animation: isSynthesizing ? 'aurora-flow 1.5s ease infinite' : undefined,
                   width: isSynthesizing
@@ -2420,7 +2602,7 @@ const ACTION_TYPE_ICONS: Record<string, string> = {
 const PRIORITY_COLORS: Record<string, string> = {
   critical: '#dc2626',
   high:     '#d97706',
-  medium:   '#2a4bd9',
+  medium:   'var(--color-primary)',
   low:      '#6b7280',
 };
 
@@ -2463,7 +2645,7 @@ export function ActionProposalCard({
   onDismiss: () => void;
 }) {
   const iconName    = ACTION_TYPE_ICONS[proposal.type] ?? 'auto_fix_high';
-  const priorityClr = PRIORITY_COLORS[proposal.priority] ?? '#2a4bd9';
+  const priorityClr = PRIORITY_COLORS[proposal.priority] ?? 'var(--color-primary)';
   const ctaLabel    = proposal.cta_label ?? (proposal.type === 'create_case' ? 'Create Case' : 'Apply');
   const willDo      = humanizeParams(proposal.params || {});
   const [showDetails, setShowDetails] = useState(false);
@@ -2471,7 +2653,7 @@ export function ActionProposalCard({
   return (
     <div
       style={{
-        background:   'rgba(42,75,217,0.04)',
+        background:   'color-mix(in srgb, var(--color-primary) 4%, transparent)',
         border:       `1px solid ${priorityClr}30`,
         borderRadius: '0.75rem',
         padding:      '0.75rem',
@@ -2533,12 +2715,12 @@ export function ActionProposalCard({
                 </span>
               )}
               {!!proposal.params.owner_label && (
-                <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 99, background: 'rgba(0,100,124,0.1)', color: '#00647c' }}>
+                <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: 99, background: 'color-mix(in srgb, var(--color-secondary) 10%, transparent)', color: 'var(--color-secondary)' }}>
                   → {String(proposal.params.owner_label)}
                 </span>
               )}
               {!!proposal.params.driver_ref && (
-                <span style={{ fontSize: '0.65rem', padding: '0.15rem 0.5rem', borderRadius: 99, background: 'rgba(131,41,200,0.1)', color: '#8329c8' }}>
+                <span style={{ fontSize: '0.65rem', padding: '0.15rem 0.5rem', borderRadius: 99, background: 'color-mix(in srgb, var(--color-tertiary) 10%, transparent)', color: 'var(--color-tertiary)' }}>
                   {String(proposal.params.driver_ref)}
                 </span>
               )}

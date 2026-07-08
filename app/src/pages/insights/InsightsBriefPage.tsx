@@ -99,7 +99,7 @@ export function InsightsBriefPage() {
           <div className="flex items-center gap-2 mb-4">
             <div
               className="w-2 h-2 rounded-full"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
             />
             <span className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">
               Current brief
@@ -116,7 +116,7 @@ export function InsightsBriefPage() {
               NPS held steady at{' '}
               <span
                 className="text-transparent bg-clip-text"
-                style={{ backgroundImage: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                style={{ backgroundImage: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
               >
                 47
               </span>{' '}

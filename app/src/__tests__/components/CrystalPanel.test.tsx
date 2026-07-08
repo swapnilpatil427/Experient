@@ -72,6 +72,14 @@ vi.mock('../../contexts/crystalPanel', () => ({
     openCrystal:     vi.fn(),
     toggleCrystal:   vi.fn(),
     setCrystalData:  vi.fn(),
+    // Wave 14 — null everywhere except an active builder page; this is the
+    // default-off state every pre-existing (non-builder) test exercises.
+    builderContext:          null,
+    builderDraft:            null,
+    builderDraftHydrator:    null,
+    setBuilderContext:       vi.fn(),
+    setBuilderDraft:         vi.fn(),
+    setBuilderDraftHydrator: vi.fn(),
   })),
 }));
 
@@ -81,6 +89,7 @@ const mockApi = {
   getInsightRunStatus:      vi.fn().mockResolvedValue({ run_id: 'run-456', status: 'completed', stream_events: [] }),
   copilotRefine:            vi.fn().mockResolvedValue({}),
   createWorkflow:           vi.fn().mockResolvedValue({ id: 'wf-1' }),
+  createGraphWorkflow:      vi.fn().mockResolvedValue({ workflow: { id: 'wf-graph-1' } }),
   createAlertRule:          vi.fn().mockResolvedValue({ rule: { id: 'al-1' } }),
   triggerInsightGeneration: vi.fn().mockResolvedValue({}),
   dismissAction:            vi.fn().mockResolvedValue({}),
@@ -88,6 +97,7 @@ const mockApi = {
   crystalChat:              vi.fn().mockResolvedValue({ answer: 'ok', suggestions: [], insight_refs: [] }),
   crystalChat2:             vi.fn().mockResolvedValue({ answer: 'ok', suggestions: [], insight_refs: [] }),
   updateInsightFeedback:    vi.fn().mockResolvedValue({}),
+  generateTagReport:        vi.fn().mockResolvedValue({ run_id: 'run-tag-1', attached_to_existing: false, created_at: '2026-07-03T00:00:00Z' }),
 };
 
 // ── Capture client-side navigation (replaces window.location.href) ────────────
@@ -116,7 +126,7 @@ vi.mock('../../lib/auth', () => ({
 }));
 
 // ── import component AFTER all vi.mock declarations ──────────────────────────
-import { CrystalPanel, resolveReportProposalAction } from '../../components/CrystalPanel';
+import { CrystalPanel, resolveReportProposalAction, classifyAsSupport } from '../../components/CrystalPanel';
 import { useCrystalPanel } from '../../contexts/crystalPanel';
 import type { ActionProposal } from '../../types';
 
@@ -183,8 +193,10 @@ beforeEach(() => {
   mockApi.getInsightRunStatus.mockResolvedValue({ run_id: 'run-456', status: 'completed', stream_events: [] });
   mockApi.copilotRefine.mockResolvedValue({});
   mockApi.createWorkflow.mockResolvedValue({ id: 'wf-1' });
+  mockApi.createGraphWorkflow.mockResolvedValue({ workflow: { id: 'wf-graph-1' } });
   mockApi.triggerInsightGeneration.mockResolvedValue({});
   mockApi.dismissAction.mockResolvedValue({});
+  mockApi.generateTagReport.mockResolvedValue({ run_id: 'run-tag-1', attached_to_existing: false, created_at: '2026-07-03T00:00:00Z' });
 
   // Reset context mock to default (survey-abc scope)
   vi.mocked(useCrystalPanel).mockReturnValue({
@@ -200,6 +212,12 @@ beforeEach(() => {
     openCrystal:     vi.fn(),
     toggleCrystal:   vi.fn(),
     setCrystalData:  vi.fn(),
+    builderContext:          null,
+    builderDraft:            null,
+    builderDraftHydrator:    null,
+    setBuilderContext:       vi.fn(),
+    setBuilderDraft:         vi.fn(),
+    setBuilderDraftHydrator: vi.fn(),
   });
 
   // Mock window.location.href setter
@@ -255,8 +273,7 @@ async function triggerProposals(proposals: ActionProposal[]) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TODO: rewrite — needs fetch ReadableStream mock aligned with crystal/stream SSE format
-describe.skip('CrystalPanel — action proposals rendering', () => {
+describe('CrystalPanel — action proposals rendering', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
   it('renders action proposals received via SSE', async () => {
@@ -286,15 +303,20 @@ describe.skip('CrystalPanel — action proposals rendering', () => {
       expect(screen.queryByText('Send to segment')).not.toBeInTheDocument();
     });
 
-    // dismissAction API called with correct args
+    // Dismissal is tracked via the outcome-telemetry funnel (recordProposalOutcome
+    // with status: 'dismissed'), not a dedicated dismissAction API call — matches
+    // CrystalPanel.tsx's actual dismissAction callback (see component source).
     await waitFor(() => {
-      expect(mockApi.dismissAction).toHaveBeenCalledWith('survey-abc', 'ap-dismiss');
+      expect(mockApi.recordProposalOutcome).toHaveBeenCalledWith(
+        'survey-abc',
+        expect.objectContaining({ proposalKey: 'ap-dismiss', status: 'dismissed' }),
+      );
     });
   });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-describe.skip('CrystalPanel — action execution: navigation', () => {
+describe('CrystalPanel — action execution: navigation', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
   it('create_survey action calls api.startRun and navigates to /surveys?run=...', async () => {
@@ -498,14 +520,75 @@ describe.skip('CrystalPanel — action execution: navigation', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-describe.skip('CrystalPanel — action execution: in-app actions', () => {
+describe('CrystalPanel — action execution: in-app actions', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
-  it('create_workflow calls api.createWorkflow with correct params', async () => {
+  it('create_workflow calls api.createGraphWorkflow with the modern graph shape', async () => {
+    // Modern shape emitted by CrystalOS's reconciled `execute_propose_workflow`
+    // (Wave 3): params.nodes/params.edges/params.trigger_type (snake_case on
+    // the wire), not the old flat trigger/action_type/action_config shape.
+    const nodes = [{ id: 'n1', type: 'trigger', data: {} }];
+    const edges: unknown[] = [];
     const proposal = makeProposal({
       id:    'ap-wf',
       type:  'create_workflow',
       title: 'Alert on NPS drop',
+      description: 'When NPS drops below 6, notify the team',
+      params: {
+        name:          'NPS Drop Alert',
+        description:   'When NPS drops below 6, notify the team',
+        trigger_type:  'response_submitted',
+        nodes,
+        edges,
+      },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.createGraphWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name:        'NPS Drop Alert',
+          description: 'When NPS drops below 6, notify the team',
+          triggerType: 'response_submitted',
+          nodes,
+          edges,
+          status:      'draft',
+        }),
+      );
+      expect(mockApi.createWorkflow).not.toHaveBeenCalled();
+    });
+  });
+
+  it('create_workflow adds a confirmation message after success (graph shape)', async () => {
+    const proposal = makeProposal({
+      id:    'ap-wf2',
+      type:  'create_workflow',
+      title: 'Auto-alert on churn',
+      params: { trigger_type: 'crystal.churn_risk', nodes: [{ id: 'n1' }], edges: [] },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Workflow created/i)).toBeInTheDocument();
+    });
+  });
+
+  it('create_workflow falls back to the legacy flat shape when a stale proposal lacks nodes/edges', async () => {
+    // Regression guard: a stale/cached proposal from before the Wave 3
+    // reconciliation may still carry the old flat shape. It must not crash —
+    // it should fall back to api.createWorkflow() rather than the graph path.
+    const proposal = makeProposal({
+      id:    'ap-wf-legacy',
+      type:  'create_workflow',
+      title: 'Alert on NPS drop (legacy)',
       params: {
         name:          'NPS Drop Alert',
         trigger:       'nps_below_6',
@@ -529,15 +612,36 @@ describe.skip('CrystalPanel — action execution: in-app actions', () => {
           enabled:     true,
         }),
       );
+      expect(mockApi.createGraphWorkflow).not.toHaveBeenCalled();
     });
   });
+});
 
-  it('create_workflow adds a confirmation message after success', async () => {
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — create_workflow: builder draft hydration (Wave 14)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE14_UNIFIED_BUILDER_SPEC.md §4 — the new `builderDraftHydrator` branch is
+// checked BEFORE the `!surveyId` guard in executeAction's `create_workflow`
+// case. These tests exercise that branch directly; every pre-existing
+// create_workflow test above (which runs with builderDraftHydrator: null, the
+// default) is left completely unmodified — proof the new branch is additive.
+
+  it('routes a create_workflow proposal through the hydrator instead of persisting, when a hydrator is registered', async () => {
+    const mockHydrator = vi.fn().mockReturnValue(true);
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen: true, initialQuery: '', crystalCtx: {}, scope: 'survey-abc',
+      agenticInsights: [], topics: [],
+      closeCrystal: mockCloseCrystal, setScope: mockSetScope, setCrystalCtx: mockSetCrystalCtx,
+      openCrystal: vi.fn(), toggleCrystal: vi.fn(), setCrystalData: vi.fn(),
+      builderContext: { kind: 'workflow_builder' },
+      builderDraft: null,
+      builderDraftHydrator: mockHydrator,
+      setBuilderContext: vi.fn(), setBuilderDraft: vi.fn(), setBuilderDraftHydrator: vi.fn(),
+    });
+
     const proposal = makeProposal({
-      id:    'ap-wf2',
-      type:  'create_workflow',
-      title: 'Auto-alert on churn',
-      params: { trigger: 'churn_risk', action_type: 'notify' },
+      id: 'ap-wf-hydrate', type: 'create_workflow', title: 'Alert on NPS drop',
+      params: { trigger_type: 'response_submitted', nodes: [{ id: 'n1' }], edges: [] },
     });
 
     await triggerProposals([proposal]);
@@ -546,9 +650,89 @@ describe.skip('CrystalPanel — action execution: in-app actions', () => {
     await user.click(screen.getByRole('button', { name: /apply/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Workflow created/i)).toBeInTheDocument();
+      expect(mockHydrator).toHaveBeenCalledWith(expect.objectContaining({ id: 'ap-wf-hydrate' }));
+    });
+    expect(mockApi.createGraphWorkflow).not.toHaveBeenCalled();
+    expect(mockApi.createWorkflow).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Applied .* to the current draft below/i)).toBeInTheDocument();
     });
   });
+
+  it('falls back to api.createGraphWorkflow when the hydrator declines (returns false)', async () => {
+    const mockHydrator = vi.fn().mockReturnValue(false);
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen: true, initialQuery: '', crystalCtx: {}, scope: 'survey-abc',
+      agenticInsights: [], topics: [],
+      closeCrystal: mockCloseCrystal, setScope: mockSetScope, setCrystalCtx: mockSetCrystalCtx,
+      openCrystal: vi.fn(), toggleCrystal: vi.fn(), setCrystalData: vi.fn(),
+      builderContext: { kind: 'workflow_builder' },
+      builderDraft: null,
+      builderDraftHydrator: mockHydrator,
+      setBuilderContext: vi.fn(), setBuilderDraft: vi.fn(), setBuilderDraftHydrator: vi.fn(),
+    });
+
+    const nodes = [{ id: 'n1', type: 'trigger', data: {} }];
+    const edges: unknown[] = [];
+    const proposal = makeProposal({
+      id: 'ap-wf-decline', type: 'create_workflow', title: 'Alert on NPS drop',
+      params: { name: 'NPS Drop Alert', trigger_type: 'response_submitted', nodes, edges },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockHydrator).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(mockApi.createGraphWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'NPS Drop Alert', triggerType: 'response_submitted', nodes, edges, status: 'draft' }),
+      );
+    });
+  });
+
+  it('calls api.createGraphWorkflow exactly as before when builderDraftHydrator is null (default) — byte-identical regression proof', async () => {
+    // Explicitly re-assert the default (matches beforeEach, but stated here
+    // for clarity of intent) — this is the literal proof the shared
+    // component's existing behavior for every non-builder caller is untouched.
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen: true, initialQuery: '', crystalCtx: {}, scope: 'survey-abc',
+      agenticInsights: [], topics: [],
+      closeCrystal: mockCloseCrystal, setScope: mockSetScope, setCrystalCtx: mockSetCrystalCtx,
+      openCrystal: vi.fn(), toggleCrystal: vi.fn(), setCrystalData: vi.fn(),
+      builderContext: null,
+      builderDraft: null,
+      builderDraftHydrator: null,
+      setBuilderContext: vi.fn(), setBuilderDraft: vi.fn(), setBuilderDraftHydrator: vi.fn(),
+    });
+
+    const nodes = [{ id: 'n1', type: 'trigger', data: {} }];
+    const edges: unknown[] = [];
+    const proposal = makeProposal({
+      id: 'ap-wf-nohydrate', type: 'create_workflow', title: 'Alert on NPS drop',
+      params: { name: 'NPS Drop Alert', trigger_type: 'response_submitted', nodes, edges },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.createGraphWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'NPS Drop Alert', triggerType: 'response_submitted', nodes, edges, status: 'draft' }),
+      );
+    });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — action execution: in-app actions (continued)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
 
   it('create_alert calls api.createAlertRule with mapped params', async () => {
     const proposal = makeProposal({
@@ -701,6 +885,12 @@ describe('CrystalPanel — scope propagation', () => {
       openCrystal:     vi.fn(),
       toggleCrystal:   vi.fn(),
       setCrystalData:  vi.fn(),
+      builderContext:          null,
+      builderDraft:            null,
+      builderDraftHydrator:    null,
+      setBuilderContext:       vi.fn(),
+      setBuilderDraft:         vi.fn(),
+      setBuilderDraftHydrator: vi.fn(),
     });
 
     global.fetch = mockFetchWithAnswer();
@@ -720,6 +910,289 @@ describe('CrystalPanel — scope propagation', () => {
     expect(body.scope).toBe('org');
     // survey_id must be '' — never 'all'
     expect(body.survey_id).toBe('');
+  });
+
+  it('sends scope=tag and tag_id when crystalCtx.focused_tag_id is set — even though scope="all"', async () => {
+    // Tag Report pages never touch SurveyScope — they inject the tag focus via
+    // crystalCtx while `scope` stays 'all'. The tag focus must still win.
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen:          true,
+      initialQuery:    '',
+      crystalCtx:      { focused_tag_id: 'tag-1', focused_tag_name: 'Onboarding' },
+      scope:           'all',
+      agenticInsights: [],
+      topics:          [],
+      closeCrystal:    mockCloseCrystal,
+      setScope:        mockSetScope,
+      setCrystalCtx:   mockSetCrystalCtx,
+      openCrystal:     vi.fn(),
+      toggleCrystal:   vi.fn(),
+      setCrystalData:  vi.fn(),
+    });
+
+    global.fetch = mockFetchWithAnswer();
+    renderPanel('all');
+
+    const user = userEvent.setup();
+    const textarea = screen.getByPlaceholderText(/ask anything/i);
+    await user.type(textarea, 'tag scoped question');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalled();
+    });
+
+    const [url, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toContain('/api/experience/tag/crystal/stream');
+    const body = JSON.parse(init.body as string);
+    expect(body.scope).toBe('tag');
+    expect(body.tag_id).toBe('tag-1');
+    // survey_id stays '' — the tag focus doesn't imply a survey.
+    expect(body.survey_id).toBe('');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — tag context indicator', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('renders a "Tag: {name}" chip when crystalCtx.focused_tag_id is set', () => {
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen:          true,
+      initialQuery:    '',
+      crystalCtx:      { focused_tag_id: 'tag-1', focused_tag_name: 'Onboarding' },
+      scope:           'all',
+      agenticInsights: [],
+      topics:          [],
+      closeCrystal:    mockCloseCrystal,
+      setScope:        mockSetScope,
+      setCrystalCtx:   mockSetCrystalCtx,
+      openCrystal:     vi.fn(),
+      toggleCrystal:   vi.fn(),
+      setCrystalData:  vi.fn(),
+    });
+
+    renderPanel('all');
+
+    // The i18n mock returns the raw key, so the translated chip collapses to its key.
+    expect(screen.getByText('crystal.tagScopeChip')).toBeInTheDocument();
+  });
+
+  it('does not render the tag chip when no tag is focused', () => {
+    renderPanel('all');
+    expect(screen.queryByText('crystal.tagScopeChip')).not.toBeInTheDocument();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — action execution: tag report', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('view_tag_report navigates to the tag\'s latest-report route using params.tag_id', async () => {
+    const proposal = makeProposal({
+      id:     'ap-vtr',
+      type:   'view_tag_report',
+      title:  'View Tag Report',
+      params: { tag_id: 'tag-99' },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-99/report');
+    });
+  });
+
+  it('view_tag_report falls back to crystalCtx.focused_tag_id when params.tag_id is absent', async () => {
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen:          true,
+      initialQuery:    '',
+      crystalCtx:      { focused_tag_id: 'tag-ctx' },
+      scope:           'survey-abc',
+      agenticInsights: [],
+      topics:          [],
+      closeCrystal:    mockCloseCrystal,
+      setScope:        mockSetScope,
+      setCrystalCtx:   mockSetCrystalCtx,
+      openCrystal:     vi.fn(),
+      toggleCrystal:   vi.fn(),
+      setCrystalData:  vi.fn(),
+    });
+
+    const proposal = makeProposal({ id: 'ap-vtr2', type: 'view_tag_report', params: {} });
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/app/experience/tags/tag-ctx/report');
+    });
+  });
+
+  it('view_tag_report records a failed outcome when no tag_id is available anywhere', async () => {
+    const proposal = makeProposal({ id: 'ap-vtr-fail', type: 'view_tag_report', params: {} });
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.recordProposalOutcome).toHaveBeenCalledWith(
+        'survey-abc',
+        expect.objectContaining({ proposalKey: 'ap-vtr-fail', status: 'failed' }),
+      );
+    });
+    expect(mockNavigate).not.toHaveBeenCalledWith(expect.stringContaining('/report'));
+  });
+
+  it('generate_tag_report calls api.generateTagReport, invalidates tagReports, and navigates to the new run', async () => {
+    const proposal = makeProposal({
+      id:     'ap-gtr',
+      type:   'generate_tag_report',
+      title:  'Generate report for Enterprise',
+      params: { tag_id: 'tag-99', run_mode: 'manual' },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.generateTagReport).toHaveBeenCalledWith({
+        tag_id:        'tag-99',
+        run_mode:      'manual',
+        window_start:  undefined,
+        window_end:    undefined,
+        parent_run_id: undefined,
+      });
+    });
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/app/experience/tags/tag-99/report/run-tag-1',
+        { state: { inFlightNotice: null } },
+      );
+    });
+
+    // The i18n mock returns the raw key — the confirmation note collapses to its key.
+    await waitFor(() => {
+      expect(screen.getByText('crystal.tagReportGenerating')).toBeInTheDocument();
+    });
+  });
+
+  it('generate_tag_report forwards an in-flight notice through navigation state when generateTagReport reports attached_to_existing (regression test, 2026-07-03 — fixes "InFlightRunBanner unreachable" for the Crystal-triggered generation path too, not just TagReportNewPage)', async () => {
+    mockApi.generateTagReport.mockResolvedValueOnce({
+      run_id: 'run-tag-inflight', attached_to_existing: true, created_at: '2026-07-01T00:00:00Z',
+    });
+    const proposal = makeProposal({
+      id: 'ap-gtr-inflight', type: 'generate_tag_report', title: 'Generate report for Enterprise',
+      params: { tag_id: 'tag-99', run_mode: 'manual' },
+    });
+
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/app/experience/tags/tag-99/report/run-tag-inflight',
+        { state: { inFlightNotice: { startedAt: '2026-07-01T00:00:00Z', trigger: 'manual' } } },
+      );
+    });
+  });
+
+  it('generate_tag_report records a failed outcome when no tag_id is available anywhere', async () => {
+    const proposal = makeProposal({ id: 'ap-gtr-fail', type: 'generate_tag_report', params: {} });
+    await triggerProposals([proposal]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /apply/i }));
+
+    await waitFor(() => {
+      expect(mockApi.recordProposalOutcome).toHaveBeenCalledWith(
+        'survey-abc',
+        expect.objectContaining({ proposalKey: 'ap-gtr-fail', status: 'failed' }),
+      );
+    });
+    expect(mockApi.generateTagReport).not.toHaveBeenCalled();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — Wave 15 builder-context wiring (submitQuery)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+// docs/automation-hub/TRACKER.md Wave 15, Phase 2 (Elias) — submitQuery must
+// relay `surface`/`builder_draft` to backend/src/routes/experience.ts's
+// `/:scope/crystal/stream` proxy ONLY when builderContext (Wave 14, set by
+// the workflow builder pages) is active. Every other page's request body
+// (builderContext: null, the default — see beforeEach) must be byte-identical
+// to before this wave: this is the single most important test here.
+
+  const SAMPLE_BUILDER_DRAFT = {
+    mode: 'sentence' as const,
+    triggerType: 'response_submitted',
+    scopeSelection: { scopeType: 'survey' as const, scopeSurveyId: 'survey-abc', surveyName: 'Customer NPS' },
+    conditionClauses: [{ field: 'nps_score', op: 'lt', value: '6' }],
+    actions: [{ action: 'notify_slack', label: 'Notify #cs-team on Slack' }],
+    workflowName: 'NPS Drop Alert',
+    isEditMode: false,
+  };
+
+  it('includes surface and builder_draft in the request body when builderContext is set', async () => {
+    vi.mocked(useCrystalPanel).mockReturnValue({
+      isOpen: true, initialQuery: '', crystalCtx: {}, scope: 'survey-abc',
+      agenticInsights: [], topics: [],
+      closeCrystal: mockCloseCrystal, setScope: mockSetScope, setCrystalCtx: mockSetCrystalCtx,
+      openCrystal: vi.fn(), toggleCrystal: vi.fn(), setCrystalData: vi.fn(),
+      builderContext: { kind: 'workflow_builder' },
+      builderDraft: SAMPLE_BUILDER_DRAFT,
+      builderDraftHydrator: null,
+      setBuilderContext: vi.fn(), setBuilderDraft: vi.fn(), setBuilderDraftHydrator: vi.fn(),
+    });
+
+    global.fetch = mockFetchWithAnswer();
+    renderPanel('survey-abc');
+
+    const user = userEvent.setup();
+    const textarea = screen.getByPlaceholderText(/ask anything/i);
+    await user.type(textarea, 'what have I built so far?');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalled();
+    });
+
+    const [, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body.surface).toBe('workflow_builder');
+    expect(body.builder_draft).toEqual(SAMPLE_BUILDER_DRAFT);
+  });
+
+  it('omits surface and builder_draft entirely when builderContext is null (every existing non-builder page)', async () => {
+    // builderContext: null is the beforeEach default, matching every current
+    // caller (Insights pages, org portfolio) — reasserted here explicitly.
+    global.fetch = mockFetchWithAnswer();
+    renderPanel('survey-abc');
+
+    const user = userEvent.setup();
+    const textarea = screen.getByPlaceholderText(/ask anything/i);
+    await user.type(textarea, 'why did nps drop?');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalled();
+    });
+
+    const [, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(init.body as string);
+    expect(body).not.toHaveProperty('surface');
+    expect(body).not.toHaveProperty('builder_draft');
   });
 });
 
@@ -770,5 +1243,84 @@ describe('resolveReportProposalAction — Phase 6 insight proposal dispatch', ()
   it('manual-run proposals require a survey in scope → noop when surveyId is undefined', () => {
     const p = makeProposal({ type: 'generate_intelligence_report', params: {} });
     expect(resolveReportProposalAction(p, undefined)).toMatchObject({ kind: 'noop' });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('classifyAsSupport — Wave 18 reference/enumeration keyword gap', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('classifies the exact reported phrasing ("what types of X exists") as support', () => {
+    // The literal bug-report phrasing — note "trigger exists" (singular noun +
+    // "exists"), a subject/verb-number mismatch that a naive "exist" match
+    // would miss.
+    expect(classifyAsSupport('What types of trigger exists?')).toBe(true);
+  });
+
+  it('classifies "what types of X are there" as support', () => {
+    expect(classifyAsSupport('What types of triggers are there?')).toBe(true);
+  });
+
+  it('classifies "what kinds of X exist" as support', () => {
+    expect(classifyAsSupport('What kinds of workflow actions exist?')).toBe(true);
+  });
+
+  it('classifies "which X are available" as support', () => {
+    expect(classifyAsSupport('Which plans are available?')).toBe(true);
+  });
+
+  it('classifies other genuine product/platform enumeration questions as support', () => {
+    expect(classifyAsSupport('What types of surveys can I create?')).toBe(true);
+  });
+
+  it('does NOT classify a genuine survey-data question containing "types" as support', () => {
+    // Precision boundary: this is a real question about the user's own survey
+    // data (their response set), not a product/platform reference question —
+    // it must fall through to the normal (data-analysis) Crystal path.
+    expect(classifyAsSupport('what types of responses mention pricing')).toBe(false);
+  });
+
+  it('does NOT classify other data-shaped enumeration questions as support', () => {
+    expect(classifyAsSupport('what types of responses have low sentiment')).toBe(false);
+    expect(classifyAsSupport('What types of NPS detractors exist in my data?')).toBe(false);
+    expect(classifyAsSupport('which segments are available in this survey?')).toBe(false);
+  });
+
+  it('still classifies existing bug/how-to keyword phrasing as support (no regression)', () => {
+    expect(classifyAsSupport('My export is broken')).toBe(true);
+    expect(classifyAsSupport('How do I add skip logic?')).toBe(true);
+  });
+
+  it('does not classify ordinary analyst questions as support', () => {
+    expect(classifyAsSupport('Why did NPS drop recently?')).toBe(false);
+    expect(classifyAsSupport('Which survey has highest churn risk?')).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('CrystalPanel — Wave 19a brand-token rendering (header/avatar gradient)', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+
+  it('renders the header gem icon gradient using brand-reactive CSS vars, not literal hex', () => {
+    const { container } = renderPanel();
+
+    // The Crystal gem icon in the panel header — style={{ background:
+    // 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
+    // (previously hardcoded '#2a4bd9'/'#8329c8' — see WAVE19_CRYSTAL_IDENTITY_TOKEN_SPEC.md).
+    const gemIcon = container.querySelector('.w-8.h-8.rounded-xl');
+    expect(gemIcon).toBeTruthy();
+    const style = (gemIcon as HTMLElement).getAttribute('style') ?? '';
+    expect(style).toContain('var(--color-primary)');
+    expect(style).toContain('var(--color-tertiary)');
+    expect(style).not.toMatch(/#2a4bd9|#8329c8/);
+  });
+
+  it('the "Xperiq Copilot" badge next to the Crystal title uses --color-primary, not a literal hex', () => {
+    renderPanel();
+
+    const badge = screen.getByText('Xperiq Copilot');
+    const style = badge.getAttribute('style') ?? '';
+    expect(style).toContain('var(--color-primary)');
+    expect(style).not.toMatch(/#2a4bd9/);
   });
 });

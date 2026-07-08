@@ -17,6 +17,7 @@ from crystalos.crystal.tools import (
     execute_get_insights_list,
     execute_get_driver_analysis,
     execute_get_checkpoint_history,
+    execute_get_recent_checkpoints,
     execute_get_benchmark_comparison,
 )
 from crystalos.crystal.context import CrystalContext
@@ -807,6 +808,232 @@ class TestCrystalToolOrgScoping:
         assert result == {"error": "survey_id required"}
 
 
+class TestCheckpointToolsV2FirstLegacyFallback:
+    """Fixed 2026-07-04: execute_get_checkpoint_history and
+    execute_get_recent_checkpoints used to query ONLY the legacy
+    survey_insight_checkpoints table — found during the same audit that fixed
+    node_delta_compute's identical mistake (graphs/insights.py). A survey
+    whose history has moved to insight_checkpoints_v2 got silently empty
+    results from these two tools. They now share _v2_then_legacy_rows
+    (v2-first, legacy fallback only when v2 has no rows) with
+    execute_get_checkpoint_chain / execute_get_insight_trail. These tests
+    route on the SQL text so v2 and legacy can return different rows — the
+    single-mock-for-any-query pattern used by the older test above would
+    never actually exercise the fallback branch."""
+
+    def _make_ctx(self, survey_id="survey-1", org_id="org-1"):
+        from crystalos.crystal.context import CrystalContext
+        return CrystalContext(org_id=org_id, user_id="user-1", survey_id=survey_id, scope="survey")
+
+    def _make_routed_pool(self, v2_rows, v2_desc, legacy_rows, legacy_desc):
+        """Pool whose cursor answers differently depending on which table the
+        just-issued SQL targets, so v2-hit and legacy-fallback are both
+        independently observable in one test."""
+        mock_cur = AsyncMock()
+        mock_cur.execute = AsyncMock()
+        state = {"last_sql": ""}
+
+        async def _execute(sql, params=None):
+            state["last_sql"] = sql
+        mock_cur.execute.side_effect = _execute
+
+        async def _fetchall():
+            if "insight_checkpoints_v2" in state["last_sql"]:
+                mock_cur.description = v2_desc
+                return v2_rows
+            mock_cur.description = legacy_desc
+            return legacy_rows
+        mock_cur.fetchall = AsyncMock(side_effect=_fetchall)
+        mock_cur.__aenter__ = AsyncMock(return_value=mock_cur)
+        mock_cur.__aexit__ = AsyncMock(return_value=False)
+
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cur)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        pool_ctx = MagicMock()
+        pool_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        pool_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_pool = MagicMock()
+        mock_pool.connection = MagicMock(return_value=pool_ctx)
+        return mock_pool, mock_cur
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_history_reads_v2_when_present(self):
+        v2_desc = [
+            ("id",), ("checkpoint_number",), ("response_count_at_checkpoint",),
+            ("nps_at_checkpoint",), ("csat_at_checkpoint",), ("topic_fingerprint",),
+            ("delta_from_prior",), ("created_at",),
+        ]
+        v2_row = ("v2-id-1", 9, 120, 46.0, 4.2, "fp9", None, "2026-07-01 00:00:00")
+        pool, cur = self._make_routed_pool(
+            v2_rows=[v2_row], v2_desc=v2_desc, legacy_rows=[("should-not-be-used",)], legacy_desc=[("x",)],
+        )
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=pool):
+            result = await execute_get_checkpoint_history(self._make_ctx(), {"survey_id": "survey-1"})
+        assert result["count"] == 1
+        assert result["checkpoints"][0]["id"] == "v2-id-1"
+        assert result["checkpoints"][0]["checkpoint_number"] == 9
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_history_falls_back_to_legacy_when_v2_empty(self):
+        """The exact bug scenario: a survey with only legacy history must still
+        return it, not silently empty results, once v2-first querying exists."""
+        legacy_desc = [
+            ("id",), ("checkpoint_number",), ("response_count_at_checkpoint",),
+            ("nps_at_checkpoint",), ("csat_at_checkpoint",), ("topic_fingerprint",),
+            ("delta_from_prior",), ("created_at",),
+        ]
+        legacy_row = ("legacy-id-1", 3, 80, 41.0, 3.9, "fp3", None, "2026-05-01 00:00:00")
+        pool, cur = self._make_routed_pool(
+            v2_rows=[], v2_desc=[], legacy_rows=[legacy_row], legacy_desc=legacy_desc,
+        )
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=pool):
+            result = await execute_get_checkpoint_history(self._make_ctx(), {"survey_id": "survey-1"})
+        assert result["count"] == 1
+        assert result["checkpoints"][0]["id"] == "legacy-id-1"
+        assert result["checkpoints"][0]["checkpoint_number"] == 3
+
+    @pytest.mark.asyncio
+    async def test_recent_checkpoints_reads_v2_when_present(self):
+        v2_desc = [
+            ("checkpoint_number",), ("nps_at_checkpoint",),
+            ("delta_from_prior",), ("meaningful_delta",), ("created_at",),
+        ]
+        v2_row = (9, 46.0, {"nps_delta": 1.0}, True, "2026-07-01 00:00:00")
+        pool, cur = self._make_routed_pool(
+            v2_rows=[v2_row], v2_desc=v2_desc, legacy_rows=[("should-not-be-used",)], legacy_desc=[("x",)],
+        )
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=pool):
+            result = await execute_get_recent_checkpoints(self._make_ctx(), {"survey_id": "survey-1"})
+        assert result["count"] == 1
+        assert result["checkpoints"][0]["checkpoint_number"] == 9
+
+    @pytest.mark.asyncio
+    async def test_recent_checkpoints_falls_back_to_legacy_when_v2_empty(self):
+        legacy_desc = [
+            ("checkpoint_number",), ("nps_at_checkpoint",),
+            ("delta_from_prior",), ("meaningful_delta",), ("created_at",),
+        ]
+        legacy_row = (3, 41.0, {"nps_delta": -2.0}, True, "2026-05-01 00:00:00")
+        pool, cur = self._make_routed_pool(
+            v2_rows=[], v2_desc=[], legacy_rows=[legacy_row], legacy_desc=legacy_desc,
+        )
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=pool):
+            result = await execute_get_recent_checkpoints(self._make_ctx(), {"survey_id": "survey-1"})
+        assert result["count"] == 1
+        assert result["checkpoints"][0]["checkpoint_number"] == 3
+
+
+class TestProposeWorkflowModernShape:
+    """execute_propose_workflow (crystal/tools.py) — reconciled (Xperiq Actions
+    Wave 3) to emit the SAME nodes/edges engine graph shape as
+    POST /workflows/parse-nl, via the shared crystal.workflow_nl core, instead
+    of the old flat trigger/action_type/action_config shape."""
+
+    def _ctx(self):
+        from crystalos.crystal.context import CrystalContext
+        return CrystalContext(org_id="org-1", user_id="u1", survey_id="survey-1", scope="survey")
+
+    def _draft(self, **overrides):
+        from crystalos.crystal.workflow_nl import (
+            WorkflowNLDraft, WorkflowNLTriggerDraft, WorkflowNLConditionDraft, WorkflowNLActionDraft,
+        )
+        defaults = dict(
+            name="NPS drop alert",
+            description="Notify CSM when NPS drops below 30",
+            trigger=WorkflowNLTriggerDraft(trigger_type="score.nps_drop"),
+            conditions=[WorkflowNLConditionDraft(field="nps", op="lt", value="30")],
+            actions=[WorkflowNLActionDraft(action="notify.slack", config={})],
+            confidence=0.9,
+            warnings=[],
+            unparseable=False,
+            unparseable_reason=None,
+        )
+        defaults.update(overrides)
+        return WorkflowNLDraft(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_produces_nodes_and_edges_not_legacy_flat_shape(self):
+        from crystalos.crystal.tools import execute_propose_workflow
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=self._draft())):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "NPS drops below 30", "desired_outcome": "notify CSM on Slack"},
+            )
+        assert result["proposal_type"] == "workflow"
+        params = result["params"]
+        # Modern shape present ...
+        assert "nodes" in params and "edges" in params
+        assert isinstance(params["nodes"], list) and len(params["nodes"]) >= 1
+        assert params["trigger_type"] == "score.nps_drop"
+        # ... and the OLD flat shape must be gone (this was the reconciliation bug).
+        assert "action_type" not in params
+        assert "action_config" not in params
+        assert "trigger" not in params or params.get("trigger") is None
+
+    @pytest.mark.asyncio
+    async def test_confidence_and_warnings_carried_into_params(self):
+        from crystalos.crystal.tools import execute_propose_workflow
+        draft = self._draft(warnings=["Assumed Slack channel #cx"], confidence=0.72)
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "NPS drops below 30", "desired_outcome": "notify CSM"},
+            )
+        assert result["params"]["confidence"] == pytest.approx(0.72)
+        assert "Assumed Slack channel #cx" in result["params"]["warnings"]
+
+    @pytest.mark.asyncio
+    async def test_proposal_type_still_aliases_to_create_workflow(self):
+        """agents/crystal.py's _PROPOSAL_TYPE_ALIASES must still map this tool's
+        proposal_type ('workflow') to the frontend handler name — unaffected by
+        the shape reconciliation since only `params` changed, not `proposal_type`."""
+        from crystalos.crystal.tools import execute_propose_workflow
+        from crystalos.agents.crystal import _normalize_proposal
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=self._draft())):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "NPS drops below 30", "desired_outcome": "notify CSM"},
+            )
+        normalized = _normalize_proposal(result)
+        assert normalized["type"] == "create_workflow"
+
+    @pytest.mark.asyncio
+    async def test_no_trigger_condition_or_outcome_returns_empty_graph_proposal(self):
+        from crystalos.crystal.tools import execute_propose_workflow
+        result = await execute_propose_workflow(self._ctx(), {})
+        assert result["proposal_type"] == "workflow"
+        assert result["params"]["nodes"] == []
+        assert result["params"]["edges"] == []
+
+    @pytest.mark.asyncio
+    async def test_unparseable_description_returns_empty_graph_not_a_crash(self):
+        from crystalos.crystal.tools import execute_propose_workflow
+        draft = self._draft(unparseable=True, unparseable_reason="not a workflow")
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "NPS drops below 30", "desired_outcome": "notify CSM"},
+            )
+        assert result["proposal_type"] == "workflow"
+        assert result["params"]["nodes"] == []
+        assert result["params"]["edges"] == []
+
+    @pytest.mark.asyncio
+    async def test_uses_fallback_registry_not_the_node_side_file(self):
+        """The chat-tool path has no Node request to forward a live registry
+        from — it must use FALLBACK_REGISTRY (crystal/workflow_nl.py), never
+        crash for lack of one. A trigger only in the FULL registry (not the
+        fallback mirror) should be dropped."""
+        from crystalos.crystal.tools import execute_propose_workflow
+        from crystalos.crystal.workflow_nl import WorkflowNLTriggerDraft
+        draft = self._draft(trigger=WorkflowNLTriggerDraft(trigger_type="external.webhook"))  # not in FALLBACK_REGISTRY's triggers
+        with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+            result = await execute_propose_workflow(
+                self._ctx(), {"trigger_condition": "a webhook fires", "desired_outcome": "notify CSM"},
+            )
+        assert result["params"]["nodes"] == []
+
+
 class TestProposeAlert:
     """Tests for the propose_alert action tool + proposal normalisation."""
 
@@ -897,13 +1124,20 @@ class TestProposeAlert:
             execute_propose_workflow,
             execute_propose_alert,
         )
+        from crystalos.lib.openrouter import AgentOutputError
         ctx = self._ctx()
-        with patch("crystalos.crystal.tools.db._pool_conn") as mock_pool:
+        with patch("crystalos.crystal.tools.db._pool_conn") as mock_pool, \
+             patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(side_effect=AgentOutputError("no LLM in tests"))):
             # survey_creation queries the DB for the survey title; make it a no-op
             mock_conn = MagicMock()
             mock_pool.return_value.connection.return_value.__aenter__ = AsyncMock(
                 side_effect=Exception("skip db")
             )
+            # execute_propose_workflow's LLM call is mocked to fail fast (see patch
+            # above) rather than genuinely reaching OpenRouter — it still returns a
+            # valid business_rationale via its own fallback branch either way, but
+            # this keeps the test offline per crystalos/CLAUDE.md's testing rules
+            # ("Never make real LLM calls in tests").
             results = [
                 await execute_propose_survey_creation(
                     ctx, {"purpose": "understand churn", "target_audience": "detractors"}
@@ -1220,3 +1454,394 @@ class TestInsightV2ProposeTools:
         assert len(proposals) == 1
         assert proposals[0]["type"] == "trigger_manual_insight_run"
         assert proposals[0]["id"]
+
+
+# ── Tag Report tools (list_tags / get_tag_report / get_tag_report_trail / proposals) ──
+
+class TestTagReportTools:
+    """New Crystal tools for the tag-analyst skill (docs/tag-report/DESIGN.md).
+    Read-only, org-scoped — mirrors TestInsightV2DataTools/ProposeTools patterns."""
+
+    def _ctx(self, org_id="org-1", tag_ids=("tag-1",)):
+        from crystalos.crystal.context import CrystalContext
+        return CrystalContext(
+            org_id=org_id, user_id="u1", survey_id=None, scope="tag",
+            tag_ids=tuple(tag_ids) if tag_ids else None,
+        )
+
+    def _make_mock_pool(self, fetchone_return=None, fetchall_return=None, description=None):
+        mock_cur = AsyncMock()
+        mock_cur.execute = AsyncMock()
+        mock_cur.fetchone = AsyncMock(return_value=fetchone_return)
+        mock_cur.fetchall = AsyncMock(return_value=fetchall_return or [])
+        mock_cur.description = description or []
+        mock_cur.__aenter__ = AsyncMock(return_value=mock_cur)
+        mock_cur.__aexit__ = AsyncMock(return_value=False)
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cur)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_pool_ctx = MagicMock()
+        mock_pool_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_pool = MagicMock()
+        mock_pool.connection = MagicMock(return_value=mock_pool_ctx)
+        return mock_pool, mock_cur
+
+    def _make_multi_cursor_pool(self, cursor_specs: list[tuple]):
+        """Like _make_mock_pool but conn.cursor() returns a different mock cursor
+        each call, in order — needed for executors that open >1 cursor per
+        connection block (e.g. execute_get_tag_report's sources + insights)."""
+        cursors = []
+        for fetchone_return, fetchall_return, description in cursor_specs:
+            mock_cur = AsyncMock()
+            mock_cur.execute = AsyncMock()
+            mock_cur.fetchone = AsyncMock(return_value=fetchone_return)
+            mock_cur.fetchall = AsyncMock(return_value=fetchall_return or [])
+            mock_cur.description = description or []
+            mock_cur.__aenter__ = AsyncMock(return_value=mock_cur)
+            mock_cur.__aexit__ = AsyncMock(return_value=False)
+            cursors.append(mock_cur)
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(side_effect=cursors)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_pool_ctx = MagicMock()
+        mock_pool_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_pool = MagicMock()
+        mock_pool.connection = MagicMock(return_value=mock_pool_ctx)
+        return mock_pool, cursors
+
+    # ── list_tags ────────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_list_tags_shapes_and_org_scopes(self):
+        from crystalos.crystal.tools import execute_list_tags
+        rows = [("tag-1", "onboarding", "#6366f1", 3), ("tag-2", "exec-dashboard", "#f59e0b", 5)]
+        desc = [("id",), ("name",), ("color",), ("survey_count",)]
+        mock_pool, mock_cur = self._make_mock_pool(fetchall_return=rows, description=desc)
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=mock_pool):
+            result = await execute_list_tags(self._ctx(org_id="org-9"), {"query": "onboard"})
+        assert result["count"] == 2
+        assert result["tags"][0] == {"tag_id": "tag-1", "name": "onboarding", "color": "#6366f1", "survey_count": 3}
+        assert "org-9" in mock_cur.execute.call_args[0][1]
+        assert "%onboard%" in mock_cur.execute.call_args[0][1]
+        assert "ILIKE" in mock_cur.execute.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_list_tags_without_query_lists_recent(self):
+        from crystalos.crystal.tools import execute_list_tags
+        mock_pool, mock_cur = self._make_mock_pool(fetchall_return=[], description=[])
+        with patch("crystalos.crystal.tools.db._pool_conn", return_value=mock_pool):
+            result = await execute_list_tags(self._ctx(), {})
+        assert result == {"tags": [], "count": 0}
+        assert "ILIKE" not in mock_cur.execute.call_args[0][0]
+
+    # ── get_tag_report ───────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_get_tag_report_requires_tag_id(self):
+        from crystalos.crystal.tools import execute_get_tag_report
+        ctx = self._ctx(tag_ids=None)
+        assert await execute_get_tag_report(ctx, {}) == {"error": "tag_id required"}
+
+    @pytest.mark.asyncio
+    async def test_get_tag_report_never_trusts_cross_org_tag_id(self):
+        """A tag_id that doesn't resolve under ctx.org_id must error out before any
+        run/source/insight query executes — the hard org-scoping requirement."""
+        from crystalos.crystal.tools import execute_get_tag_report
+        with patch("crystalos.crystal.tools._load_org_tag", new=AsyncMock(return_value=None)) as mock_load:
+            result = await execute_get_tag_report(self._ctx(org_id="org-1"), {"tag_id": "tag-from-other-org"})
+        assert result == {"error": "tag not found"}
+        mock_load.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_tag_report_no_run_still_document_hint(self):
+        from crystalos.crystal.tools import execute_get_tag_report
+        mock_pool, _ = self._make_mock_pool(fetchone_return=None, description=[])
+        with (
+            patch("crystalos.crystal.tools._load_org_tag",
+                  new=AsyncMock(return_value={"id": "tag-1", "name": "Onboarding", "color": "#000"})),
+            patch("crystalos.crystal.tools.db._pool_conn", return_value=mock_pool),
+        ):
+            result = await execute_get_tag_report(self._ctx(), {"tag_id": "tag-1"})
+        assert result["report"] is None
+        assert result["render_hint"] == "document"
+        assert result["tag_name"] == "Onboarding"
+
+    @pytest.mark.asyncio
+    async def test_get_tag_report_full_shape_and_trust_layer_fields(self):
+        """End-to-end happy path: a confirmed multi-survey track and an
+        insufficient/single-survey-sourced track, with a metric-scoped warning
+        attached only to the track it concerns."""
+        from crystalos.crystal.tools import execute_get_tag_report
+        import json as _json
+
+        run_row = ("run-1", "manual", "completed",
+                   _json.dumps([
+                       {"event": "comparability_warning", "scope": "metric", "warning_type": "scale_mismatch",
+                        "distortion_score": 1.4, "confidence_tier": "medium",
+                        "affected_survey_ids": ["survey-a", "survey-b"], "metric_key": "csat"},
+                   ]),
+                   "2026-06-30 10:00:00", "2026-06-30 10:05:00")
+        run_desc = [("id",), ("run_mode",), ("status",), ("stream_events",), ("created_at",), ("completed_at",)]
+
+        source_rows = [
+            ("survey-a", "Q1 Pulse", "ckpt-a", True, 120, None),
+            ("survey-b", "Q2 Pulse", "ckpt-b", True, 90, None),
+        ]
+        source_desc = [("survey_id",), ("survey_title",), ("checkpoint_id",),
+                       ("trend_eligible",), ("response_count_at_generation",), ("exclusion_reason",)]
+
+        insight_rows = [
+            ("nps", "NPS trending up", "Both surveys agree NPS is climbing.", 70.0,
+             ["survey-a", "survey-b"], _json.dumps([]),
+             _json.dumps({"merged_delta": 3.2, "direction": "up", "agreement_count": 2,
+                          "confidence_tier": "confirmed", "single_survey_id": None})),
+            ("csat", "CSAT single-survey finding", "Only Q1 Pulse shows a CSAT move.", 40.0,
+             ["survey-a"], _json.dumps([]),
+             _json.dumps({"merged_delta": 1.1, "direction": "up", "agreement_count": 1,
+                          "confidence_tier": "insufficient", "single_survey_id": "survey-a"})),
+        ]
+        insight_desc = [("metric_key",), ("headline",), ("narrative",), ("trust_score",),
+                        ("survey_ids",), ("citations_json",), ("metric_json",)]
+
+        mock_pool, cursors = self._make_multi_cursor_pool([
+            (run_row, None, run_desc),
+            (None, source_rows, source_desc),
+            (None, insight_rows, insight_desc),
+        ])
+
+        with (
+            patch("crystalos.crystal.tools._load_org_tag",
+                  new=AsyncMock(return_value={"id": "tag-1", "name": "Onboarding", "color": "#000"})),
+            patch("crystalos.crystal.tools.db._pool_conn", return_value=mock_pool),
+        ):
+            result = await execute_get_tag_report(self._ctx(), {"tag_id": "tag-1"})
+
+        assert result["render_hint"] == "document"
+        assert result["run_id"] == "run-1"
+        assert result["report_url"] == "/app/experience/tags/tag-1/report/run-1"
+        tracks = {t["metric_key"]: t for t in result["metric_tracks"]}
+
+        nps_track = tracks["nps"]
+        assert nps_track["confidence_tier"] == "confirmed"
+        assert nps_track["single_survey_sourced"] is False
+        assert "single_survey_name" not in nps_track
+        # The CSAT-scoped warning must NOT leak onto the NPS track.
+        assert nps_track["warnings"] == []
+
+        csat_track = tracks["csat"]
+        assert csat_track["confidence_tier"] == "insufficient"
+        assert csat_track["single_survey_sourced"] is True
+        assert csat_track["single_survey_name"] == "Q1 Pulse"
+        assert len(csat_track["warnings"]) == 1
+        assert csat_track["warnings"][0]["warning_type"] == "scale_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_get_tag_report_defaults_tag_id_from_ctx(self):
+        """When params omits tag_id, falls back to ctx.tag_ids[0] (scope='tag' request)."""
+        from crystalos.crystal.tools import execute_get_tag_report
+        mock_pool, _ = self._make_mock_pool(fetchone_return=None, description=[])
+        with (
+            patch("crystalos.crystal.tools._load_org_tag",
+                  new=AsyncMock(return_value={"id": "tag-1", "name": "Onboarding", "color": "#000"})) as mock_load,
+            patch("crystalos.crystal.tools.db._pool_conn", return_value=mock_pool),
+        ):
+            result = await execute_get_tag_report(self._ctx(tag_ids=("tag-1",)), {})
+        assert result["render_hint"] == "document"
+        assert mock_load.call_args[0][1] == "tag-1"
+
+    # ── get_tag_report_trail ─────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_get_tag_report_trail_requires_tag_id(self):
+        from crystalos.crystal.tools import execute_get_tag_report_trail
+        ctx = self._ctx(tag_ids=None)
+        assert await execute_get_tag_report_trail(ctx, {}) == {"error": "tag_id required"}
+
+    @pytest.mark.asyncio
+    async def test_get_tag_report_trail_shapes_nodes(self):
+        from crystalos.crystal.tools import execute_get_tag_report_trail
+        import json as _json
+        rows = [
+            ("run-2", "manual", "completed", "2026-06-28 10:00:00", "2026-06-28 10:05:00", "run-1",
+             _json.dumps({"metric_tracks_narrated": 2})),
+            ("run-1", "manual", "completed", "2026-06-20 10:00:00", "2026-06-20 10:05:00", None,
+             _json.dumps({"metric_tracks_narrated": 1})),
+        ]
+        desc = [("id",), ("run_mode",), ("status",), ("created_at",), ("completed_at",),
+                ("parent_run_id",), ("result_json",)]
+        mock_pool, mock_cur = self._make_mock_pool(fetchall_return=rows, description=desc)
+        with (
+            patch("crystalos.crystal.tools._load_org_tag",
+                  new=AsyncMock(return_value={"id": "tag-1", "name": "Onboarding", "color": "#000"})),
+            patch("crystalos.crystal.tools.db._pool_conn", return_value=mock_pool),
+        ):
+            result = await execute_get_tag_report_trail(self._ctx(), {"tag_id": "tag-1"})
+        assert result["count"] == 2
+        assert result["trail_url"] == "/app/experience/tags/tag-1/report/trail"
+        first = result["nodes"][0]
+        assert first["run_id"] == "run-2"
+        assert first["headline_count"] == 2
+        assert first["parent_run_id"] == "run-1"
+        assert first["url"] == "/app/experience/tags/tag-1/report/run-2"
+
+    # ── propose_view_tag_report / propose_generate_tag_report ───────────────
+    # Both now gate through _load_org_tag before building anything (security
+    # review fix, 2026-07-03 — see their docstrings), so every test here mocks
+    # it, mirroring get_tag_report/get_tag_report_trail's own test pattern.
+
+    @pytest.mark.asyncio
+    async def test_propose_view_tag_report_builds_url(self):
+        from crystalos.crystal.tools import execute_propose_view_tag_report
+        with patch("crystalos.crystal.tools._load_org_tag",
+                   new=AsyncMock(return_value={"id": "tag-1", "name": "Onboarding", "color": "#000"})):
+            result = await execute_propose_view_tag_report(
+                self._ctx(), {"tag_id": "tag-1", "run_id": "run-9", "summary": "NPS up 3pts"})
+        assert result["proposal_type"] == "view_tag_report"
+        assert result["params"]["run_id"] == "run-9"
+        assert result["params"]["url"] == "/app/experience/tags/tag-1/report/run-9"
+        assert "Onboarding" in result["title"]
+
+    @pytest.mark.asyncio
+    async def test_propose_view_tag_report_rejects_cross_org_tag(self):
+        """Security review regression test: a tag_id that doesn't belong to the
+        caller's org must be rejected before any proposal is built, identically
+        to how get_tag_report/get_tag_report_trail already behave."""
+        from crystalos.crystal.tools import execute_propose_view_tag_report
+        with patch("crystalos.crystal.tools._load_org_tag", new=AsyncMock(return_value=None)):
+            result = await execute_propose_view_tag_report(self._ctx(), {"tag_id": "someone-elses-tag"})
+        assert result == {"error": "tag not found"}
+
+    @pytest.mark.asyncio
+    async def test_propose_generate_tag_report_defaults_manual(self):
+        from crystalos.crystal.tools import execute_propose_generate_tag_report
+        with patch("crystalos.crystal.tools._load_org_tag",
+                   new=AsyncMock(return_value={"id": "tag-1", "name": "Onboarding", "color": "#000"})):
+            result = await execute_propose_generate_tag_report(self._ctx(), {"tag_id": "tag-1"})
+        assert result["proposal_type"] == "generate_tag_report"
+        assert result["params"]["run_mode"] == "manual"
+        assert result["params"]["tag_id"] == "tag-1"
+        assert "Onboarding" in result["title"]
+
+    @pytest.mark.asyncio
+    async def test_propose_generate_tag_report_custom_range(self):
+        from crystalos.crystal.tools import execute_propose_generate_tag_report
+        with patch("crystalos.crystal.tools._load_org_tag",
+                   new=AsyncMock(return_value={"id": "tag-1", "name": "Onboarding", "color": "#000"})):
+            result = await execute_propose_generate_tag_report(
+                self._ctx(), {"tag_id": "tag-1", "run_mode": "custom_range",
+                              "window_start": "2026-01-01", "window_end": "2026-03-31"})
+        assert result["params"]["run_mode"] == "custom_range"
+        assert result["params"]["window_start"] == "2026-01-01"
+
+    @pytest.mark.asyncio
+    async def test_propose_generate_tag_report_rejects_cross_org_tag(self):
+        from crystalos.crystal.tools import execute_propose_generate_tag_report
+        with patch("crystalos.crystal.tools._load_org_tag", new=AsyncMock(return_value=None)):
+            result = await execute_propose_generate_tag_report(self._ctx(), {"tag_id": "someone-elses-tag"})
+        assert result == {"error": "tag not found"}
+
+    # ── Registration ──────────────────────────────────────────────────────────
+
+    def test_tag_report_tools_registered(self):
+        from crystalos.crystal.registry import DATA_TOOL_NAMES, ACTION_TOOL_NAMES, TOOL_REGISTRY
+        from crystalos.crystal.tools import TOOL_EXECUTORS
+        for name in ("list_tags", "get_tag_report", "get_tag_report_trail"):
+            assert name in DATA_TOOL_NAMES, name
+            assert name in TOOL_EXECUTORS, name
+            assert any(t["name"] == name for t in TOOL_REGISTRY), name
+        for name in ("propose_view_tag_report", "propose_generate_tag_report"):
+            assert name in ACTION_TOOL_NAMES, name
+            assert name in TOOL_EXECUTORS, name
+            assert any(t["name"] == name for t in TOOL_REGISTRY), name
+
+    def test_tag_report_tools_are_read_only_no_write_capability(self):
+        """Hard requirement: no new tool in this feature mutates state. Every new
+        executor either reads (SELECT-only) or returns a *proposal* dict for the
+        frontend to act on — never issues its own INSERT/UPDATE/DELETE."""
+        import inspect
+        from crystalos.crystal import tools as _tools
+        for name in ("execute_list_tags", "execute_get_tag_report", "execute_get_tag_report_trail",
+                     "execute_propose_view_tag_report", "execute_propose_generate_tag_report"):
+            src = inspect.getsource(getattr(_tools, name))
+            upper = src.upper()
+            assert "INSERT INTO" not in upper, name
+            assert "UPDATE " not in upper, name
+            assert "DELETE FROM" not in upper, name
+
+    def test_proposal_type_aliases_include_tag_report(self):
+        from crystalos.agents.crystal import _normalize_proposal
+        assert _normalize_proposal(
+            {"proposal_type": "view_tag_report", "title": "Open Tag Report"}
+        )["type"] == "view_tag_report"
+        assert _normalize_proposal(
+            {"proposal_type": "generate_tag_report", "title": "Generate Tag Report"}
+        )["type"] == "generate_tag_report"
+
+    # ── Pure port helpers (_build_tag_metric_tracks / _build_tag_disclosure) ──
+
+    def test_build_tag_disclosure_detects_backfill(self):
+        from crystalos.crystal.tools import _build_tag_disclosure
+        run = {"stream_events": [
+            {"event": "batch_fetched", "pool_size": 8},
+            {"event": "survey_excluded", "survey_id": "s1"},
+            {"event": "batch_fetched", "pool_size": 8},
+        ]}
+        sources = [
+            {"survey_id": "s1", "checkpoint_id": None},
+            {"survey_id": "s2", "checkpoint_id": "ckpt-2"},
+        ]
+        disclosure = _build_tag_disclosure(run, sources)
+        assert disclosure["pool_size"] == 8
+        assert disclosure["examined_count"] == 2
+        assert disclosure["included_count"] == 1
+        assert disclosure["backfill_occurred"] is True
+
+    def test_build_tag_metric_tracks_never_blends_metrics(self):
+        """Each metric_key produces its own independent track — never merged."""
+        from crystalos.crystal.tools import _build_tag_metric_tracks
+        insights = [
+            {"metric_key": "nps", "headline": "h1", "narrative": "n1", "trust_score": 70.0,
+             "survey_ids": ["s1"], "citations_json": [], "metric_json": {"confidence_tier": "confirmed"}},
+            {"metric_key": "csat", "headline": "h2", "narrative": "n2", "trust_score": 60.0,
+             "survey_ids": ["s1"], "citations_json": [], "metric_json": {"confidence_tier": "confirmed"}},
+        ]
+        tracks = _build_tag_metric_tracks(insights, [], {"run_mode": "manual", "stream_events": []})
+        assert {t["metric_key"] for t in tracks} == {"nps", "csat"}
+        assert all("merged_metric" not in t for t in tracks)
+
+    def test_build_tag_metric_tracks_custom_range_survey_breakdown_uses_trust_score_field(self):
+        """Regression test (integration reconciliation, 2026-07-03): this must be
+        a faithful port of tagReportView.ts's buildMetricTracks, which emits
+        `trust_score` (an approximateTrustScore(response_count) display/sort
+        proxy) on each survey_breakdown entry — not a raw `response_count` field
+        under a different name. Field-name fidelity matters here because the
+        whole point of the Python port is that Crystal's prose and the Tag
+        Report page never disagree about what a run's data means."""
+        from crystalos.crystal.tools import _build_tag_metric_tracks
+        insights = [{
+            "metric_key": "nps", "headline": "h", "narrative": "n", "trust_score": 70.0,
+            "survey_ids": ["s1", "s2"], "citations_json": [],
+            "metric_json": {"confidence_tier": "confirmed"},
+        }]
+        sources = [
+            {"survey_id": "s1", "survey_title": "S1", "response_count_at_generation": 200},
+            {"survey_id": "s2", "survey_title": "S2", "response_count_at_generation": 10},
+        ]
+        run = {
+            "run_mode": "custom_range", "stream_events": [
+                {"event": "bracket_delta_computed", "survey_id": "s1", "nps_delta": 4.0},
+            ],
+        }
+        tracks = _build_tag_metric_tracks(insights, sources, run)
+        breakdown = tracks[0]["survey_breakdown"]
+        assert breakdown[0]["survey_id"] == "s1"
+        assert "trust_score" in breakdown[0]
+        assert "response_count" not in breakdown[0]
+        # Higher response count -> higher trust_score -> sorted first (highest-trust-first).
+        assert breakdown[0]["trust_score"] > breakdown[1]["trust_score"]
+        assert breakdown[0]["delta"] == 4.0
+        assert breakdown[1]["no_comparison_available"] is True

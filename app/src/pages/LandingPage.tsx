@@ -89,8 +89,8 @@ export function LandingPage() {
               <div
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold tracking-widest uppercase text-primary"
                 style={{
-                  background: 'rgba(42,75,217,0.08)',
-                  border: '1px solid rgba(42,75,217,0.2)',
+                  background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--color-primary) 20%, transparent)',
                 }}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
@@ -125,8 +125,8 @@ export function LandingPage() {
                 size="lg"
                 className="cta-glow relative overflow-hidden text-white font-bold active:scale-95 font-headline rounded-xl"
                 style={{
-                  background: 'linear-gradient(135deg, #2a4bd9, #6d28d9)',
-                  boxShadow: '0 20px 40px -10px rgba(42,75,217,0.4)',
+                  background: 'linear-gradient(135deg, var(--color-primary), #6d28d9)',
+                  boxShadow: '0 20px 40px -10px color-mix(in srgb, var(--color-primary) 40%, transparent)',
                 }}
               >
                 {/* Shimmer overlay */}
@@ -142,7 +142,7 @@ export function LandingPage() {
                 className="font-semibold font-headline text-on-surface rounded-xl card-3d"
                 style={{
                   background: 'rgba(255,255,255,0.8)',
-                  border: '1px solid rgba(42,75,217,0.2)',
+                  border: '1px solid color-mix(in srgb, var(--color-primary) 20%, transparent)',
                   backdropFilter: 'blur(8px)',
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.95)')}
@@ -163,7 +163,7 @@ export function LandingPage() {
                 >
                   <div
                     className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
-                    style={{ background: 'rgba(42,75,217,0.1)' }}
+                    style={{ background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
                   >
                     <Icon name="check" size={14} className="text-primary" />
                   </div>
@@ -175,7 +175,7 @@ export function LandingPage() {
             {/* Social proof */}
             <motion.div className="flex items-center gap-4 pt-2" variants={fadeUp} custom={7}>
               <div className="flex -space-x-2">
-                {['#879aff', '#d299ff', '#82deff', '#f9a8d4'].map((bg, i) => (
+                {['var(--color-primary-container)', 'var(--color-tertiary-container)', 'var(--color-secondary-container)', '#f9a8d4'].map((bg, i) => (
                   <div
                     key={i}
                     className="w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-xs font-bold text-white"
@@ -209,7 +209,7 @@ export function LandingPage() {
                 className="absolute top-0 right-0 w-64 p-6 z-20 float-card glass-card-premium"
                 style={{
                   borderRadius: '1rem',
-                  boxShadow: '0 32px 64px -12px rgba(42,75,217,0.2)',
+                  boxShadow: '0 32px 64px -12px color-mix(in srgb, var(--color-primary) 20%, transparent)',
                   transform: 'translate(16px, -16px)',
                 }}
                 initial={{ opacity: 0, x: 40, y: -20 }}
@@ -221,7 +221,7 @@ export function LandingPage() {
                     {t('landing.sentimentCard.title')}
                   </span>
                   <div className="w-6 h-6 rounded-full flex items-center justify-center"
-                    style={{ background: 'rgba(42,75,217,0.1)' }}>
+                    style={{ background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)' }}>
                     <Icon name="trending_up" size={14} className="text-primary" />
                   </div>
                 </div>
@@ -232,7 +232,7 @@ export function LandingPage() {
                 <div className="h-1.5 w-full rounded-full overflow-hidden bg-surface-container-low">
                   <div
                     className="h-full rounded-full"
-                    style={{ width: '75%', background: 'linear-gradient(to right, #2a4bd9, #879aff)' }}
+                    style={{ width: '75%', background: 'linear-gradient(to right, var(--color-primary), var(--color-primary-container))' }}
                   />
                 </div>
               </motion.div>
@@ -254,7 +254,7 @@ export function LandingPage() {
                 <div className="flex items-center gap-3 mb-4">
                   <div
                     className="w-8 h-8 rounded-xl flex items-center justify-center"
-                    style={{ background: 'linear-gradient(135deg, #879aff, #8329c8)' }}
+                    style={{ background: 'linear-gradient(135deg, var(--color-primary-container), var(--color-tertiary))' }}
                   >
                     <Icon name="diamond" fill={1} size={18} className="text-white" />
                   </div>
@@ -271,7 +271,7 @@ export function LandingPage() {
                     <span
                       key={tag}
                       className="px-2.5 py-1 text-[10px] font-bold uppercase rounded-md text-primary"
-                      style={{ background: 'rgba(42,75,217,0.08)' }}
+                      style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)' }}
                     >
                       {tag}
                     </span>
@@ -302,8 +302,8 @@ export function LandingPage() {
                     style={{
                       width: 200,
                       height: 200,
-                      border: '1px solid rgba(42,75,217,0.2)',
-                      borderTopColor: 'rgba(131,41,200,0.6)',
+                      border: '1px solid color-mix(in srgb, var(--color-primary) 20%, transparent)',
+                      borderTopColor: 'color-mix(in srgb, var(--color-tertiary) 60%, transparent)',
                     }}
                   />
                 </div>
@@ -316,7 +316,7 @@ export function LandingPage() {
                       width: 140,
                       height: 140,
                       border: '1px solid rgba(87,210,249,0.3)',
-                      borderBottomColor: 'rgba(42,75,217,0.5)',
+                      borderBottomColor: 'color-mix(in srgb, var(--color-primary) 50%, transparent)',
                       borderRadius: '50%',
                       animation: 'spin-slow 8s linear infinite reverse',
                     }}
@@ -398,7 +398,7 @@ export function LandingPage() {
           >
             <span
               className="inline-flex items-center gap-2 text-xs font-bold tracking-[0.2em] uppercase px-4 py-2 rounded-full text-primary"
-              style={{ background: 'rgba(42,75,217,0.06)', border: '1px solid rgba(42,75,217,0.15)' }}
+              style={{ background: 'color-mix(in srgb, var(--color-primary) 6%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
             >
               <LogoMark size={16} />
               {t('landing.sectionTag')}
@@ -418,14 +418,14 @@ export function LandingPage() {
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
                 transition={{ duration: 0.55, delay: i * 0.12, ease: [0.25, 0.46, 0.45, 0.94] }}
-                whileHover={{ y: -6, boxShadow: '0 32px 64px -12px rgba(42,75,217,0.18)' }}
+                whileHover={{ y: -6, boxShadow: '0 32px 64px -12px color-mix(in srgb, var(--color-primary) 18%, transparent)' }}
               >
                 {/* Holographic hover overlay */}
                 <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 holographic" />
 
                 <div
                   className="relative z-10 w-12 h-12 flex items-center justify-center mb-6 rounded-xl transition-transform group-hover:scale-110 group-hover:rotate-3"
-                  style={{ background: 'linear-gradient(135deg, rgba(42,75,217,0.1), rgba(131,41,200,0.08))' }}
+                  style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 10%, transparent), color-mix(in srgb, var(--color-tertiary) 8%, transparent))' }}
                 >
                   <Icon name={f.icon} size={22} className="text-primary" />
                 </div>
@@ -451,8 +451,8 @@ export function LandingPage() {
         className="relative z-10 overflow-hidden"
         style={{
           background:
-            'radial-gradient(ellipse at 30% 50%, rgba(42,75,217,0.08) 0%, transparent 60%),' +
-            'radial-gradient(ellipse at 70% 50%, rgba(131,41,200,0.06) 0%, transparent 60%),' +
+            'radial-gradient(ellipse at 30% 50%, color-mix(in srgb, var(--color-primary) 8%, transparent) 0%, transparent 60%),' +
+            'radial-gradient(ellipse at 70% 50%, color-mix(in srgb, var(--color-tertiary) 6%, transparent) 0%, transparent 60%),' +
             'linear-gradient(180deg, #f5f7f9 0%, #eae8ff 50%, #f5f7f9 100%)',
         }}
       >
@@ -477,20 +477,20 @@ export function LandingPage() {
                     bottom: -24,
                     left: '50%',
                     transform: 'translateX(-50%)',
-                    background: 'radial-gradient(ellipse, rgba(131,41,200,0.35), transparent 70%)',
+                    background: 'radial-gradient(ellipse, color-mix(in srgb, var(--color-tertiary) 35%, transparent), transparent 70%)',
                     filter: 'blur(20px)',
                   }}
                 />
                 {/* Crystal */}
                 <div
                   className="relative mx-auto"
-                  style={{ width: 280, height: 280, filter: 'drop-shadow(0 32px 64px rgba(42,75,217,0.25))' }}
+                  style={{ width: 280, height: 280, filter: 'drop-shadow(0 32px 64px color-mix(in srgb, var(--color-primary) 25%, transparent))' }}
                 >
                   <div
                     className="absolute inset-0"
                     style={{
                       background:
-                        'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)',
+                        'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)',
                       clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
                       animation: 'spin-slow 20s linear infinite',
                       filter: 'blur(0.5px)',
@@ -501,7 +501,7 @@ export function LandingPage() {
                     style={{
                       inset: '18%',
                       background:
-                        'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)',
+                        'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)',
                       clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)',
                       animation: 'spin-slow 10s linear infinite reverse',
                       opacity: 0.75,
@@ -511,7 +511,7 @@ export function LandingPage() {
                     className="absolute"
                     style={{
                       inset: '38%',
-                      background: 'radial-gradient(circle, #ffffff, #82deff)',
+                      background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))',
                       borderRadius: '50%',
                       filter: 'blur(5px)',
                       animation: 'pulse-glow 2.5s ease-in-out infinite',
@@ -522,7 +522,7 @@ export function LandingPage() {
                 {/* Floating query bubble — top right */}
                 <motion.div
                   className="absolute -right-4 top-6 max-w-[200px] p-3.5 rounded-2xl rounded-tl-sm text-sm bg-white"
-                  style={{ boxShadow: '0 8px 32px -4px rgba(42,75,217,0.18)', border: '1px solid rgba(165,180,252,0.3)' }}
+                  style={{ boxShadow: '0 8px 32px -4px color-mix(in srgb, var(--color-primary) 18%, transparent)', border: '1px solid rgba(165,180,252,0.3)' }}
                   initial={{ opacity: 0, x: 20, y: -10 }}
                   whileInView={{ opacity: 1, x: 0, y: 0 }}
                   viewport={{ once: true }}
@@ -589,7 +589,7 @@ export function LandingPage() {
               <motion.div variants={fadeUp} custom={0}>
                 <div
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold tracking-widest uppercase"
-                  style={{ background: 'rgba(131,41,200,0.08)', border: '1px solid rgba(131,41,200,0.2)', color: '#8329c8' }}
+                  style={{ background: 'color-mix(in srgb, var(--color-tertiary) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--color-tertiary) 20%, transparent)', color: 'var(--color-tertiary)' }}
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
                   Xperiq Copilot

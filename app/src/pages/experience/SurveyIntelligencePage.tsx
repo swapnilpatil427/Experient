@@ -312,7 +312,7 @@ export function SurveyIntelligencePage() {
           </p>
           <Link to={ROUTES.EXPERIENCE}>
             <Button className="font-bold text-white border-0"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
               <Icon name="arrow_back" size={15} /> {t('experience.intelligence.notFound.backCta')}
             </Button>
           </Link>
@@ -442,7 +442,7 @@ export function SurveyIntelligencePage() {
                 style={'active' in item && item.active ? {
                   background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
                   color: 'white',
-                  boxShadow: '0 2px 8px rgba(42,75,217,0.25)',
+                  boxShadow: '0 2px 8px color-mix(in srgb, var(--color-primary) 25%, transparent)',
                 } : {
                   color: 'var(--color-on-surface-variant)',
                 }}>
@@ -454,7 +454,7 @@ export function SurveyIntelligencePage() {
           {/* Regenerate */}
           <Button size="sm" onClick={handleGenerate} disabled={generating || legacyGenerating}
             className="text-xs font-bold text-white border-0 flex-shrink-0"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
             {(generating || legacyGenerating)
               ? <><span className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />{t('experience.intelligence.generate.generating')}</>
               : <><Icon name="auto_awesome" size={13} />{t('experience.intelligence.generate.button')}</>}
@@ -488,10 +488,10 @@ export function SurveyIntelligencePage() {
               initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
               transition={{ duration: 0.25 }}
               className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm"
-              style={{ background: '#eff2ff', border: '1px solid rgba(42,75,217,0.25)', color: '#1e40af' }}
+              style={{ background: '#eff2ff', border: '1px solid color-mix(in srgb, var(--color-primary) 25%, transparent)', color: '#1e40af' }}
             >
               <span className="w-2 h-2 rounded-full flex-shrink-0"
-                style={{ background: '#2a4bd9', animation: 'pulse-glow 2s ease-in-out infinite' }} />
+                style={{ background: 'var(--color-primary)', animation: 'pulse-glow 2s ease-in-out infinite' }} />
               <span className="flex-1 font-medium">{t('experience.intelligence.generate.backgroundBanner')}</span>
               <span className="text-xs opacity-60">{t('experience.intelligence.generate.readyToastBody')}</span>
             </motion.div>
@@ -748,8 +748,8 @@ function EditorialHero({
       <div
         className="w-28 h-28 rounded-2xl flex items-center justify-center flex-shrink-0 holographic hidden md:flex"
         style={{
-          background: 'linear-gradient(135deg, #2a4bd9, #8329c8)',
-          boxShadow: '0 10px 30px -10px rgba(42,75,217,0.4), inset 0 2px 4px rgba(255,255,255,0.2)',
+          background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
+          boxShadow: '0 10px 30px -10px color-mix(in srgb, var(--color-primary) 40%, transparent), inset 0 2px 4px rgba(255,255,255,0.2)',
           animation: 'float-bob 6s ease-in-out infinite',
         }}
       >
@@ -821,15 +821,15 @@ function CrystalHeroEmpty({
       className="relative overflow-hidden rounded-2xl text-white text-center px-8 py-14"
       style={{
         background:
-          'radial-gradient(ellipse at 25% 0%, rgba(42,75,217,0.50) 0%, transparent 55%),' +
-          'radial-gradient(ellipse at 75% 20%, rgba(131,41,200,0.40) 0%, transparent 55%),' +
+          'radial-gradient(ellipse at 25% 0%, color-mix(in srgb, var(--color-primary) 50%, transparent) 0%, transparent 55%),' +
+          'radial-gradient(ellipse at 75% 20%, color-mix(in srgb, var(--color-tertiary) 40%, transparent) 0%, transparent 55%),' +
           'linear-gradient(180deg, #07091F 0%, #0F0822 70%, #080A22 100%)',
       }}
     >
       {/* Perspective grid floor */}
       <div className="absolute inset-x-0 bottom-0 pointer-events-none" style={{
         height: '40%',
-        backgroundImage: 'linear-gradient(rgba(135,154,255,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(135,154,255,0.07) 1px, transparent 1px)',
+        backgroundImage: 'linear-gradient(color-mix(in srgb, var(--color-primary-container) 7%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--color-primary-container) 7%, transparent) 1px, transparent 1px)',
         backgroundSize: '56px 56px',
         transform: 'perspective(800px) rotateX(45deg)', transformOrigin: 'bottom',
         maskImage: 'linear-gradient(to top, rgba(0,0,0,0.4), transparent)',
@@ -838,10 +838,10 @@ function CrystalHeroEmpty({
       <div className="relative z-10">
         {/* Crystal orb (Conversation Studio CSS) */}
         <div className="flex justify-center mb-6">
-          <div style={{ width: 120, height: 120, position: 'relative', filter: 'drop-shadow(0 20px 40px rgba(42,75,217,0.5))' }}>
-            <div style={{ position: 'absolute', inset: 0, background: 'conic-gradient(from 0deg at 50% 50%, #879aff 0%, #d299ff 25%, #82deff 50%, #d299ff 75%, #879aff 100%)', clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)', animation: 'exp-hub-spin 20s linear infinite', filter: 'blur(0.5px)' }} />
-            <div style={{ position: 'absolute', inset: '18%', background: 'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, #879aff 33%, #d299ff 66%, #ffffff 100%)', clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)', animation: 'exp-hub-spin 10s linear infinite reverse', opacity: 0.75 }} />
-            <div style={{ position: 'absolute', inset: '38%', background: 'radial-gradient(circle, #ffffff, #82deff)', borderRadius: '50%', filter: 'blur(5px)', animation: 'pulse-glow 2.5s ease-in-out infinite' }} />
+          <div style={{ width: 120, height: 120, position: 'relative', filter: 'drop-shadow(0 20px 40px color-mix(in srgb, var(--color-primary) 50%, transparent))' }}>
+            <div style={{ position: 'absolute', inset: 0, background: 'conic-gradient(from 0deg at 50% 50%, var(--color-primary-container) 0%, var(--color-tertiary-container) 25%, var(--color-secondary-container) 50%, var(--color-tertiary-container) 75%, var(--color-primary-container) 100%)', clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)', animation: 'exp-hub-spin 20s linear infinite', filter: 'blur(0.5px)' }} />
+            <div style={{ position: 'absolute', inset: '18%', background: 'conic-gradient(from 180deg at 50% 50%, #ffffff 0%, var(--color-primary-container) 33%, var(--color-tertiary-container) 66%, #ffffff 100%)', clipPath: 'polygon(50% 0%, 100% 30%, 100% 70%, 50% 100%, 0% 70%, 0% 30%)', animation: 'exp-hub-spin 10s linear infinite reverse', opacity: 0.75 }} />
+            <div style={{ position: 'absolute', inset: '38%', background: 'radial-gradient(circle, #ffffff, var(--color-secondary-container))', borderRadius: '50%', filter: 'blur(5px)', animation: 'pulse-glow 2.5s ease-in-out infinite' }} />
           </div>
         </div>
 
@@ -858,7 +858,7 @@ function CrystalHeroEmpty({
             <Button
               onClick={onGenerate} disabled={isGenerating}
               className="font-bold text-white border-0 shadow-xl px-6"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
               {isGenerating
                 ? <><span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />{t('experience.intelligence.generate.generating')}</>
                 : <><Icon name="auto_awesome" size={16} />{t('experience.intelligence.generate.button')}</>}
@@ -951,7 +951,7 @@ function MetricTiles({
           <div className="flex items-end gap-1.5 h-10">
             {[25, 38, 55, 78, 92].map((h, i) => (
               <div key={i} className="flex-1 rounded-t-sm"
-                style={{ height: `${h}%`, background: i === 4 ? 'linear-gradient(to top, #00647c, #2a4bd9)' : `rgba(0,100,124,${0.25 + i * 0.14})` }} />
+                style={{ height: `${h}%`, background: i === 4 ? 'linear-gradient(to top, var(--color-secondary), var(--color-primary))' : `color-mix(in srgb, var(--color-secondary) ${(0.25 + i * 0.14) * 100}%, transparent)` }} />
             ))}
           </div>
         )}
@@ -967,7 +967,7 @@ function MetricTiles({
       {/* Top Action tile — from real prescriptive insight */}
       {topPrescriptive ? (
         <div className="rounded-2xl p-6 holographic text-white relative overflow-hidden"
-          style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+          style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
           <div className="flex items-center justify-between mb-3 relative z-10">
             <span className="text-[10px] font-black uppercase tracking-widest opacity-90">{t('experience.intelligence.metrics.topAction')}</span>
             <ConfidenceChip value={topPrescriptive.trust_score} dark />
@@ -1090,7 +1090,7 @@ function InsightGrid({
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}>
           <GlassCard className="p-6 overflow-hidden relative"
-            style={{ background: 'linear-gradient(135deg, rgba(42,75,217,0.06) 0%, rgba(131,41,200,0.04) 100%)', borderColor: 'rgba(42,75,217,0.2)' }}>
+            style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 6%, transparent) 0%, color-mix(in srgb, var(--color-tertiary) 4%, transparent) 100%)', borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)' }}>
 
             {/* Header row: featured label + layer badge + reliability */}
             <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -1178,7 +1178,7 @@ function InsightGrid({
 
             <div
               className="absolute -right-8 -top-8 w-32 h-32 rounded-full pointer-events-none"
-              style={{ background: 'radial-gradient(circle, rgba(42,75,217,0.12), transparent 70%)' }}
+              style={{ background: 'radial-gradient(circle, color-mix(in srgb, var(--color-primary) 12%, transparent), transparent 70%)' }}
             />
           </GlassCard>
         </motion.div>
@@ -1452,7 +1452,7 @@ function CrystalAskBar({
       <GlassCard className="p-5 holographic">
         <div className="flex items-center gap-3 mb-3 relative z-10">
           <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
             <Icon name="psychology" size={20} style={{ color: 'white' }} />
           </div>
           <div className="flex-1 min-w-0">
@@ -1464,7 +1464,7 @@ function CrystalAskBar({
                 className="flex-1 text-sm bg-transparent focus:outline-none placeholder:text-on-surface-variant/50 text-on-surface" />
               <Button type="submit" size="sm"
                 className="text-xs font-bold text-white border-0 flex-shrink-0"
-                style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                 <Icon name="arrow_upward" size={14} /> {t('experience.intelligence.askBar.submit')}
               </Button>
             </form>
@@ -1540,12 +1540,12 @@ function MiniSparkline({ points }: { points: number[] }) {
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-10 mt-3">
       <defs>
         <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#2a4bd9" stopOpacity="0.25" />
-          <stop offset="1" stopColor="#2a4bd9" stopOpacity="0" />
+          <stop offset="0" stopColor="var(--color-primary)" stopOpacity="0.25" />
+          <stop offset="1" stopColor="var(--color-primary)" stopOpacity="0" />
         </linearGradient>
       </defs>
       <path d={`${d} L${W},${H} L0,${H} Z`} fill="url(#spark-fill)" />
-      <path d={d} stroke="#2a4bd9" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={d} stroke="var(--color-primary)" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -1573,8 +1573,8 @@ const TIER_VISUAL: Record<Exclude<Tier, 'full_report'>, {
   iconColor: string; icon: string; showGenerate: boolean; responseGoal: number | null;
 }> = {
   collecting:      { iconColor: '#94a3b8', icon: 'hourglass_top', showGenerate: false, responseGoal: 10  },
-  first_voices:    { iconColor: '#2a4bd9', icon: 'hearing',        showGenerate: true,  responseGoal: 40  },
-  early_signals:   { iconColor: '#8329c8', icon: 'sensors',        showGenerate: true,  responseGoal: 70  },
+  first_voices:    { iconColor: 'var(--color-primary)', icon: 'hearing',        showGenerate: true,  responseGoal: 40  },
+  early_signals:   { iconColor: 'var(--color-tertiary)', icon: 'sensors',        showGenerate: true,  responseGoal: 70  },
   growing_picture: { iconColor: '#059669', icon: 'bar_chart',      showGenerate: true,  responseGoal: 100 },
 };
 
@@ -1600,7 +1600,7 @@ function TierBanner({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
       className="flex items-center gap-4 px-5 py-3.5 rounded-2xl border flex-wrap"
-      style={{ background: `${meta.iconColor}08`, borderColor: `${meta.iconColor}20` }}
+      style={{ background: `color-mix(in srgb, ${meta.iconColor} 3%, transparent)`, borderColor: `color-mix(in srgb, ${meta.iconColor} 13%, transparent)` }}
     >
       <ProgressArc tier={tier} responseCount={resCount} size="sm" />
       <div className="flex-1 min-w-0">
@@ -1614,7 +1614,7 @@ function TierBanner({
         {goal && (
           <div className="mt-2 h-1 rounded-full bg-outline-variant/20 max-w-xs overflow-hidden">
             <div className="h-full rounded-full transition-all duration-700"
-              style={{ width: `${pct}%`, background: `linear-gradient(to right, ${meta.iconColor}, ${meta.iconColor}99)` }} />
+              style={{ width: `${pct}%`, background: `linear-gradient(to right, ${meta.iconColor}, color-mix(in srgb, ${meta.iconColor} 60%, transparent))` }} />
           </div>
         )}
       </div>
@@ -1622,7 +1622,7 @@ function TierBanner({
         {meta.showGenerate && surveyStatus !== 'closed' && (
           <Button size="sm" onClick={onGenerate} disabled={isGenerating}
             className="text-xs font-bold text-white border-0"
-            style={{ background: `linear-gradient(135deg, ${meta.iconColor}, #8329c8)` }}>
+            style={{ background: `linear-gradient(135deg, ${meta.iconColor}, var(--color-tertiary))` }}>
             {isGenerating
               ? <span className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
               : <Icon name="auto_awesome" size={13} />}

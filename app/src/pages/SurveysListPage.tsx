@@ -62,7 +62,7 @@ const fadeUp = {
 };
 const stagger = { visible: { transition: { staggerChildren: 0.06, delayChildren: 0.05 } } };
 
-function Sparkline({ data, color = '#2a4bd9' }: { data: number[]; color?: string }) {
+function Sparkline({ data, color = 'var(--color-primary)' }: { data: number[]; color?: string }) {
   if (!data || data.length < 2) return null;
   const max = Math.max(...data, 1);
   const W = 48, H = 20;
@@ -282,7 +282,29 @@ export function SurveysListPage() {
     try { await api.deleteSurvey(id); } catch { fetchSurveys(1, false); }
   }, [api, fetchSurveys]);
 
+  // Fixed 2026-07-03 (customer-journey review finding): this toolbar button
+  // previously always called the OLDER "Group Insights" flow (real, paid,
+  // fresh-LLM generation, `GROUP_REPORT` route) regardless of how many tags
+  // were selected — presenting near-identical copy/icon to Tag Report's own
+  // entry points elsewhere on this same page (the per-survey TagBadge chips),
+  // which is the zero-fresh-AI-generation rollup. A customer filtering to a
+  // single tag and clicking this got silently charged for fresh AI generation
+  // instead of the free, trust-weighted Tag Report they likely meant.
+  //
+  // Fix: when exactly one tag is selected (the common case, and the only case
+  // Tag Report actually supports — it is always scoped to a single tag by
+  // design), route to Tag Report instead. Group Insights' multi-tag blended
+  // query is a genuinely different capability Tag Report cannot replicate
+  // (Tag Report never spans more than one tag per run), so it's preserved,
+  // unchanged, for the >1-tag case — but relabeled (see the JSX below) so its
+  // identity and cost are never confused with the free Tag Report flow.
+  const isSingleTagSelection = tagFilter.length === 1;
+
   const handleGenerateGroupReport = useCallback(async () => {
+    if (isSingleTagSelection) {
+      navigate(toPath(ROUTES.TAG_REPORT_NEW, { tagId: tagFilter[0] }));
+      return;
+    }
     setGeneratingReport(true);
     try {
       const { run_id } = await api.generateGroupInsights({ tag_ids: tagFilter });
@@ -290,7 +312,7 @@ export function SurveysListPage() {
     } catch {
       setGeneratingReport(false);
     }
-  }, [api, tagFilter, navigate]);
+  }, [api, tagFilter, navigate, isSingleTagSelection]);
 
   // ── derived KPI values (from server stats when available, fallback to loaded data)
   const kpiTotalSurveys  = stats?.total_surveys  ?? surveys.length;
@@ -303,9 +325,9 @@ export function SurveysListPage() {
   const npsColor = (score: number): string => score >= NPS_THRESHOLDS.POSITIVE_MIN ? '#059669' : score >= NPS_THRESHOLDS.NEUTRAL_MIN ? '#d97706' : '#b41340';
 
   const kpiCards = [
-    { label: t('surveys.metrics.totalSurveys'), value: kpiTotalSurveys,                icon: 'poll',      gradient: 'linear-gradient(135deg,rgba(42,75,217,0.08),rgba(42,75,217,0.02))',   iconColor: '#2a4bd9' },
+    { label: t('surveys.metrics.totalSurveys'), value: kpiTotalSurveys,                icon: 'poll',      gradient: 'linear-gradient(135deg,color-mix(in srgb, var(--color-primary) 8%, transparent),color-mix(in srgb, var(--color-primary) 2%, transparent))',   iconColor: 'var(--color-primary)' },
     { label: t('surveys.metrics.active'),       value: kpiActiveSurveys,               icon: 'play_circle',gradient:'linear-gradient(135deg,rgba(5,150,105,0.08),rgba(5,150,105,0.02))',   iconColor: '#059669' },
-    { label: t('surveys.metrics.responses'),    value: kpiTotalResponses.toLocaleString(),icon:'forum',   gradient: 'linear-gradient(135deg,rgba(131,41,200,0.08),rgba(131,41,200,0.02))', iconColor: '#8329c8' },
+    { label: t('surveys.metrics.responses'),    value: kpiTotalResponses.toLocaleString(),icon:'forum',   gradient: 'linear-gradient(135deg,color-mix(in srgb, var(--color-tertiary) 8%, transparent),color-mix(in srgb, var(--color-tertiary) 2%, transparent))', iconColor: 'var(--color-tertiary)' },
     { label: t('surveys.metrics.avgNps'),       value: kpiAvgNps != null ? kpiAvgNps : '—', icon: 'thumb_up', gradient:'linear-gradient(135deg,rgba(217,119,6,0.08),rgba(217,119,6,0.02))', iconColor:'#d97706' },
   ];
 
@@ -328,6 +350,12 @@ export function SurveysListPage() {
                   <Icon name="library_books" size={16} />{t('nav.templates')}
                 </Button>
                 {tagFilter.length > 0 && (
+                  // Fixed 2026-07-03: single-tag selection routes to the free
+                  // Tag Report flow with Tag Report's own icon/copy/title
+                  // attribute; multi-tag selection keeps the legacy paid Group
+                  // Insights flow, relabeled so it's never mistaken for the
+                  // free one (distinct icon, "Group Insights" wording, and a
+                  // title attribute stating it runs fresh AI generation).
                   <Button
                     variant="default"
                     size="sm"
@@ -335,11 +363,12 @@ export function SurveysListPage() {
                     disabled={generatingReport}
                     className="rounded-xl font-headline gap-1.5"
                     style={{ background: 'var(--color-primary)' }}
+                    title={isSingleTagSelection ? t('tagReport.toolbarCta.tooltip') : t('groups.generateReportTooltip')}
                   >
-                    <Icon name="auto_awesome" size={16} />
+                    <Icon name={isSingleTagSelection ? 'summarize' : 'auto_awesome'} size={16} />
                     {generatingReport
                       ? t('groups.generatingReport', { count: surveys.length })
-                      : t('groups.generateReport')}
+                      : (isSingleTagSelection ? t('tagReport.new.title') : t('groups.generateGroupInsightsCta'))}
                   </Button>
                 )}
                 {isAnalyst && (
@@ -535,7 +564,7 @@ export function SurveysListPage() {
                         boxShadow: '0 4px 24px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,0.8)',
                         border: '1px solid rgba(255,255,255,0.6)',
                       } as React.CSSProperties}
-                      whileHover={{ y: -2, boxShadow: '0 16px 40px -8px rgba(42,75,217,0.12), inset 0 1px 0 rgba(255,255,255,0.8)', transition: { duration: 0.18 } }}
+                      whileHover={{ y: -2, boxShadow: '0 16px 40px -8px color-mix(in srgb, var(--color-primary) 12%, transparent), inset 0 1px 0 rgba(255,255,255,0.8)', transition: { duration: 0.18 } }}
                     >
                       {/* Type color accent bar */}
                       <div className="w-1 shrink-0 rounded-l-2xl" style={{ background: typeMeta.color }} />
@@ -543,7 +572,7 @@ export function SurveysListPage() {
                       <div className="flex flex-col sm:flex-row sm:items-center gap-4 p-5 flex-1 min-w-0">
                         {/* Hover overlay */}
                         <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none rounded-2xl"
-                          style={{ background: 'linear-gradient(135deg,rgba(42,75,217,0.015),rgba(131,41,200,0.01))' }} />
+                          style={{ background: 'linear-gradient(135deg,color-mix(in srgb, var(--color-primary) 1.5%, transparent),color-mix(in srgb, var(--color-tertiary) 1%, transparent))' }} />
 
                         {/* Title + meta */}
                         <div className="flex-1 min-w-0 relative">
@@ -578,7 +607,12 @@ export function SurveysListPage() {
                           {(survey as Survey & { tags?: SurveyTag[] }).tags && (survey as Survey & { tags?: SurveyTag[] }).tags!.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-1">
                               {(survey as Survey & { tags?: SurveyTag[] }).tags!.map(tag => (
-                                <TagBadge key={tag.id} tag={tag} size="sm" />
+                                <TagBadge
+                                  key={tag.id}
+                                  tag={tag}
+                                  size="sm"
+                                  onNavigate={(tagId) => navigate(toPath(ROUTES.TAG_REPORT_LATEST, { tagId }))}
+                                />
                               ))}
                             </div>
                           )}
@@ -589,7 +623,7 @@ export function SurveysListPage() {
                           <div className="flex flex-col items-end gap-1">
                             <p className="label-caps">{t('surveys.metrics.responses')}</p>
                             <div className="flex items-center gap-2">
-                              <Sparkline data={survey.sparkline ?? []} color={survey.status === 'active' ? '#2a4bd9' : '#94a3b8'} />
+                              <Sparkline data={survey.sparkline ?? []} color={survey.status === 'active' ? 'var(--color-primary)' : '#94a3b8'} />
                               <p className="text-xl font-black font-headline text-on-surface">{responseCount.toLocaleString()}</p>
                             </div>
                           </div>
@@ -624,7 +658,7 @@ export function SurveysListPage() {
                           {survey.status === 'closed' && (
                             <Button variant="ghost" size="sm"
                               onClick={(e: React.MouseEvent) => { e.stopPropagation(); setReopenTarget({ id: survey.id, title: survey.title, responseCount }); }}
-                              className="rounded-xl bg-[rgba(42,75,217,0.08)] text-primary hover:bg-[rgba(42,75,217,0.14)]">
+                              className="rounded-xl bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] text-primary hover:bg-[color-mix(in_srgb,var(--color-primary)_14%,transparent)]">
                               <Icon name="lock_open" size={14} />{t('surveys.actions.reopen')}
                             </Button>
                           )}
@@ -635,7 +669,7 @@ export function SurveysListPage() {
                           </Button>
                           <Button variant="ghost" size="sm"
                             onClick={(e: React.MouseEvent) => { e.stopPropagation(); navigate(`${ROUTES.INSIGHTS}?survey=${survey.id}`); }}
-                            className="rounded-xl bg-[rgba(42,75,217,0.08)] text-primary hover:bg-[rgba(42,75,217,0.14)]">
+                            className="rounded-xl bg-[color-mix(in_srgb,var(--color-primary)_8%,transparent)] text-primary hover:bg-[color-mix(in_srgb,var(--color-primary)_14%,transparent)]">
                             <Icon name="insights" size={14} />{t('surveys.actions.insights')}
                           </Button>
                           {survey.status !== 'closed' && (
@@ -690,7 +724,7 @@ export function SurveysListPage() {
                 {surveys.length === 0 && (
                   <motion.div variants={fadeUp} className="py-16 px-4 max-w-2xl mx-auto text-center">
                     <motion.div className="w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6"
-                      style={{ background: 'linear-gradient(135deg,rgba(42,75,217,0.08),rgba(131,41,200,0.05))', border: '1px solid rgba(42,75,217,0.1)' }}
+                      style={{ background: 'linear-gradient(135deg,color-mix(in srgb, var(--color-primary) 8%, transparent),color-mix(in srgb, var(--color-tertiary) 5%, transparent))', border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
                       animate={{ y: [0, -5, 0] }} transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut' }}>
                       <Icon name={hasActiveFilters ? 'search_off' : 'assignment'} size={36} className="text-primary" />
                     </motion.div>
@@ -713,11 +747,11 @@ export function SurveysListPage() {
                           <motion.div whileHover={{ scale: 1.02, y: -2 }} whileTap={{ scale: 0.98 }}
                             onClick={() => navigate(ROUTES.CREATE)}
                             className="relative cursor-pointer rounded-2xl p-5 overflow-hidden"
-                            style={{ background: 'linear-gradient(135deg,rgba(42,75,217,0.07) 0%,rgba(131,41,200,0.05) 100%)', border: '1px solid rgba(42,75,217,0.18)', boxShadow: '0 4px 20px rgba(42,75,217,0.08)' }}>
+                            style={{ background: 'linear-gradient(135deg,color-mix(in srgb, var(--color-primary) 7%, transparent) 0%,color-mix(in srgb, var(--color-tertiary) 5%, transparent) 100%)', border: '1px solid color-mix(in srgb, var(--color-primary) 18%, transparent)', boxShadow: '0 4px 20px color-mix(in srgb, var(--color-primary) 8%, transparent)' }}>
                             <div className="absolute top-3 right-3">
-                              <span className="text-[10px] font-black tracking-widest uppercase px-2 py-0.5 rounded-full text-white" style={{ background: 'linear-gradient(135deg,#2a4bd9,#8329c8)' }}>Recommended</span>
+                              <span className="text-[10px] font-black tracking-widest uppercase px-2 py-0.5 rounded-full text-white" style={{ background: 'linear-gradient(135deg,var(--color-primary),var(--color-tertiary))' }}>Recommended</span>
                             </div>
-                            <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: 'linear-gradient(135deg,#2a4bd9,#8329c8)' }}>
+                            <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: 'linear-gradient(135deg,var(--color-primary),var(--color-tertiary))' }}>
                               <Icon name="auto_awesome" fill={1} size={20} className="text-white" />
                             </div>
                             <p className="font-bold text-base text-on-surface mb-1">{t('surveys.empty.aiTitle')}</p>

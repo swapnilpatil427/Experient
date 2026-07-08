@@ -117,7 +117,7 @@ export function BillingPage() {
         initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
         className="rounded-2xl p-6 md:p-8 mb-6 text-white relative overflow-hidden"
-        style={{ background: 'linear-gradient(120deg, #2a4bd9, #8329c8)' }}
+        style={{ background: 'linear-gradient(120deg, var(--color-primary), var(--color-tertiary))' }}
       >
         <div className="relative z-10 max-w-2xl">
           <div className="text-xs font-bold tracking-widest uppercase opacity-80 mb-2">Experient AI</div>

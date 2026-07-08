@@ -35,11 +35,11 @@ export interface LoadResult {
 // same key serialize; it auto-releases at COMMIT/ROLLBACK (xact-scoped).
 const UPSERT_RESPONSE = `
 WITH lock AS (
-  SELECT pg_advisory_xact_lock(hashtext($2 || ':' || $5)) AS l
+  SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $4)) AS l
 )
 INSERT INTO responses AS r
   (id, org_id, survey_id, answers, respondent, submitted_at, source_observed_at, metadata, payload_hash)
-SELECT gen_random_uuid(), $2, $3, $4::jsonb, $6::jsonb, $7, $8, $9::jsonb, $10
+SELECT gen_random_uuid(), $1, $2, $3::jsonb, $5::jsonb, $6, $7, $8::jsonb, $9
 FROM lock
 ON CONFLICT (org_id, (metadata->'prism'->>'source_platform'), (metadata->'prism'->>'source_record_id'))
   WHERE metadata ? 'prism' AND deleted_at IS NULL
@@ -94,16 +94,15 @@ async function loadBatch(rows: StagedRow[], surveyId: string | null): Promise<Lo
         );
       }
       const params = [
-        null,                                   // $1 (unused placeholder, keeps arg shape stable)
-        row.org_id,                             // $2
-        rowSurveyId,                            // $3 survey_id (per-row → batch fallback)
-        JSON.stringify(row.answers),            // $4
-        row.natural_key,                        // $5 advisory-lock key
-        JSON.stringify(row.respondent ?? null), // $6
-        row.submitted_at,                       // $7 original source time
-        row.source_observed_at,                 // $8
-        JSON.stringify(row.metadata),           // $9
-        row.payload_hash,                       // $10
+        row.org_id,                             // $1
+        rowSurveyId,                            // $2 survey_id (per-row → batch fallback)
+        JSON.stringify(row.answers),            // $3
+        row.natural_key,                        // $4 advisory-lock key
+        JSON.stringify(row.respondent ?? null), // $5
+        row.submitted_at,                       // $6 original source time
+        row.source_observed_at,                 // $7
+        JSON.stringify(row.metadata),           // $8
+        row.payload_hash,                       // $9
       ];
       const res = await client.query<{ inserted: boolean }>(sql, params);
       if (res.rowCount && res.rows[0]) loaded++; // a returned row = insert or update happened

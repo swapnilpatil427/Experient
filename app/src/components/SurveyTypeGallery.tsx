@@ -270,7 +270,7 @@ export function SurveyTypeGallery({ templates = [], isLoading = false, selectedT
       {isLoading ? (
         <div className="flex items-center justify-center py-20 gap-3 text-on-surface-variant">
           <div className="w-5 h-5 rounded-full border-2 animate-spin"
-            style={{ borderColor: 'rgba(42,75,217,0.2)', borderTopColor: '#2a4bd9' }} />
+            style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)', borderTopColor: 'var(--color-primary)' }} />
           <span className="text-sm font-semibold">{t('common.loading')}</span>
         </div>
       ) : filtered.length === 0 ? (
@@ -286,7 +286,7 @@ export function SurveyTypeGallery({ templates = [], isLoading = false, selectedT
             variant="secondary"
             size="sm"
             className="text-xs font-bold px-4 py-2 rounded-full"
-            style={{ background: '#e0e7ff', color: '#2a4bd9' }}
+            style={{ background: '#e0e7ff', color: 'var(--color-primary)' }}
           >
             {t('create.typeGallery.clearSearch')}
           </Button>

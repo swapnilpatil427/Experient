@@ -11,7 +11,7 @@ Mock rules (CLAUDE.md): AsyncMock for async; never make real LLM/DB calls.
 """
 import json
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -316,3 +316,79 @@ class TestRetentionJob:
             result = await sched.run_retention_job()
         assert result["collapsed"] == 0
         assert result["blobs_dropped"] == 0
+
+
+class TestResponseTaggingBacklogSweep:
+    """run_response_tagging_backlog_sweep (added 2026-07-04) — the safety net
+    for surveys not currently receiving live stream events, and for responses
+    whose tagging attempt previously failed (they simply never got
+    ai_enriched_at set, so this query finds them again with no extra state)."""
+
+    def _make_mock_pool(self, rows):
+        mock_cur = AsyncMock()
+        mock_cur.execute = AsyncMock()
+        mock_cur.fetchall = AsyncMock(return_value=rows)
+        mock_cur.__aenter__ = AsyncMock(return_value=mock_cur)
+        mock_cur.__aexit__ = AsyncMock(return_value=False)
+        mock_conn = AsyncMock()
+        mock_conn.cursor = MagicMock(return_value=mock_cur)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_pool_ctx = MagicMock()
+        mock_pool_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_pool = MagicMock()
+        mock_pool.connection = MagicMock(return_value=mock_pool_ctx)
+        return mock_pool, mock_cur
+
+    @pytest.mark.asyncio
+    async def test_disabled_is_noop(self):
+        import crystalos.scheduler as sched
+        with patch.object(sched, "ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP", False):
+            result = await sched.run_response_tagging_backlog_sweep()
+        assert result == {"enabled": False, "surveys_swept": 0}
+
+    @pytest.mark.asyncio
+    async def test_sweeps_every_survey_with_untagged_responses(self):
+        import crystalos.scheduler as sched
+        mock_pool, mock_cur = self._make_mock_pool([("s1", "o1"), ("s2", "o2")])
+        tag_mock = AsyncMock(return_value={"tagged": 1})
+        with (
+            patch.object(sched, "ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP", True),
+            patch("crystalos.scheduler._pool_conn", return_value=mock_pool),
+            patch("crystalos.lib.response_tagging.tag_untagged_responses", tag_mock),
+            patch("crystalos.scheduler.asyncio.sleep", new=AsyncMock()),
+        ):
+            result = await sched.run_response_tagging_backlog_sweep()
+        assert result == {"enabled": True, "surveys_swept": 2}
+        assert tag_mock.await_args_list == [call("s1", "o1"), call("s2", "o2")]
+        # Query must target ai_enriched_at IS NULL — the same "untagged" contract
+        # response_tagging.py itself uses (no separate failure-tracking state).
+        select_sql = mock_cur.execute.call_args[0][0].lower()
+        assert "ai_enriched_at is null" in select_sql
+
+    @pytest.mark.asyncio
+    async def test_no_untagged_responses_is_a_noop(self):
+        import crystalos.scheduler as sched
+        mock_pool, _ = self._make_mock_pool([])
+        with (
+            patch.object(sched, "ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP", True),
+            patch("crystalos.scheduler._pool_conn", return_value=mock_pool),
+        ):
+            result = await sched.run_response_tagging_backlog_sweep()
+        assert result == {"enabled": True, "surveys_swept": 0}
+
+    @pytest.mark.asyncio
+    async def test_one_survey_failing_does_not_block_the_rest(self):
+        import crystalos.scheduler as sched
+        mock_pool, _ = self._make_mock_pool([("s1", "o1"), ("s2", "o2")])
+        tag_mock = AsyncMock(side_effect=[RuntimeError("boom"), {"tagged": 1}])
+        with (
+            patch.object(sched, "ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP", True),
+            patch("crystalos.scheduler._pool_conn", return_value=mock_pool),
+            patch("crystalos.lib.response_tagging.tag_untagged_responses", tag_mock),
+            patch("crystalos.scheduler.asyncio.sleep", new=AsyncMock()),
+        ):
+            result = await sched.run_response_tagging_backlog_sweep()
+        assert result["surveys_swept"] == 1
+        assert tag_mock.await_count == 2

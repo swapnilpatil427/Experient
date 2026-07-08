@@ -349,7 +349,7 @@ export function SurveyCreationPage() {
             <div className="w-full max-w-md">
               <div
                 className="glass-card rounded-2xl overflow-hidden"
-                style={{ boxShadow: '0 40px 100px -20px rgba(42,75,217,0.10)', border: '1px solid rgba(255,255,255,0.3)' }}
+                style={{ boxShadow: '0 40px 100px -20px color-mix(in srgb, var(--color-primary) 10%, transparent)', border: '1px solid rgba(255,255,255,0.3)' }}
               >
                 {/* Template context header */}
                 {type && (
@@ -405,7 +405,7 @@ export function SurveyCreationPage() {
                   <Button
                     onClick={() => handleManualStart(selectedTypeId)}
                     className="w-full py-3 h-auto font-bold font-headline text-white rounded-xl"
-                    style={{ background: type ? `linear-gradient(135deg, ${type.color}, #2a4bd9)` : 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+                    style={{ background: type ? `linear-gradient(135deg, ${type.color}, var(--color-primary))` : 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
                   >
                     <span className="flex items-center justify-center gap-2">
                       <Icon name="edit_note" size={18} />
@@ -423,7 +423,7 @@ export function SurveyCreationPage() {
           <div className="w-full max-w-2xl">
             <div
               className="glass-card rounded-2xl overflow-hidden"
-              style={{ boxShadow: '0 40px 100px -20px rgba(42,75,217,0.12)', border: '1px solid rgba(255,255,255,0.3)' }}
+              style={{ boxShadow: '0 40px 100px -20px color-mix(in srgb, var(--color-primary) 12%, transparent)', border: '1px solid rgba(255,255,255,0.3)' }}
             >
               {/* Error banner */}
               <AnimatePresence initial={false}>
@@ -485,7 +485,7 @@ export function SurveyCreationPage() {
               <div className="px-10 pt-10 pb-6 text-center">
                 <div
                   className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)', transform: 'rotate(-3deg)' }}
+                  style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', transform: 'rotate(-3deg)' }}
                 >
                   <Icon name="diamond" fill={1} size={28} className="text-white" />
                 </div>
@@ -617,7 +617,7 @@ export function SurveyCreationPage() {
                               <div key={tip.title} className="flex items-start gap-2">
                                 <div
                                   className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
-                                  style={{ background: 'rgba(42,75,217,0.08)', color: '#2a4bd9' }}
+                                  style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}
                                 >
                                   <Icon name={tip.icon} fill={1} size={12} />
                                 </div>
@@ -630,7 +630,7 @@ export function SurveyCreationPage() {
                           </div>
                           <div
                             className="rounded-xl p-3 border border-border/40"
-                            style={{ background: 'rgba(42,75,217,0.03)' }}
+                            style={{ background: 'color-mix(in srgb, var(--color-primary) 3%, transparent)' }}
                           >
                             <p className="text-[9px] font-black uppercase tracking-[0.2em] text-primary/60 mb-1.5">Example prompt</p>
                             <p className="text-xs text-on-surface italic leading-relaxed">
@@ -659,12 +659,12 @@ export function SurveyCreationPage() {
                   style={{
                     background: intent.trim()
                       ? selectedType
-                        ? `linear-gradient(135deg, ${selectedType.color}, #8329c8)`
-                        : 'linear-gradient(135deg, #2a4bd9, #8329c8)'
+                        ? `linear-gradient(135deg, ${selectedType.color}, var(--color-tertiary))`
+                        : 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))'
                       : '#dfe3e6',
                     color:     intent.trim() ? '#ffffff' : '#9a9d9f',
                     cursor:    intent.trim() ? 'pointer' : 'not-allowed',
-                    boxShadow: intent.trim() ? '0 16px 40px -10px rgba(42,75,217,0.35)' : 'none',
+                    boxShadow: intent.trim() ? '0 16px 40px -10px color-mix(in srgb, var(--color-primary) 35%, transparent)' : 'none',
                     transition: 'all 0.2s',
                   }}
                 >
@@ -690,7 +690,7 @@ export function SurveyCreationPage() {
                         onClick={() => { setIntent(s); textareaRef.current?.focus(); }}
                         className="px-3 py-1.5 text-xs font-semibold transition-all rounded-full"
                         style={{
-                          background: intent === s ? '#2a4bd9' : '#eef1f3',
+                          background: intent === s ? 'var(--color-primary)' : '#eef1f3',
                           color:      intent === s ? '#ffffff' : '#595c5e',
                         }}
                       >
@@ -716,9 +716,9 @@ export function SurveyCreationPage() {
               <div
                 className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold"
                 style={{
-                  background: 'rgba(42,75,217,0.07)',
-                  border: '1px solid rgba(42,75,217,0.15)',
-                  color: '#2a4bd9',
+                  background: 'color-mix(in srgb, var(--color-primary) 7%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
+                  color: 'var(--color-primary)',
                   maxWidth: '28rem',
                 }}
               >
@@ -728,11 +728,11 @@ export function SurveyCreationPage() {
             )}
             <div className="relative w-32 h-32">
               <div className="absolute inset-0 rounded-full animate-ping"
-                style={{ background: 'rgba(42,75,217,0.15)', animationDuration: '1.5s' }} />
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 15%, transparent)', animationDuration: '1.5s' }} />
               <div className="absolute inset-4 rounded-full animate-pulse"
-                style={{ background: 'rgba(42,75,217,0.25)' }} />
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 25%, transparent)' }} />
               <div className="absolute inset-8 rounded-full flex items-center justify-center"
-                style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                 <Icon name="diamond" fill={1} size={28} className="text-white" />
               </div>
             </div>
@@ -761,7 +761,7 @@ export function SurveyCreationPage() {
                         background: done ? '#f0fdf4' : running ? '#eff2ff' : '#f3f4f6',
                         color:      done ? '#16a34a' : running ? '#4f6ef7' : '#9ca3af',
                         border: `1px solid ${done ? '#bbf7d0' : running ? '#c7d2fe' : '#e5e7eb'}`,
-                        boxShadow:  running ? '0 4px 12px rgba(42,75,217,0.12)' : 'none',
+                        boxShadow:  running ? '0 4px 12px color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'none',
                         transition: 'all 0.3s ease',
                       }}>
                       {done
@@ -780,7 +780,7 @@ export function SurveyCreationPage() {
                 {GENERATING_STEPS.map((label, i) => (
                   <div key={label}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold text-primary bg-white"
-                    style={{ boxShadow: '0 4px 12px rgba(42,75,217,0.12)', animation: `fadeIn 0.5s ${i * 0.3}s both` }}>
+                    style={{ boxShadow: '0 4px 12px color-mix(in srgb, var(--color-primary) 12%, transparent)', animation: `fadeIn 0.5s ${i * 0.3}s both` }}>
                     <Icon name="check_circle" fill={1} size={12} />
                     {label}
                   </div>

@@ -110,7 +110,7 @@ export function TagsSettingsPage() {
             <motion.div key={tag.id} variants={rise}>
               <Card
                 className="p-4 cursor-pointer hover:shadow-md transition-shadow group"
-                onClick={() => navigate(toPath(ROUTES.GROUP_REPORT_LATEST, { tagId: tag.id }))}
+                onClick={() => navigate(toPath(ROUTES.TAG_REPORT_LATEST, { tagId: tag.id }))}
               >
                 <div className="flex items-start justify-between gap-2 mb-3">
                   <TagBadge tag={tag} size="md" />
@@ -139,7 +139,7 @@ export function TagsSettingsPage() {
 
                 <div className="mt-2 flex items-center gap-1 text-xs text-primary opacity-0 group-hover:opacity-100 transition-opacity">
                   <Icon name="analytics" size={12} />
-                  {t('groups.generateReport')}
+                  {t('tagReport.settingsCardHint')}
                 </div>
               </Card>
             </motion.div>

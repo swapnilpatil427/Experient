@@ -78,8 +78,8 @@ function SectionEditorCard({ section, isLocked, onToggleLock, onChange }: Sectio
           color: '#374151',
         }}
         onFocus={(e) => {
-          e.target.style.boxShadow = '0 0 0 2px rgba(42,75,217,0.25)';
-          e.target.style.borderColor = 'rgba(42,75,217,0.5)';
+          e.target.style.boxShadow = '0 0 0 2px color-mix(in srgb, var(--color-primary) 25%, transparent)';
+          e.target.style.borderColor = 'color-mix(in srgb, var(--color-primary) 50%, transparent)';
         }}
         onBlur={(e) => {
           e.target.style.boxShadow = '';
@@ -184,7 +184,7 @@ export function DocEditorPage() {
         <div className="flex items-center justify-center py-32">
           <div
             className="w-8 h-8 rounded-full border-2 animate-spin"
-            style={{ borderColor: 'rgba(42,75,217,0.2)', borderTopColor: 'var(--color-primary)' }}
+            style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)', borderTopColor: 'var(--color-primary)' }}
           />
         </div>
       </div>

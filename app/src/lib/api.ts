@@ -6,6 +6,7 @@ import type {
   TopicTheme, TopicDetail, TopicVerbatim, ActionRecommendations,
   Contact, CxCase, CaseAuditEntry, OwnershipRoute, OntologyNode,
   ContactSegment, FilterDef, SyncConfig, SyncLog, ActivityItem,
+  WorkflowConnectorName, WorkflowConnectorEntry, ConnectorTestResult,
   LatestCheckpoint, CheckpointDelta, RecentCheckpointPoint,
   ManualRunRequest, ManualRunResponse, ManualRunPreviewRequest, ManualRunPreview,
   InsightTrailResult, TrailLane, TrailCheckpoint, TrailReport, CheckpointDetail,
@@ -24,6 +25,11 @@ import type {
   CreateJobRequest as PrismCreateJobRequest, ConfirmMappingRequest as PrismConfirmMappingRequest,
   ApproveRequest as PrismApproveRequest, PrismMode,
 } from '../types/prism';
+import type { EngineNode, EngineEdge } from './workflowCanvas';
+import type {
+  TagReportRunResponse, TagReportTrailResponse, TagReportsIndexResponse,
+  TagReportGenerateRequest, TagReportGenerateResponse, TagReportTrailEntry,
+} from '../types/tagReport';
 
 // ── Prism response-shape guards ──────────────────────────────────────────────
 // Small defensive helpers so a FE↔BE response-shape mismatch throws ONE clear,
@@ -244,9 +250,196 @@ export interface WorkflowTemplate {
   slug: string; name: string; description: string; category: string | null;
   trigger_type: string | null; nodes: unknown[]; edges: unknown[]; is_featured: boolean;
 }
+
+// notify.email / notify.in_app recipient targeting (Wave 9, see
+// docs/automation-hub/TEMPLATE_FLOW_AND_RECIPIENT_TARGETING_SPEC.md §Issue 2 and
+// TRACKER.md's Wave 9 section for Nina's real, tested backend contract).
+// Discriminated union — `targetType` says which id field is authoritative.
+export type NotifyTarget =
+  | { targetType: 'users'; userIds: string[] }
+  | { targetType: 'role'; roleId: string }
+  | { targetType: 'department'; departmentId: string }
+  | { targetType: 'group'; groupId: string };
+
+export interface NotificationTargetOption {
+  id: string;
+  name: string;
+  memberCount: number;
+}
+
+export interface NotificationTargetsResponse {
+  roles: NotificationTargetOption[];
+  departments: NotificationTargetOption[];
+  groups: NotificationTargetOption[];
+}
+
+// Both execution- and step-level `error_message` are now humanized objects
+// (Nina, 2026-07-01, backend/src/lib/humanizeExecutionError.ts) — `raw` is the
+// original unmodified exception string, `message` is the plain-language
+// version (equal to `raw` when no known pattern matched), `matched` says
+// whether a known pattern was found. `null` when there was no error at all
+// (e.g. a `completed` execution, or a gracefully-`skipped` step whose reason
+// lives on `output.reason` instead — see `WorkflowExecutionStep`).
+export interface HumanizedExecutionError {
+  raw: string;
+  message: string;
+  matched: boolean;
+}
+
+// GET /api/workflows/:id/executions now returns a `steps[]` array per
+// execution (previously only a bare `step_count`) — see
+// docs/automation-hub/TRACKER.md Wave 10, findings R-1/R-2/§9a.
+export interface WorkflowExecutionStep {
+  nodeId: string;
+  nodeType: string;
+  status: string;
+  // Graceful-skip reason machine code (e.g. 'role_has_no_members',
+  // 'no_recipient_configured', 'no_url') lives here, NOT on errorMessage —
+  // a skipped step has a null error_message in the DB by design (it never
+  // threw), so humanizeExecutionError(null, ...) always returns null for it.
+  output: { reason?: string; [k: string]: unknown } | null;
+  errorMessage: HumanizedExecutionError | null;
+}
+
 export interface WorkflowExecution {
   id: string; trigger_type: string; status: string; triggered_at: string;
-  completed_at: string | null; duration_ms: number | null; error_message: string | null; step_count: number;
+  completed_at: string | null; duration_ms: number | null;
+  error_message: HumanizedExecutionError | null;
+  step_count: number;
+  steps: WorkflowExecutionStep[];
+  // Dead-letter/retry columns (audit §9a) — previously captured in the schema
+  // but never selected by this endpoint. Only meaningful once a step has
+  // actually failed and been queued for retry.
+  attempt_count: number;
+  next_retry_at: string | null;
+  dead_letter: boolean;
+}
+
+// GET /api/workflows/:id/audit-log — config-change history (Wave 11, Nina —
+// TRACKER.md Wave 11 Part 1, backend/src/routes/workflows.ts). Distinct from
+// WorkflowExecution above: this is "who changed the workflow's
+// config/status" (create/update/status_changed/delete), not "when did it
+// run." Response shape mirrors routes/auditLogs.ts's existing
+// page/limit/events/total/pages convention exactly.
+export type WorkflowAuditAction = 'created' | 'updated' | 'status_changed' | 'deleted';
+
+export interface WorkflowAuditEvent {
+  id: string;
+  workflowId: string;
+  actorUserId: string | null;
+  action: WorkflowAuditAction;
+  summary: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface WorkflowAuditLogResponse {
+  events: WorkflowAuditEvent[];
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+}
+
+// GET /api/workflows/registry — Trigger.live / ActionDef.live are the
+// registry's own readiness signals (Wave 10, Kenji findings 1/2 / Maya 2c,6c /
+// Rohan T-1,I-1): `live: boolean` on every trigger (real backend producer
+// wired up or not), `live: boolean | 'stub' | 'env'` on every action (fully
+// wired / stubbed / requires env-level connector config).
+export interface WorkflowRegistryTrigger {
+  type: string;
+  label: string;
+  category: string;
+  live: boolean;
+}
+
+export interface WorkflowRegistryAction {
+  action: string;
+  label: string;
+  category: string;
+  live: boolean | 'stub' | 'env';
+}
+
+export interface WorkflowRegistryConditionField {
+  field: string;
+  label: string;
+  kind: 'number' | 'string';
+}
+
+export interface WorkflowRegistryResponse {
+  triggers: WorkflowRegistryTrigger[];
+  conditionFields: WorkflowRegistryConditionField[];
+  conditionOperators: string[];
+  actions: WorkflowRegistryAction[];
+}
+
+// POST /api/workflows/parse-nl — Amara's Wave 3 CrystalOS NL parser (not yet built;
+// see docs/automation-hub/BUILDER_SPEC_WAVE2.md §2.1). Frontend calls the real
+// contract now so no changes are needed once the backend route ships.
+export interface ParseWorkflowNLResult {
+  name: string;
+  description: string;
+  triggerType: string;
+  nodes: EngineNode[];
+  edges: EngineEdge[];
+  confidence: number;
+  warnings: string[];
+  // Scope hint (Wave 12, docs/automation-hub/BUILDER_REDESIGN_V2_SCOPE.md) —
+  // populated when Crystal's NL parser confidently matched a survey/tag
+  // mentioned in the description against a real org survey/tag. All three are
+  // optional/absent when Crystal didn't detect a scope mention (or an older
+  // backend/CrystalOS deploy doesn't send them yet) — absence means org-wide
+  // scope, identical to pre-Wave-12 behavior. Type-only for now; the
+  // consuming confirm-card UI (ScopeSummaryRow) is Phase 2.
+  scopeType?: 'org' | 'survey' | 'tag';
+  scopeSurveyId?: string;
+  scopeTagId?: string;
+}
+
+export interface ParseWorkflowNLUnparseableError {
+  error: 'unparseable';
+  message: string;
+  suggestions: string[];
+}
+
+export type ParseWorkflowNLErrorCode = 'UNPARSEABLE' | 'TIMEOUT' | 'ABORTED' | 'UNKNOWN';
+
+// Mirrors ManualRunError's pattern: the shared `http` instance's response
+// interceptor flattens every failure into a bare Error(message), which loses
+// the status code and (for a 422) the `suggestions` array the low-confidence/
+// error UI needs to render distinct states. Uses `rawHttp` + this dedicated
+// error type instead so callers can branch on `.code`.
+export class ParseWorkflowNLError extends Error {
+  code: ParseWorkflowNLErrorCode;
+  status?: number;
+  suggestions?: string[];
+  constructor(code: ParseWorkflowNLErrorCode, message: string, status?: number, suggestions?: string[]) {
+    super(message);
+    this.name = 'ParseWorkflowNLError';
+    this.code = code;
+    this.status = status;
+    this.suggestions = suggestions;
+  }
+}
+
+function toParseWorkflowNLError(error: unknown): ParseWorkflowNLError {
+  const e = error as { code?: string; name?: string; response?: { status?: number; data?: Record<string, unknown> }; message?: string };
+  if (e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') {
+    return new ParseWorkflowNLError('ABORTED', 'Request aborted');
+  }
+  const status = e?.response?.status;
+  const data = e?.response?.data ?? {};
+  if (status === 422) {
+    return new ParseWorkflowNLError(
+      'UNPARSEABLE',
+      String(data.message ?? 'Crystal could not turn that into a workflow'),
+      status,
+      Array.isArray(data.suggestions) ? (data.suggestions as string[]) : [],
+    );
+  }
+  if (status === 504) {
+    return new ParseWorkflowNLError('TIMEOUT', 'Crystal did not respond in time', status);
+  }
+  return new ParseWorkflowNLError('UNKNOWN', String(data.message ?? e?.message ?? 'Failed to parse workflow'), status);
 }
 
 export interface ChartSpec {
@@ -539,6 +732,46 @@ export class ManualRunError extends Error {
   }
 }
 
+// ── Workflow-credentials typed errors ─────────────────────────────────────────
+// Test Connection needs the raw status code (specifically 429 from
+// connectorTestLimiter — see docs/automation-hub/INTEGRATIONS_BACKEND_REVIEW.md
+// §5) so the UI can show a specific "you're testing too often" message instead
+// of a generic failure. The default `http` instance's response interceptor
+// collapses every error into a bare `Error(message)`, discarding the status —
+// so this call goes through `rawHttp` instead (same reasoning as `triggerManualRun`).
+export class ConnectorTestError extends Error {
+  status?: number;
+  rateLimited: boolean;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = 'ConnectorTestError';
+    this.status = status;
+    this.rateLimited = status === 429;
+  }
+}
+
+// ── Workflow concurrent-edit conflict (Wave 11, Nina — TRACKER.md Wave 11
+// Part 2, backend/src/routes/workflows.ts) ────────────────────────────────
+// `PUT /api/workflows/:id` returns 409 + `{ error, workflow }` when the
+// caller's `version` is stale — the builder needs both the message AND the
+// current server-side workflow snapshot (for "Reload latest"). Same
+// reasoning as ConnectorTestError: the default `http` instance's response
+// interceptor flattens every error into a bare `Error(message)`, discarding
+// both the status code and the response body — so `updateWorkflow` goes
+// through `rawHttp` instead.
+export class WorkflowConflictError extends Error {
+  status?: number;
+  isConflict: boolean;
+  serverWorkflow?: Workflow;
+  constructor(message: string, status?: number, serverWorkflow?: Workflow) {
+    super(message);
+    this.name = 'WorkflowConflictError';
+    this.status = status;
+    this.isConflict = status === 409;
+    this.serverWorkflow = serverWorkflow;
+  }
+}
+
 /** Normalize an axios error from a /runs call into a ManualRunError. */
 function toManualRunError(error: unknown): ManualRunError {
   const e = error as { response?: { status?: number; data?: Record<string, unknown> }; message?: string };
@@ -715,6 +948,17 @@ export function createApiClient(getToken: GetToken) {
     getSurvey: async (id: string) => {
       const res = await http.get<{ survey: Survey }>(`/api/surveys/${id}`);
       return res.data;
+    },
+    // Response Detail (R-T5 audit-trail terminus, TRACKER.md Task 16). Survey-scoped
+    // so the backend can re-check per-survey access on every request; returns null
+    // on 404 (soft-deleted or not found) so the page can render a graceful state.
+    getSurveyResponse: async (surveyId: string, responseId: string): Promise<{ response: SurveyResponse } | null> => {
+      try {
+        const res = await http.get<{ response: SurveyResponse }>(`/api/surveys/${surveyId}/responses/${responseId}`);
+        return res.data;
+      } catch {
+        return null;
+      }
     },
     createSurvey: async (data: Partial<Survey>) => {
       const res = await http.post<{ survey: Survey }>('/api/surveys', data);
@@ -1166,13 +1410,45 @@ export function createApiClient(getToken: GetToken) {
       const res = await http.get<{ workflows: Workflow[] }>('/api/workflows');
       return res.data;
     },
+    getWorkflow: async (id: string) => {
+      const res = await http.get<{ workflow: Workflow }>(`/api/workflows/${id}`);
+      return res.data;
+    },
     createWorkflow: async (data: Partial<Workflow>) => {
       const res = await http.post<{ workflow: Workflow }>('/api/workflows', data);
       return res.data;
     },
-    updateWorkflow: async (id: string, data: Partial<Workflow>) => {
-      const res = await http.put<{ success: boolean }>(`/api/workflows/${id}`, data);
-      return res.data;
+    // Wave 11 (Nina — concurrent-edit protection, TRACKER.md Wave 11 Part 2):
+    // uses `rawHttp` (not `http`) so a 409 conflict response's body
+    // (`{ error, workflow }`) survives to the caller as a typed
+    // `WorkflowConflictError` instead of being flattened into a bare
+    // `Error(message)` by the default interceptor. `version` is OPTIONAL —
+    // omitting it entirely matches the backend's documented force-save path
+    // (routes/workflows.ts: absent version skips the conflict check
+    // completely), used by both create-mode (no prior version to conflict
+    // with) and the builder's explicit "Overwrite anyway" action.
+    updateWorkflow: async (id: string, data: Partial<Workflow> & {
+      // Graph-shape + scope fields are camelCase on the wire (createWorkflowSchema/
+      // updateWorkflowSchema in backend/src/schemas/workflows.ts) even though the
+      // GET response returns them snake_case on the Workflow type — this widened
+      // signature lets callers send either shape without an unsafe cast.
+      triggerType?: string;
+      nodes?: unknown[];
+      edges?: unknown[];
+      scopeType?: 'org' | 'survey' | 'tag';
+      scopeSurveyId?: string;
+      scopeTagId?: string;
+      version?: number;
+    }): Promise<{ success: boolean; version?: number }> => {
+      try {
+        const res = await rawHttp.put<{ success: boolean; version?: number }>(`/api/workflows/${id}`, data);
+        return res.data;
+      } catch (error) {
+        const e = error as { response?: { status?: number; data?: { error?: string; workflow?: Workflow } }; message?: string };
+        const status = e?.response?.status;
+        const message = e?.response?.data?.error || e?.message || 'Failed to save workflow';
+        throw new WorkflowConflictError(message, status, e?.response?.data?.workflow);
+      }
     },
     deleteWorkflow: async (id: string) => {
       const res = await http.delete<{ success: boolean }>(`/api/workflows/${id}`);
@@ -1182,8 +1458,8 @@ export function createApiClient(getToken: GetToken) {
       const res = await http.post<{ status: string }>(`/api/workflows/${id}/toggle`, {});
       return res.data;
     },
-    getWorkflowRegistry: async () => {
-      const res = await http.get<{ triggers: unknown[]; conditionFields: unknown[]; conditionOperators: string[]; actions: unknown[] }>('/api/workflows/registry');
+    getWorkflowRegistry: async (): Promise<WorkflowRegistryResponse> => {
+      const res = await http.get<WorkflowRegistryResponse>('/api/workflows/registry');
       return res.data;
     },
     listWorkflowTemplates: async (): Promise<{ templates: WorkflowTemplate[] }> => {
@@ -1192,15 +1468,23 @@ export function createApiClient(getToken: GetToken) {
     },
     createGraphWorkflow: async (data: {
       name: string; description?: string; triggerType: string; nodes: unknown[]; edges: unknown[]; status?: string;
+      cooldown_minutes?: number | null;
+      // Scope (Wave 6, docs/automation-hub/BUILDER_REDESIGN_V2_SCOPE.md §2) —
+      // mirrors createWorkflowSchema exactly. Omitted → server defaults to 'org'.
+      scopeType?: 'org' | 'survey' | 'tag';
+      scopeSurveyId?: string;
+      scopeTagId?: string;
     }) => {
       const res = await http.post('/api/workflows', data);
       return res.data;
     },
-    createWorkflowFromTemplate: async (tpl: WorkflowTemplate) => {
-      const res = await http.post('/api/workflows', {
-        name: tpl.name, description: tpl.description, triggerType: tpl.trigger_type,
-        nodes: tpl.nodes, edges: tpl.edges, status: 'draft',
-      });
+    // GET /api/workflows/notification-targets — id+name+memberCount lookup lists
+    // for the NotifyTargetPicker (role/department/group modes). Gated by
+    // `workflows:manage` (not `users:manage`), so any workflow author can call
+    // it — see backend/src/routes/workflows.ts's route comment for why a
+    // separate, lighter endpoint exists instead of GET /api/roles etc.
+    getNotificationTargets: async (): Promise<NotificationTargetsResponse> => {
+      const res = await http.get('/api/workflows/notification-targets');
       return res.data;
     },
     testWorkflow: async (id: string, event?: Record<string, unknown>) => {
@@ -1209,6 +1493,16 @@ export function createApiClient(getToken: GetToken) {
     },
     getWorkflowExecutions: async (id: string): Promise<{ executions: WorkflowExecution[] }> => {
       const res = await http.get(`/api/workflows/${id}/executions`);
+      return res.data;
+    },
+    // GET /api/workflows/:id/audit-log — paginated config-change history
+    // (Wave 11, Nina). `page`/`limit` mirror the backend's own query-param
+    // names exactly (see WorkflowAuditLogResponse's doc above).
+    getWorkflowAuditLog: async (id: string, params: { page?: number; limit?: number } = {}): Promise<WorkflowAuditLogResponse> => {
+      const qs = new URLSearchParams();
+      if (params.page) qs.set('page', String(params.page));
+      if (params.limit) qs.set('limit', String(params.limit));
+      const res = await http.get<WorkflowAuditLogResponse>(`/api/workflows/${id}/audit-log${qs.toString() ? `?${qs}` : ''}`);
       return res.data;
     },
     listWorkflowApprovals: async (): Promise<{ approvals: Array<{ id: string; execution_id: string; workflow_id: string; node_id: string; requested_at: string; workflow_name: string }> }> => {
@@ -1222,6 +1516,23 @@ export function createApiClient(getToken: GetToken) {
     retryWorkflowExecution: async (executionId: string) => {
       const res = await http.post(`/api/workflows/executions/${executionId}/retry`, {});
       return res.data;
+    },
+    // NL builder — Amara's Wave 3 CrystalOS parser (not built yet). Calls the
+    // real contract per BUILDER_SPEC_WAVE2.md §2.1 so no frontend changes are
+    // needed once the backend route ships; a 404 today (route not mounted) is
+    // surfaced as ParseWorkflowNLError('UNKNOWN') the same as any other
+    // network/server failure. Uses `rawHttp` (see toManualRunError above for
+    // the same pattern) because the shared `http` interceptor discards status
+    // codes and the 422 `suggestions` array this call depends on.
+    // `signal` lets the caller enforce the 20s client-side abort + cancel on
+    // unmount required by the spec's edge cases.
+    parseWorkflowNL: async (description: string, signal?: AbortSignal): Promise<ParseWorkflowNLResult> => {
+      try {
+        const res = await rawHttp.post<ParseWorkflowNLResult>('/api/workflows/parse-nl', { description }, { signal });
+        return res.data;
+      } catch (error) {
+        throw toParseWorkflowNLError(error);
+      }
     },
 
     // ── Survey Insights (v2 — agentic) ────────────────────────────────────────
@@ -1314,6 +1625,56 @@ export function createApiClient(getToken: GetToken) {
 
     getInsightRunStatus: async (surveyId: string): Promise<{ run_id: string; status: string; stream_events: unknown[] }> => {
       const res = await http.get<{ run_id: string; status: string; stream_events: unknown[] }>(`/api/insights/${surveyId}/run-status`);
+      return res.data;
+    },
+
+    // ── Topic tagging backfill (Experience → Topics page "Backfill Tagging") ──
+    // Drains a survey's entire untagged-response backlog in the background —
+    // useful for an old survey with a large pre-existing backlog, or one that
+    // hit a tagging failure before it was fixed. Progress is reported into the
+    // SAME generic agent_runs polling mechanism every other run type uses
+    // (getRun below) — no bespoke progress channel.
+
+    /**
+     * Start a backfill job. 202 → { run_id, status: 'started' }. If there's
+     * nothing untagged for this survey, the backend skips starting a job (and
+     * charging credits) entirely → 200 { status: 'nothing_to_backfill',
+     * bootstrap_pending } with no run_id. `bootstrap_pending` is true when the
+     * survey has never had its first topic-bootstrap run (no topic centroids
+     * yet) — sentiment/emotion tagging can be fully complete while topics are
+     * still permanently unassigned, so this must be surfaced separately from
+     * "nothing_to_backfill" rather than folded into it. Throws ManualRunError
+     * on 402/429.
+     */
+    triggerTopicBackfill: async (surveyId: string): Promise<{ run_id?: string; status: string; bootstrap_pending?: boolean }> => {
+      try {
+        const res = await rawHttp.post<{ run_id?: string; status: string; bootstrap_pending?: boolean }>(
+          `/api/insights/${surveyId}/topics/backfill`,
+        );
+        return res.data;
+      } catch (error) {
+        throw toManualRunError(error);
+      }
+    },
+
+    /**
+     * Find an already-running backfill job for this survey, if any — lets the
+     * page resume showing a progress bar after a reload/navigation instead of
+     * losing track of an in-flight job (the job itself runs server-side and
+     * keeps going regardless of whether anyone is watching).
+     */
+    getActiveTopicBackfillRun: async (surveyId: string): Promise<string | null> => {
+      const res = await http.get<{ runs: Array<{ id: string }> }>(
+        `/api/runs?run_type=topic_backfill&survey_id=${surveyId}&status=running&limit=1`,
+      );
+      return res.data.runs?.[0]?.id ?? null;
+    },
+
+    /** Generic run poll — status + the stream_events progress feed every run_type writes into. */
+    getRun: async (runId: string): Promise<{ id: string; status: string; stream_events: Array<Record<string, unknown>> }> => {
+      const res = await http.get<{ id: string; status: string; stream_events: Array<Record<string, unknown>> }>(
+        `/api/runs/${runId}`,
+      );
       return res.data;
     },
 
@@ -2283,6 +2644,58 @@ export function createApiClient(getToken: GetToken) {
       }
     },
 
+    // ── Tag Report ─────────────────────────────────────────────────────────────
+    // Contract per docs/tag-report/DESIGN.md Appendix A.2 / TRACKER.md §1.
+    // CORRECTED 2026-07-02 during integration: TRACKER.md's literal path prose
+    // (`/api/survey-groups/...`, `/api/tags/...`) is stale — survey-groups.ts is
+    // actually mounted at `/api/group-insights` and tags.ts at `/api/survey-tags`
+    // (backend/src/index.ts:217-218; also flagged by the backend implementation
+    // itself, which corrected both route files' own docblocks). Paths below match
+    // the real mounts, verified directly against backend/src/routes/*.ts.
+
+    generateTagReport: async (data: TagReportGenerateRequest): Promise<TagReportGenerateResponse> => {
+      const path = data.run_mode === 'custom_range'
+        ? '/api/group-insights/tag-report/custom-range'
+        : '/api/group-insights/tag-report/manual';
+      const res = await http.post<TagReportGenerateResponse>(path, data);
+      return res.data;
+    },
+
+    getTagReportRun: async (runId: string): Promise<TagReportRunResponse> => {
+      const res = await http.get<TagReportRunResponse>(`/api/group-insights/tag-report/${runId}`);
+      return res.data;
+    },
+
+    // Paginated run history across all three modes (`/api/survey-tags/:id/tag-report-history`).
+    // Used to resolve "latest" (limit=1) and to power the Trail page's run list.
+    getTagReportHistory: async (
+      tagId: string,
+      params: { limit?: number; offset?: number } = {}
+    ): Promise<{ runs: TagReportTrailEntry[]; total: number }> => {
+      const qs = new URLSearchParams();
+      if (params.limit != null) qs.set('limit', String(params.limit));
+      if (params.offset != null) qs.set('offset', String(params.offset));
+      const query = qs.toString() ? `?${qs}` : '';
+      const res = await http.get<{ runs: TagReportTrailEntry[]; total: number }>(
+        `/api/survey-tags/${tagId}/tag-report-history${query}`
+      );
+      return res.data;
+    },
+
+    getTagReportTrail: async (runId: string): Promise<TagReportTrailResponse> => {
+      const res = await http.get<TagReportTrailResponse>(`/api/group-insights/tag-report/${runId}/trail`);
+      return res.data;
+    },
+
+    listTagReports: async (params: { q?: string; sort?: 'recent' | 'alpha' | 'survey_count' } = {}): Promise<TagReportsIndexResponse> => {
+      const qs = new URLSearchParams();
+      if (params.q) qs.set('q', params.q);
+      if (params.sort) qs.set('sort', params.sort);
+      const query = qs.toString() ? `?${qs}` : '';
+      const res = await http.get<TagReportsIndexResponse>(`/api/group-insights/tag-reports${query}`);
+      return res.data;
+    },
+
     // Download a survey insight report. 'pdf'/'pptx' return native files (when the
     // server has puppeteer/pptxgenjs); otherwise the server falls back to HTML.
     // Returns the actual format delivered so the caller can name the file correctly.
@@ -2511,6 +2924,40 @@ export function createApiClient(getToken: GetToken) {
     getSyncLogs: async (id: string): Promise<SyncLog[]> => {
       const res = await http.get<{ logs: SyncLog[] }>(`/api/contacts/sync/configs/${id}/logs`);
       return res.data.logs;
+    },
+
+    // ── Workflow Credentials (Integrations Settings) ───────────────────────────
+    // See docs/automation-hub/INTEGRATIONS_BACKEND_REVIEW.md for the final API
+    // shape — one GET reports status for all 6 CONNECTORS (jira/salesforce/
+    // servicenow/zendesk/slack/webhook), Slack unified into the same response
+    // server-side. PUT merges onto the existing saved row (safe to send only
+    // the fields the user actually changed).
+    listWorkflowCredentials: async (): Promise<WorkflowConnectorEntry[]> => {
+      const res = await http.get<{ connectors: WorkflowConnectorEntry[] }>('/api/workflow-credentials');
+      return res.data.connectors;
+    },
+    setWorkflowCredentials: async (connector: WorkflowConnectorName, data: Record<string, unknown>): Promise<{ connector: string; configured: boolean }> => {
+      const res = await http.put<{ connector: string; configured: boolean }>(`/api/workflow-credentials/${connector}`, { data });
+      return res.data;
+    },
+    deleteWorkflowCredentials: async (connector: WorkflowConnectorName): Promise<void> => {
+      await http.delete(`/api/workflow-credentials/${connector}`);
+    },
+    // Test-before-save: pass `data` to test candidate values without persisting
+    // them; omit `data` to test the currently-saved/effective (vault → env-var
+    // fallback) credentials. Uses `rawHttp` so a 429 from connectorTestLimiter
+    // (10/org/15min) is surfaced as a typed ConnectorTestError, not swallowed
+    // into a generic message — see ConnectorTestError above.
+    testWorkflowCredentials: async (connector: WorkflowConnectorName, data?: Record<string, unknown>): Promise<ConnectorTestResult> => {
+      try {
+        const res = await rawHttp.post<ConnectorTestResult>(`/api/workflow-credentials/${connector}/test`, data ? { data } : {});
+        return res.data;
+      } catch (error) {
+        const e = error as { response?: { status?: number; data?: { error?: string; message?: string } }; message?: string };
+        const status = e?.response?.status;
+        const message = e?.response?.data?.error || e?.response?.data?.message || e?.message || 'Test failed';
+        throw new ConnectorTestError(message, status);
+      }
     },
 
     // ── Response Linking ──────────────────────────────────────────────────────

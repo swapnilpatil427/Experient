@@ -79,9 +79,9 @@ export function SpatialView({ insights, scope, surveys }: ViewProps) {
         className="absolute inset-0 z-0"
         style={{
           background:
-            'radial-gradient(circle at 20% 20%, rgba(42,75,217,0.40), transparent 55%),' +
-            'radial-gradient(circle at 80% 30%, rgba(131,41,200,0.30), transparent 55%),' +
-            'radial-gradient(circle at 60% 90%, rgba(0,100,124,0.30), transparent 60%),' +
+            'radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--color-primary) 40%, transparent), transparent 55%),' +
+            'radial-gradient(circle at 80% 30%, color-mix(in srgb, var(--color-tertiary) 30%, transparent), transparent 55%),' +
+            'radial-gradient(circle at 60% 90%, color-mix(in srgb, var(--color-secondary) 30%, transparent), transparent 60%),' +
             'linear-gradient(180deg, #07091F 0%, #0F0822 50%, #050B1A 100%)',
         }}
       >
@@ -125,7 +125,7 @@ export function SpatialView({ insights, scope, surveys }: ViewProps) {
             className="font-headline font-black leading-none mb-3"
             style={{
               fontSize: 'clamp(96px, 14vw, 192px)',
-              backgroundImage: 'linear-gradient(135deg, #ffffff 0%, #c4ccff 40%, #d299ff 100%)',
+              backgroundImage: 'linear-gradient(135deg, #ffffff 0%, #c4ccff 40%, var(--color-tertiary-container) 100%)',
               backgroundClip: 'text',
               WebkitBackgroundClip: 'text',
               color: 'transparent',
@@ -150,7 +150,7 @@ export function SpatialView({ insights, scope, surveys }: ViewProps) {
         >
           <Card
             className="border-0 overflow-hidden relative shadow-2xl"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9 0%, #6b3bb8 50%, #8329c8 100%)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary) 0%, #6b3bb8 50%, var(--color-tertiary) 100%)' }}
           >
             <div className="absolute inset-0 holographic opacity-60 pointer-events-none" />
             <CardContent className="p-8 md:p-10 relative z-10 text-white">
@@ -202,7 +202,7 @@ export function SpatialView({ insights, scope, surveys }: ViewProps) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <SupportCard
               icon="local_fire_department"
-              iconColor="#d299ff"
+              iconColor="var(--color-tertiary-container)"
               category="Driver"
               confidence={89}
               headline={
@@ -222,7 +222,7 @@ export function SpatialView({ insights, scope, surveys }: ViewProps) {
             />
             <SupportCard
               icon="forum"
-              iconColor="#82deff"
+              iconColor="var(--color-secondary-container)"
               category="Voice"
               confidence={76}
               headline="Onboarding friction · 102 mentions"
@@ -250,7 +250,7 @@ export function SpatialView({ insights, scope, surveys }: ViewProps) {
           <Glass className="px-5 py-4 flex items-center gap-3">
             <div
               className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
             >
               <Icon name="auto_awesome" size={20} style={{ color: 'white' }} />
             </div>

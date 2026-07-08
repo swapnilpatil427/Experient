@@ -48,7 +48,7 @@ export function GeneratingOverlay({
                   style={{
                     background: genError
                       ? 'linear-gradient(135deg, #dc2626, #b91c1c)'
-                      : 'linear-gradient(135deg, #2a4bd9, #8329c8)',
+                      : 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
                     animation: genError ? undefined : 'pulse-glow 2s ease-in-out infinite',
                   }}
                 />
@@ -97,7 +97,7 @@ export function GeneratingOverlay({
                           done
                             ? { background: '#d1fae5', borderColor: '#059669', color: '#047857' }
                             : active
-                            ? { background: '#eff2ff', borderColor: '#2a4bd9', color: '#2a4bd9', boxShadow: '0 0 0 3px rgba(42,75,217,0.15)' }
+                            ? { background: '#eff2ff', borderColor: 'var(--color-primary)', color: 'var(--color-primary)', boxShadow: '0 0 0 3px color-mix(in srgb, var(--color-primary) 15%, transparent)' }
                             : { background: 'var(--color-surface-container)', borderColor: 'var(--color-outline-variant)', color: 'var(--color-on-surface-variant)' }
                         }
                       >

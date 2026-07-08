@@ -105,6 +105,8 @@ Here is the story in its customer-facing form:
 | survey_health_summary | Program Health | "Programs" is our user-facing word for surveys in this context |
 | War Room Mode | War Room Mode | This name is used directly — it tests well with CX leaders |
 | response_velocity | Response Velocity | Used as-is; it's intuitive enough in context |
+| Org Insight History | Brief Archive | Pairs with "Crystal's Weekly Brief" — every past report frames as a Crystal Brief, not a database record. "History" reads like an audit log; "Archive" reads like something worth revisiting. |
+| Manual org-level summary generation | Ask Crystal for a Brief | Crystal is always the subject, never a report generator — this is Crystal doing something *for* the VP, not a tool being run. The generated item is called an "On-Demand Brief." |
 
 ### Glossary of Terms (Consistent Across All Product Copy)
 
@@ -123,6 +125,18 @@ Here is the story in its customer-facing form:
 - **"AI-powered"** — overused to the point of meaninglessness. We say "Crystal spotted" or "Crystal identified" — Crystal is the agent, not "AI."
 - **"Single pane of glass"** — industry jargon that real users find opaque. We say "one view" or "one place."
 - **"XM Platform"** — Qualtrics owns this phrase in enterprise minds. We say "experience intelligence" or "experience programs."
+- **"Futuristic"** (and close synonyms: "sci-fi," "next-gen") — per Decision 13 in `DECISIONS.md`, this reads as "unproven / beta" to a risk-averse enterprise VP buyer and directly undercuts our core pitch ("this should already exist, and now it does"). We say **"sharp and effortless"** or **"finally obvious"** instead — same sense of novelty, none of the credibility tax. This applies to all customer-facing copy, marketing material, and positioning language; it does not restrict internal design/engineering docs from describing the underlying interaction patterns as advanced or ambient for team clarity.
+- **"Hallucination," "low confidence," "unverified"** (per Decision 16) — all read as "something is broken" to a VP, not "here's a nuance." When a brief claim carries a flagged trust verdict, we say **"Crystal's best read"** or **"Early read — based on limited data so far."** When showing an exact score, we ask **"How sure is Crystal?"** — never "confidence score" or "trust score," both of which sound like grading the AI and invite doubt we don't need to invite.
+
+### Brief Archive & On-Demand Brief — Supplementary Copy
+
+*Prepared by Sofia Reyes, extending the vocabulary above.*
+
+- **Generate button label:** "Ask Crystal for a Brief" — rejects "Generate Report" (BI-toolish, Tableau-coded) and "Run Query" (too technical, breaks the "Crystal is the agent" rule).
+- **Button microcopy:** "Pick a date range. Crystal will read it and tell you what matters."
+- **Trigger confirmation:** "Crystal is putting together your brief for {dateRange}."
+- **Empty state (Brief Archive, zero past reports):** Headline "Crystal hasn't written a brief yet." Body: "Once your first Weekly Brief lands, it'll show up here — along with any brief you ask Crystal to put together on demand." CTA: "Ask Crystal for a Brief →". Avoid "No reports found" — clinical, implies something's missing rather than simply not-yet.
+- **In-progress copy:** "Crystal is reading {surveyCount} programs for {dateRange}. This usually takes about a minute." Never "Processing," "Job queued," or "Generating report" — these read as infrastructure, not an agent at work.
 
 ---
 

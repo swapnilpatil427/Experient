@@ -35,6 +35,7 @@ import reportsRouter from './routes/reports';
 import templatesRouter from './routes/templates';
 import aiRouter from './routes/ai';
 import workflowsRouter from './routes/workflows';
+import workflowCredentialsRouter from './routes/workflowCredentials';
 import orgProfileRouter from './routes/orgProfile';
 import orgsRouter from './routes/orgs';
 import membersRouter from './routes/members';
@@ -71,6 +72,7 @@ import outreachAnalyticsRouter, { frequencyCapsRouter } from './routes/outreach-
 import suppressionRouter from './routes/suppression';
 import billingRouter from './routes/billing';
 import internalMeteringRouter from './routes/internal-metering';
+import internalWorkflowsRouter from './routes/internal-workflows';
 import supportRouter from './routes/support';
 import adminSupportRouter from './routes/admin-support';
 import prismRouter from './routes/prism';
@@ -190,7 +192,11 @@ app.post('/webhooks/novu', express.raw({ type: '*/*' }), async (req, res) => {
   }
 });
 
-app.use(express.json());
+// Default express.json() limit is 100kb — too small for Crystal turns, which
+// resend the full insights/topics arrays plus the growing conversation_history
+// on every message (see app/src/components/CrystalPanel.tsx). 5mb covers that
+// with headroom while still bounding worst-case body size for every other route.
+app.use(express.json({ limit: '5mb' }));
 app.use(requestId);  // attach req.id before logging
 app.use(httpLogger); // structured request logging + Prometheus HTTP metrics
 
@@ -204,6 +210,7 @@ app.use('/api/reports',     apiLimiter, reportsRouter);
 app.use('/api/templates',   apiLimiter, templatesRouter);
 app.use('/api/ai',          apiLimiter, aiLimiter, aiRouter);
 app.use('/api/workflows',   apiLimiter, workflowsRouter);
+app.use('/api/workflow-credentials', apiLimiter, workflowCredentialsRouter);
 app.use('/api/org-profile', apiLimiter, orgProfileRouter);
 app.use('/api/orgs',        apiLimiter, orgsRouter);
 app.use('/api/orgs/me',     apiLimiter, membersRouter);
@@ -227,6 +234,9 @@ app.use('/api/notification-channels', apiLimiter, notificationChannelsRouter);
 app.use('/scim/v2',         scimRouter);
 // Internal metering API — service-to-service (X-Internal-Key), not Clerk JWT, no apiLimiter.
 app.use('/api/internal/metering', internalMeteringRouter);
+// Internal workflow_signal receiver (CrystalOS → backend, Phase 3 AI triggers) —
+// service-to-service (X-Internal-Key), not Clerk JWT, no apiLimiter.
+app.use('/api/internal/workflows', internalWorkflowsRouter);
 app.use('/api/copilot',     apiLimiter, copilotRouter);
 app.use('/api/runs',        apiLimiter, runsRouter);
 app.use('/api/experience',  apiLimiter, experienceRouter);

@@ -35,12 +35,12 @@ const glassCard: React.CSSProperties = {
 };
 
 const glassCardHover: React.CSSProperties = {
-  boxShadow: '0 20px 40px -8px color-mix(in srgb, #2a4bd9 14%, transparent), inset 0 1px 0 rgba(255,255,255,0.8)',
+  boxShadow: '0 20px 40px -8px color-mix(in srgb, var(--color-primary) 14%, transparent), inset 0 1px 0 rgba(255,255,255,0.8)',
   transform: 'perspective(1000px) rotateX(2deg) rotateY(-1deg)',
 };
 
 const gradientTextStyle: React.CSSProperties = {
-  background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+  background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
   WebkitBackgroundClip: 'text',
   WebkitTextFillColor: 'transparent',
   backgroundClip: 'text',
@@ -65,7 +65,7 @@ function ContactCard({ contact }: { contact: Contact }) {
           ...(hovered ? glassCardHover : {}),
           transition: 'box-shadow 0.3s ease, transform 0.3s ease',
           overflow: 'hidden',
-          border: hovered ? '1px solid rgba(42,75,217,0.18)' : '1px solid rgba(255,255,255,0.6)',
+          border: hovered ? '1px solid color-mix(in srgb, var(--color-primary) 18%, transparent)' : '1px solid rgba(255,255,255,0.6)',
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -74,7 +74,7 @@ function ContactCard({ contact }: { contact: Contact }) {
           {/* Avatar */}
           <div
             className="w-11 h-11 rounded-full flex items-center justify-center shrink-0 font-bold text-sm text-white shadow-md"
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             {avatarInitial}
           </div>
@@ -107,7 +107,7 @@ function ContactCard({ contact }: { contact: Contact }) {
             {contact.account_name && (
               <span
                 className="inline-flex items-center gap-1 text-xs font-medium mt-1.5 px-2 py-0.5 rounded-full"
-                style={{ background: 'rgba(0,100,124,0.1)', color: '#00647c' }}
+                style={{ background: 'color-mix(in srgb, var(--color-secondary) 10%, transparent)', color: 'var(--color-secondary)' }}
               >
                 <Icon name="business" size={10} className="inline shrink-0" />
                 {contact.account_name}
@@ -147,7 +147,7 @@ function ContactCard({ contact }: { contact: Contact }) {
               <Badge
                 key={key}
                 className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                style={{ background: 'rgba(42,75,217,0.08)', color: 'var(--color-primary)' }}
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}
               >
                 {contact.segment_attrs[key]}
               </Badge>
@@ -162,7 +162,7 @@ function ContactCard({ contact }: { contact: Contact }) {
             <span
               className="text-xs font-bold px-3 py-1.5 rounded-lg transition-opacity hover:opacity-80 active:scale-95 inline-flex items-center gap-1"
               style={{
-                background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+                background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
                 color: '#fff',
               }}
             >
@@ -309,7 +309,7 @@ export function ContactsPage() {
             <Button
               onClick={() => setShowImport(true)}
               className="font-bold text-sm text-white rounded-xl px-5 py-2.5 active:scale-95"
-              style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
             >
               <Icon name="person_add" size={16} className="mr-1.5" />
               {t('contacts.addContact')}
@@ -322,7 +322,7 @@ export function ContactsPage() {
       <div className="flex items-center gap-2 mb-6">
         <span
           className="text-xs font-bold px-3 py-1.5 rounded-lg inline-flex items-center gap-1"
-          style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)', color: '#fff' }}
+          style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: '#fff' }}
         >
           <Icon name="contacts" size={12} />
           {t('contacts.allContacts')}
@@ -330,7 +330,7 @@ export function ContactsPage() {
         <Link to={ROUTES.CONTACT_SEGMENTS}>
           <span
             className="text-xs font-semibold px-3 py-1.5 rounded-lg transition-all hover:opacity-80 inline-flex items-center gap-1"
-            style={{ background: 'rgba(42,75,217,0.08)', color: 'var(--color-primary)', border: '1px solid rgba(42,75,217,0.15)' }}
+            style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
           >
             <Icon name="workspaces" size={12} />
             {t('contacts.segments')}
@@ -339,7 +339,7 @@ export function ContactsPage() {
         <Link to={ROUTES.SETTINGS_CONNECTIONS} className="ml-auto">
           <span
             className="text-xs font-semibold px-3 py-1.5 rounded-lg transition-all hover:opacity-80 inline-flex items-center gap-1"
-            style={{ background: 'rgba(42,75,217,0.08)', color: 'var(--color-primary)', border: '1px solid rgba(42,75,217,0.15)' }}
+            style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
           >
             <Icon name="cable" size={12} />
             {t('contacts.connections')}
@@ -356,8 +356,8 @@ export function ContactsPage() {
       >
         <div
           style={{
-            background: 'linear-gradient(135deg, rgba(42,75,217,0.06) 0%, rgba(131,41,200,0.04) 50%, rgba(0,100,124,0.04) 100%), rgba(255,255,255,0.6)',
-            border: '1px solid rgba(42,75,217,0.12)',
+            background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 6%, transparent) 0%, color-mix(in srgb, var(--color-tertiary) 4%, transparent) 50%, color-mix(in srgb, var(--color-secondary) 4%, transparent) 100%), rgba(255,255,255,0.6)',
+            border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)',
             borderRadius: '1.25rem',
             padding: '1.5rem',
             backdropFilter: 'blur(20px)',
@@ -377,7 +377,7 @@ export function ContactsPage() {
               {/* Total contacts */}
               <div
                 className="flex flex-col items-center px-4 py-2 rounded-xl"
-                style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(42,75,217,0.12)' }}
+                style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)' }}
               >
                 <span className="text-xl font-black leading-none" style={gradientTextStyle}>
                   {total}
@@ -390,7 +390,7 @@ export function ContactsPage() {
               {/* Consent count */}
               <div
                 className="flex flex-col items-center px-4 py-2 rounded-xl"
-                style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(42,75,217,0.12)' }}
+                style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)' }}
               >
                 <span className="text-xl font-black leading-none" style={{ ...gradientTextStyle }}>
                   {consentCount}
@@ -403,7 +403,7 @@ export function ContactsPage() {
               {/* Linked (has segment attrs) */}
               <div
                 className="flex flex-col items-center px-4 py-2 rounded-xl"
-                style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(42,75,217,0.12)' }}
+                style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)' }}
               >
                 <span className="text-xl font-black leading-none" style={gradientTextStyle}>
                   {linkedCount}
@@ -423,7 +423,7 @@ export function ContactsPage() {
         style={{
           background: 'rgba(255,255,255,0.65)',
           backdropFilter: 'blur(20px)',
-          border: '1px solid rgba(42,75,217,0.1)',
+          border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)',
         }}
       >
         <div className="relative flex-1">
@@ -435,7 +435,7 @@ export function ContactsPage() {
             className="pl-9 rounded-xl"
             style={{
               background: 'rgba(255,255,255,0.7)',
-              border: '1px solid rgba(42,75,217,0.15)',
+              border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
             }}
           />
         </div>
@@ -444,7 +444,7 @@ export function ContactsPage() {
             className="w-44 rounded-xl"
             style={{
               background: 'rgba(255,255,255,0.7)',
-              border: '1px solid rgba(42,75,217,0.15)',
+              border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
             }}
           >
             <SelectValue />
@@ -489,8 +489,8 @@ export function ContactsPage() {
           <div
             className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-5"
             style={{
-              background: 'linear-gradient(135deg, rgba(42,75,217,0.12), rgba(131,41,200,0.1))',
-              border: '1px solid rgba(42,75,217,0.15)',
+              background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), color-mix(in srgb, var(--color-tertiary) 10%, transparent))',
+              border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
             }}
           >
             <Icon name="contacts" size={36} style={{ color: 'var(--color-primary)' }} />
@@ -507,7 +507,7 @@ export function ContactsPage() {
           <Button
             onClick={() => setShowImport(true)}
             className="px-6 py-3 font-bold text-sm text-white rounded-xl active:scale-95 font-headline"
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <Icon name="upload_file" size={16} className="mr-1.5" />
             {t('contacts.importFirstCta')}
@@ -530,8 +530,8 @@ export function ContactsPage() {
           <div
             className="px-8 pt-8 pb-5"
             style={{
-              background: 'linear-gradient(135deg, rgba(42,75,217,0.06) 0%, rgba(131,41,200,0.04) 100%)',
-              borderBottom: '1px solid rgba(42,75,217,0.1)',
+              background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 6%, transparent) 0%, color-mix(in srgb, var(--color-tertiary) 4%, transparent) 100%)',
+              borderBottom: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)',
             }}
           >
             <DialogHeader>
@@ -552,8 +552,8 @@ export function ContactsPage() {
               placeholder={t('contacts.import.pastePlaceholder')}
               className="w-full min-h-[120px] rounded-xl text-sm font-mono resize-y"
               style={{
-                background: 'rgba(42,75,217,0.04)',
-                border: '1px solid rgba(42,75,217,0.15)',
+                background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
               }}
               autoFocus
             />
@@ -667,7 +667,7 @@ export function ContactsPage() {
               onClick={handleImport}
               disabled={!csvText.trim() || importing}
               className="flex-1 py-3 font-bold text-sm text-white rounded-xl active:scale-95 font-headline flex items-center justify-center gap-2"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
             >
               {importing ? (
                 <>

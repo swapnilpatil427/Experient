@@ -524,4 +524,219 @@ All interactive elements have a visible focus ring (`outline: 2px solid #6366F1;
 
 ---
 
+---
+
+## Org Insight History & Manual Summary Generator
+
+*Author: Marcus Osei. Extends §2 (Crystal Brief Card). Per Decision 13 in `DECISIONS.md`, these interaction patterns are internally described using terms like "ambient"/"advanced" — never "futuristic" in any user-facing copy.*
+
+### Design Philosophy Fit
+
+Both capabilities are extensions of the Crystal Brief Card, not new surfaces. A P75 VP of CX should never feel like she left Command Center to "run a report" — she should feel like she's asking Crystal to look further back or dig deeper. Same hero-layer visual weight as the existing brief, same restraint everywhere else.
+
+### Org Insight History
+
+**Layout:** A collapsed strip directly beneath the Crystal Brief Card's footer — `t('orgDashboard.insightHistory.title')` ("Past Briefs") as a ghost-button trigger with a chevron, matching the Tag Group Grid's collapse pattern (§8). Expanding reveals a **vertical timeline**, not a table or calendar — a VP scans "did anything change recently," which is a chronological question, not a lookup question. Calendar view is deferred; flag as a Phase 3+ candidate if usage data shows date-jumping behavior.
+
+**Entry anatomy** (reusing `HealthPill` + typography scale from §5/§8):
+- Left rail: a small timeline dot, colored by the org health status *at that time* (green/amber/red) — lets a VP see the org's health trajectory just by scanning the rail top-to-bottom, no reading required.
+- Date range label (e.g., "Jun 16–22, 2026") in `text-sm font-semibold`.
+- One-line snippet of Crystal's narrative (first sentence, truncated), `text-xs text-gray-500`.
+- A type badge, see below.
+
+**Distinguishing scheduled vs. manual:** A `TopicChip`-style pill (§6 pattern): scheduled briefs get an indigo "Weekly Brief" pill with a small clock icon; manual generations get a violet "Custom Summary" pill with a sparkle icon (`auto_awesome`) plus the requester's name on hover via tooltip. Color and icon both differ — never rely on color alone (accessibility). Colors are a dedicated neutral **source** token pair (`--source-scheduled`, `--source-manual`), distinct from the `SeverityBadge` critical/warning/info ramp — provenance is not urgency, and reusing severity colors would train users to misread a "manual" badge as a risk signal (Theo).
+
+**Empty state:** Not an error — "Crystal will save each weekly brief here as it's generated. Your history starts next Monday." No illustration needed; this is a low-drama state.
+
+**Opening an entry:** Click expands the row in place (same 200ms ease-out inline-expand already used for Programs Table rows, §5) rather than navigating away, keeping the VP inside Command Center's flow. Expanded view shows the full narrative + recommendations, identical layout to the live Crystal Brief Card. A **"View as page" permalink** is available per entry for sharing/printing — this is the dedicated, deep-linkable URL Jordan's integration audit requires (routes to a standalone org-scoped report viewer, `EXPERIENCE_ORG_SUMMARY`), reconciling "stay in flow" with "every path needs a shareable, bookmarkable destination."
+
+### Manual Summary Generator
+
+**Trigger:** A single `<Button variant="outline" size="sm">` with a sparkle icon in the Past Briefs strip header, next to the "Past Briefs" toggle: `t('orgDashboard.insightHistory.generateCustom')` ("Generate custom summary"). Not a floating action button and not buried in a menu.
+
+**Date-range picker:** Reuses the existing `CalendarDateRangePicker` from the FilterBar — same component, same interaction, zero new UI vocabulary. Opens in a `Dialog` (shadcn), not a full wizard page like Custom Analysis, because org-level scope has no topic/metric/segment configuration to step through — one input (date range) plus a live preview is enough. Range is capped per the reconciled limit in `DECISIONS.md` (Decision 12); the picker disables dates outside the allowed window rather than allowing a request that will be rejected.
+
+**Preview panel inside the dialog** (mirrors `CustomAnalysisPage`'s preview block): programs included count, response volume in range, estimated credit cost, and a low-data warning if the range predates the org's first 3 surveys. Confirm button: `Button variant="gradient"` — "Generate Summary."
+
+**In-progress state:** On confirm, the dialog collapses into a persistent **status chip** docked at the Past Briefs strip (not a blocking modal — the VP can keep using Command Center while this runs). The chip shows the ambient crystal motif already built for the NL Workflow Builder (`NLThinkingCrystal`, shrunk to ~28px inline, or the CSS-only conic-gradient hex variant at ~24px for zero extra bundle weight) with `crystal-spin` + `pulse-glow`, next to rotating status copy ("Reading 4 programs…" → "Synthesizing trends…" → "Writing your brief…") that changes every ~4s so the wait visibly progresses rather than sitting on a static spinner. **Resolved (Decision 21):** completion is delivered via the existing app-wide `notification_events`/SSE stream, not a new WebSocket hook and not polling as the completion contract — see the full component spec below for exact visual and motion detail.
+
+**Completion notification:** A toast — "Your custom summary is ready" with a "View" CTA — plus the notification bell badge increments. No page reload, no forced navigation.
+
+**Divergence from Custom Analysis precedent:** `CustomAnalysisPage.tsx` has no completion toast today — it silently auto-navigates when polling detects `status === 'completed'`. That works there because the user is pinned to a foreground wizard actively waiting for one report. The org-level generator is deliberately non-blocking (the VP can navigate away mid-generation), so silent auto-navigation isn't available as a completion mechanism — a toast + bell-badge is required, not optional. Log this as its own entry in `DECISIONS.md` once implementation begins, citing "blocking foreground wizard vs. non-blocking backgroundable job" as the rationale for the divergence.
+
+**Landing in history:** The moment it completes, the new entry animates into the top of the Past Briefs timeline with the same 300ms slide-in used for new Anomaly Alerts (§7) — visually reinforcing that manual and scheduled briefs live in one continuous timeline, not two separate systems.
+
+### Ambient / Advanced-Interaction Pass (internal name — see Decision 13 for external framing)
+
+1. **The crystal motif becomes the universal "Crystal is working" signal.** Currently it only appears in the NL Workflow Builder. Extending it to the summary-generation status chip (and, longer term, replacing the generic `hourglass_top` spin in Custom Analysis) gives users one consistent visual grammar for "Crystal is thinking," instead of two competing metaphors for the same concept.
+2. **Ambient progress copy over percentage bars.** No fake progress bars — LLM synthesis time isn't linearly predictable. Rotating status sentences instead; a bar that stalls at 90% erodes trust more than honest, changing text.
+3. **Non-blocking async by default.** The generator never opens a full-page wizard or blocking modal for its wait state. Forcing a non-analyst to "wait and watch" for up to several minutes is the single most damage-prone moment for perceived reliability; letting her walk away and get a toast later respects her time.
+4. **Simplify the KPI Row's Avg Sentiment tile for the P75 user.** Today it shows a raw score, a 0–100 remap, a trend arrow, and a spectrum bar simultaneously. Collapse to a single word + color ("Improving," green) as primary, with the numeric score demoted to a hover tooltip — the VP persona needs the verdict, not the metric.
+5. **A single shimmer accent ties Crystal-authored content together.** Apply the existing `shimmer-text` keyframe (already in `CrystalPanel.tsx`) as a one-time 2s pass over any newly-generated brief's headline the first time it's viewed — signals "freshly synthesized" without a badge, purely decorative.
+
+### Per-ICP Fit
+
+- **Sarah (VP of CX, primary):** Works as designed — this is her Monday-morning-plus-ad-hoc-board-request workflow; no variant needed.
+- **C-suite (secondary):** Works, but expect them to open entries Sarah generated rather than trigger their own — the requester name on the Custom Summary pill matters more for this persona (trust/provenance).
+- **CX Agencies (tertiary):** Needs a variant — history and the generator should be scopable per client org (ties to the Enterprise multi-org view in GTM.md), and generated summaries need white-label-safe styling (no hardcoded Crystal branding) before an agency shares them externally.
+
+### Live-update mechanism — resolved (Decision 21)
+
+Closed by joint Architecture Review (Dariusz, Yuki, Amara, Jordan) after being flagged open across four design rounds: all three cases that needed a live-update answer — generation completion, "Compare to previous" readiness, and the trust/hallucination score arriving after the rest of the brief — are delivered via the existing `notification_events`/SSE stream (`/api/notifications/stream`), keyed by `(org_id, period_key)` where relevant. **No new WebSocket infrastructure (`useOrgDashboardLive`) is needed for any of these flows** — this is a net reduction in planned scope, not just a resolved ambiguity. In-dialog polling may still render cosmetic progress text while the page happens to be open, but it is never the completion contract. Full rationale in `DECISIONS.md`, Decision 21.
+
+---
+
+## Precision Component Specs (added 2026-07-01, Decision 20 — written to Figma-redline precision since Figma access is unavailable; no code accompanies this spec by design)
+
+*Authors: Senior Visual Designer + Motion/Interaction Specialist, hired for this pass. All values are traced to existing codebase constants (hex colors, Tailwind classes, keyframe names) rather than invented, per the house rule of extending the existing design system.*
+
+### 1. Weekly Brief Card (the Hub teaser, added directly beneath `crystalOpening`)
+
+**Layout:** `GlassCard`, full-width, `p-5 rounded-2xl`, background `bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-100`, shadow `0 4px 20px rgba(0,0,0,0.05), inset 0 1px 0 rgba(255,255,255,0.9)` (exact `SurveyCard` shadow value). Eyebrow row: `Icon name="auto_awesome" size={13}` color `#8329c8` + `text-[10px] font-black uppercase tracking-widest text-on-surface-variant` reading "Crystal's Weekly Brief for {org}", date range right-aligned `text-[10px] text-on-surface-variant/55`. Collapsed narrative: `text-sm text-on-surface leading-relaxed`, `line-clamp-1` desktop / `line-clamp-2` mobile, chevron-expand `Icon name="expand_more" size={14}` right-aligned. Expanded: narrative un-clamps; `mt-3 pt-3 border-t border-outline-variant/20`; numbered recommendations (20px rank circle `bg-[#8329c8] text-white text-[10px] font-black` + action `text-sm font-medium` + rationale `text-xs text-on-surface-variant`); footer with last-updated timestamp + "Ask a follow-up" (`Button variant="ghost" size="sm"`) + "View full Command Center" (`Button variant="outline" size="sm"`). Hover: border `border-indigo-100` → `border-indigo-300`, 150ms. Empty: muted `auto_awesome` icon at 24px + `text-xs text-on-surface-variant`, no chevron. Error: `Icon name="error_outline" size={14}` `#b41340` + retry ghost button.
+
+**Motion:** expand/collapse via Framer Motion `layout` on the container (not measured-height JS — content is simple enough that `layout` avoids a second measurement pass), 300ms, **house curve `[0.22, 1, 0.36, 1]`**. Narrative cross-fades to the full text + recommendations (opacity 0→1, 150ms, starting 50ms into the height animation so text doesn't pop before the container has room) — recommendations mask-reveal with the expanding container, no independent slide. Chevron rotates 180° over the same 300ms. **Reduced motion:** instant height/opacity swap, no `layout` animation; chevron is an instant icon-state swap, no rotation transform.
+
+### 2. Tag Groups Strip (at-risk tag groups only)
+
+**Layout:** section header matches §3 Live Intelligence exactly (pulse dot colored by worst status present, `text-[10px] font-black uppercase tracking-widest` "AT-RISK TAG GROUPS"). Cards: `GlassCard p-4 rounded-xl`, horizontal `flex gap-3` desktop/tablet (wraps, never scrolls), `flex-col` mobile; fixed `w-56` desktop / `w-full` mobile. Collapsed content: `HealthPill`-style badge top-right (amber `#d97706` or red `#b41340`, `${color}14` background), tag name `text-sm font-bold truncate`, survey count `text-[10px] text-on-surface-variant/60`. Expanded (appended below, collapsed content stays static and visible): aggregate NPS `text-2xl font-black` via the unified health palette, top topic `text-xs text-on-surface-variant`, single CTA `Button variant="outline" size="sm"` "View Tag Report" — the only exit, full navigation. Default border `border-outline-variant/20`; hover `border-primary/30` + `shadow-md`, 150ms; expanded adds `bg-surface-container/40` fill. Empty/error: section does not render at all (no card, no message).
+
+**Motion:** `AnimatePresence` + `motion.div` (`height:0,opacity:0` → `height:'auto',opacity:1`), 200ms ease-out, matching the Programs Table precedent exactly — a discrete append, not a continuous measurement, so no `layout` prop needed. Collapsed content never swaps or hides; the expand strictly appends new content below it. **Reduced motion:** instant show/hide of the appended block, opacity-only, no height animation.
+
+### 3. Generation Status Chip ("Ask Crystal for a Brief," in progress)
+
+**Layout:** docked pill, `inline-flex items-center gap-2.5 px-3 py-2 rounded-full`, background `rgba(131,41,200,0.08)`, border `1px solid rgba(131,41,200,0.18)`. Crystal motif: CSS-only conic-gradient hex variant (`app/CLAUDE.md`'s existing pattern), scaled to 24px, same three-layer structure. Status text `text-xs font-semibold text-[#8329c8]`. States: *in-progress* (default, as above); *reconnecting* (motif keeps spinning, text turns `text-amber-600` "Reconnecting…", reusing the app-wide disconnected-Live-badge pattern); *failure* (motif replaced by `Icon name="error_outline" size={16}` `#b41340`, text becomes an underline-on-hover text-button "Crystal couldn't finish this summary — Try again"); *timeout* (motif keeps spinning, text turns `text-on-surface-variant` "This is taking longer than expected…"). No dismiss affordance while running; the chip itself disappears on completion, replaced by the toast.
+
+**Motion:** status text rotates every 4s via overlapping cross-fade (old string fades out over the first 150ms of a 300ms window while the new string fades in over the last 150ms — never a blank gap), `ease-in-out`. The ambient motif reuses `crystal-spin 4s linear infinite` (confirmed call site `CrystalPanel.tsx:2182`) and `pulse-glow 2.5s ease-in-out infinite` (confirmed `CrystalPanel.tsx:1469`, `index.css:266`) **unchanged** — keyframe timing is resolution-independent, only the element shrinks. Ready-state transition: orb + status text cross-fade out over 250ms while real content fades+slides in (`y:8→0`, opacity 0→1, 300ms, house curve), overlapping by ~100ms, matching the app's standard `AnimatePresence` exit/enter overlap convention. **Reduced motion:** orb renders as a static glyph (never spins/pulses); status text changes are instant swaps, no cross-fade; ready-state transition becomes a plain opacity crossfade with no y-slide.
+
+### 4. CheckpointDiffPanel ("Compare to previous") — previously unspecified, now complete
+
+**Layout:** trigger is a ghost text-button inside an already-expanded Brief Archive entry only (`text-xs font-medium text-primary` "Compare to previous" + `Icon name="compare_arrows" size={13}`); never renders if `parent_checkpoint_id` is null. Panel: `GlassCard p-5 rounded-xl mt-3`, `border border-outline-variant/20`, inserted inline below the entry (not a modal). Desktop/tablet (≥768px): `grid grid-cols-2 gap-4`, each side a sub-card `bg-surface-container/40 rounded-lg p-4` with eyebrow "PREVIOUS"/"CURRENT" + date, and a single-word verdict `text-lg font-black` via the unified health palette — no full delta table inline. Mobile (<768px): sequential stack — Before card, then After card, then the delta, never a compressed two-column layout. Delta indicator (new primitive, signed-value pill): `px-2.5 py-1 rounded-full text-xs font-bold tabular-nums`, positive `text-[#059669] bg-[#05966914]` + `arrow_upward`, negative `text-[#b41340] bg-[#b4134014]` + `arrow_downward`; raw numeric deltas demoted to a tooltip. Loading: paired skeleton cards (`h-24 rounded-lg bg-surface-container animate-pulse`), fetched lazily only on click. Error: inline within the panel, never collapses the parent entry.
+
+**Motion:** enters via the same 200ms ease-out inline-expand as its parent Brief Archive entry — no separate entrance animation layered on top, to avoid double-motion. Before/after columns animate in **simultaneously** (not staggered by side — staggering would falsely imply one side matters more), each using the standard `rise` variant (`y:16→0`, 0.4s, house curve) with `staggerChildren: 0.05` *within* each column only (row-by-row). The delta pill draws attention via a single one-shot scale pulse on mount (`scale: 0.8→1.08→1`, 400ms, house curve) plus a color fade-in from neutral to its signed color — never a looping animation, consistent with "verdict surface, not audit surface." **Reduced motion:** panel appears via instant opacity swap (no y-motion, no stagger); the delta pill skips the scale pulse, appearing at final scale with only a color fade.
+
+---
+
+## Trust, Citation & Comparison UI — Progressive Disclosure Spec (added 2026-07-01, Decision 16)
+
+*Authors: Marcus Osei, Sofia Reyes, Theo Bergmann, following a full-design review. Binding scope per the footer below — this is not optional polish.*
+
+**The governing rule:** the Crystal Brief Card is a verdict surface, not an audit surface. Citation, trust-scoring, and comparison affordances are all evidence-inspection tools for the rare moment a user wants to dig in — none of them may add visual weight to the primary, at-rest reading experience. The review found that stacking these naively (a citation chip + a trust badge + a diff view, all inline) turns a 3-second glance into an audit, which directly undermines the product's core promise.
+
+**Trust/confidence signaling:**
+- Reuse the existing `ConfidenceChip` component and its Reliable/Indicative/Low-signal visual language (`app/src/pages/insights/shared.tsx`) — do not invent a new trust-token system for org scope. Map `hallucination_score`'s `pass`/`flag`/`fail` verdicts onto the existing three tiers.
+- **Never render a "pass" state inline.** A visible "verified" badge on every sentence trains the user to hunt for its *absence* as the tell for a problem — that replaces confidence with vigilance, the opposite of the product's promise. Only surface a chip when the verdict is `flag` or `fail`.
+- **Banned/required copy (Sofia):** never say "hallucination," "low confidence," or "unverified" to a VP — these read as something being broken. Use **"Crystal's best read"** or **"Early read — based on limited data so far"** for flagged claims, framed as informational, not a warning. If a hover/expand shows an exact score, label it **"How sure is Crystal?"**, never "confidence score" or "trust score" — both sound like grading the AI, which invites doubt that didn't need inviting.
+
+**Citations:**
+- Stay click-to-reveal, exactly as the existing `CitationChip` already behaves — no added visual weight in the untouched state. Collapse multiple citations on one recommendation to a single "1 source" / "3 sources" affordance rather than one chip per citation.
+
+**"Compare to previous" (checkpoint diff view):**
+- Lives only inside an already-expanded Brief Archive entry — never a default-visible control on the live Crystal Brief Card. It is explicitly a "did anything change" query, which is analyst behavior, and belongs at the same disclosure depth as history itself, not the primary read.
+- **Full component spec now complete** — see "Precision Component Specs," item 4, above (layout, states, and motion, including the new signed-value-pill delta indicator).
+- When it ships, prefer a single-word/color verdict per side (matching the existing "Improving, green" simplification pattern from the Ambient/Advanced-Interaction Pass above) over a full delta table — demote raw numeric deltas to hover/expand.
+
+---
+
+## Navigation Strategy: Org → Tag → Survey → Response (added 2026-07-01, Decision 17; landing design revised and closed out 2026-07-01, Decision 18)
+
+*Authors: Priya Rajan, Marcus Osei (design), Morgan and Sam of Tag Report (joint sign-off, Decision 18). The cross-team item is now resolved — see "Resolved: additive integration" below.*
+
+### Landing: strictly additive, verified against the shipped page
+
+**Superseded design note:** an earlier version of this section proposed role-conditionally *replacing* `crystalOpening` with Command Center's hero. The stakeholder overrode this with a hard constraint, verified directly against the shipped `app/src/pages/experience/ExperienceHubPage.tsx` (962 lines): no existing content may be removed, hidden, or replaced for any user. `crystalOpening` and the existing NPS-headline, KPI strip, Live Intelligence feed, Survey Grid, and Capability layers sections (§1–§5) are untouched, unconditionally, for every viewer. Everything below is a pure insertion.
+
+- **Org Health Score** → a 5th tile in the existing KPI grid (`grid-cols-2 md:grid-cols-4 lg:grid-cols-5`), reusing `KpiTile` verbatim.
+- **Crystal's Weekly Brief** → a new card inserted immediately after the existing `crystalOpening` paragraph (which keeps full, unconditional, primary-hero weight for everyone). The Brief card: distinct existing gradient/border card styling (not a new style), an explicit "Crystal's Weekly Brief for [org]" eyebrow label, and **visually subordinate weight** to `crystalOpening` (e.g. collapsed-to-one-line with an expand affordance) — one primary hero voice per viewer, always `crystalOpening`; the Brief is a clearly-labeled secondary artifact.
+- **Tag Groups strip** → a new section between the existing §3 (Live Intelligence) and §4 (Survey Grid). Hard-scoped **at the data layer** to `health_status != healthy` tag groups only (never a general tag browser); inline-expand shows aggregate NPS + top topic; its only exit is a single CTA doing full navigation to the existing Tag Report route — never duplicating Tag Report's multi-metric/provenance machinery inline.
+- **Role-gating** applies only to whether these three new elements render, using the exact permission check that already gates Tag Report access today — no new parallel permission system. Existing content is unconditional for all viewers regardless of role.
+
+### Drill-down: inline-expand vs. navigate
+
+**Rule of thumb:** inline-expand when the interaction answers "is this worth my attention"; full navigation only when the destination is a genuinely separate trust/audit surface.
+
+- **Org hero → Tag Group:** an at-risk tag group renders as a `HealthPill`-badged card in a new Tag Groups strip (same collapsed-by-default pattern as Brief Archive). Clicking **inline-expands** (200ms, matching the existing Programs Table / Brief Archive pattern) to show aggregate NPS, top topic, and a "View Tag Report" CTA — giving the answer to "should I care" without leaving the page.
+- **Tag Report → Survey:** the CTA click, and only the CTA click, is a full page navigation into the Tag Report (`/app/experience/tags/:tagId/report`) — Tag Report's own disclosure/backfill/multi-metric machinery is a distinct trust surface that must not be embedded inline (this is Appendix C's own correct reasoning; do not re-litigate it by cramming it into a hover card).
+- **Survey → Response:** from Tag Report's provenance panel, drilling into a contributing survey's own Insight Trail and onward to a Response Detail citation is likewise full navigation — a citation trail is its own reading context, not a hover payload.
+
+**Shortcut (skip the Tag Report hop when possible):** Org Brief recommendations already carry a nullable `survey_id` alongside `tag_group_id` (ARCHITECTURE.md). When `survey_id` is populated — the common case, per `generate_recommendations`' own selection logic — navigate directly from the recommendation to that survey's Insight Trail. Tag Group is the fallback path only when `survey_id` is null. This avoids forcing a wasted intermediate click for the single most common recommendation shape.
+
+### Checkpoint-diff scope boundary
+
+`CheckpointDiffPanel` (fully specified per "Precision Component Specs" above) stays **Org-level only** for now. Tag Report already has its own, differently-shaped comparison primitive (Bracketed Snapshot / Custom Range, `tag-report/DESIGN.md` §4.3) — do not force these to converge before the Org-level diff view has even shipped and proven its interaction pattern out. Revisit as a fast-follow only after that.
+
+### Accessibility requirement before ship
+
+`HealthPill`'s status palette and `npsColor()`'s thresholds (used by `SurveyCard`) are not currently unified. Stacking Org health + Tag Group health + Survey portfolio health on one page — especially on mobile, single-column — risks a colorblind/low-vision user being unable to tell which "red" belongs to which hierarchy level, since each currently uses a different hex for the same semantic status. **Audit and unify the palette across both before this ships**, and ensure every status indicator carries a text/icon redundant to color, not just `HealthPill` (`SurveyCard`'s NPS color coding currently does not).
+
+### Resolved: additive integration, jointly signed off (Decision 18)
+
+The cross-team item is closed. Morgan and Sam (Tag Report's Product Owner and UX Designer) both reviewed the revised, strictly-additive design above and returned **APPROVE WITH CONDITIONS** — all conditions are incorporated into the spec above (subordinate Brief styling with explicit label, data-layer-scoped Tag Groups strip, reused permission check, CTA-only exit to the real Tag Report). Morgan flagged one metric to watch post-launch: if Tag Report's own drill-down/backfill-disclosure engagement rate (DESIGN.md §5) drops after this ships, that's the signal the Tag Groups strip became real competition for the Reports tab rather than a teaser, and this decision should be revisited. Full sign-off record: `docs/org-dashboard/DECISIONS.md`, Decision 18.
+
+**Out of scope (stakeholder decision, 2026-07-01):** a multi-org switcher for CX agencies is explicitly not part of this design. The CX agency ICP (GTM.md tertiary) does not get its own Command Center variant in this phase — role-gating for the additive elements above applies only to the single-org internal-admin case. Revisit agency support as a separate, later scope decision if/when it becomes a priority; do not design around it speculatively until then.
+
+### The full Command Center lives at its own route — resolved gap from the last review
+
+The Hub (`/app/experience`) only ever shows teasers (5th KPI tile, subordinate Brief card showing the latest brief only, at-risk-only Tag Groups strip) — this was deliberate per Decision 18's "keep the Hub light" conditions. The full, dense experience — complete Health Score breakdown, full Weekly Brief with all recommendations, **Brief Archive** (full chronological history, both scheduled and manual), **"Ask Crystal for a Brief"** (the manual generator), the **full** Tag Intelligence grid (all tags, not just at-risk), the Program Alerts panel, and Checkpoint Compare — lives at `/app/experience/org/trends` (promoting the existing `OrgTrendsPage` stub). Reached via the Org Health tile, the Brief card's "View full Command Center" CTA, or (for tag drill-down specifically) the Tag Groups strip's "View Tag Report" CTA, which goes to Tag Report's own page instead, not this one.
+
+---
+
+## Failure States (added 2026-07-01)
+
+*Every failure state below follows the same principle as the rest of this spec: never silently hide a problem, never alarm the user with clinical language, never block on a failure that doesn't need to block.*
+
+| Surface | Trigger | Customer sees |
+|---|---|---|
+| Org Health tile / Weekly Brief card (Hub or full page) | API/network error loading the brief or score | Neutral inline state: "Couldn't load your Org Health Score right now" + Retry — distinct from the empty-state ("Crystal hasn't written a brief yet"), never confused with it |
+| Any cached/stale-serving scenario | Cache TTL window where `hallucination_score`/lineage fields haven't landed yet (per the cache-invalidation-ordering note in Addendum 2) | A subtle "as of [time]" freshness marker — never presented as if freshly computed when it isn't |
+| Manual Summary — credit check | `402 INSUFFICIENT_CREDITS` | Caught at the **preview** step, before generation starts (the preview already shows estimated cost) — inline in the dialog: "You don't have enough credits for this range." + reduce-range / upgrade options |
+| Manual Summary — rate limit | `429 RATE_LIMITED` | "You've reached today's limit for custom summaries. Try again tomorrow, or view your Brief Archive." |
+| Manual Summary — generation fails server-side | `agent_runs.status = 'failed'` | The docked status chip transitions from "Reading 4 programs…" to a neutral failure state ("Crystal couldn't finish this summary — Try again") **plus** a toast (the user may have navigated away, per the non-blocking design) |
+| Manual Summary — timeout | 600s cap exceeded | Distinct copy from a hard failure: "This is taking longer than expected — Crystal will notify you when it's ready, or try a shorter range." |
+| Grounding-completeness verdict = `fail` (not just one flagged claim, the whole brief) | `verify_and_score` pass 3 fails broadly | Per Decision 16, publish is never blocked — but the whole card gets the "Crystal's best read" treatment rather than a single flagged citation, i.e. "Crystal's early read — some of this week's data is still being verified," not silently presented as fully verified |
+| `INJECTION_DETECTED` canary fires | Prompt-injection attempt via a compromised headline (see ARCHITECTURE.md's Trust-boundary collapse section) | This is a security failure, not a content-quality one — that generation attempt is discarded, retried once automatically; if it fires twice, fall back to a plain numbers-only template narrative for that period. The customer never sees any trace of the injection attempt or a scary error — fail open to the safe degraded mode silently |
+| Citation click-through 404 | Cited insight/response deleted or superseded since brief generation (including GDPR erasure via the redaction hook) | Land on the survey's Insights view with an inline note ("This specific citation is no longer available"), never a raw 404 |
+| "Compare to previous" with no comparable prior checkpoint | `parent_checkpoint_id` is null (first brief ever, or a lineage gap) | The action simply doesn't render — not an error state, consistent with the Tag Groups strip's "if nothing qualifies, don't render the affordance" pattern |
+| Tag Groups strip fails to load, or health status can't be determined | API error on the teaser query | Fail silently — don't render the section at all, rather than showing a broken card on the primary landing page (extends the existing "if all tags are healthy, don't render" precedent) |
+| Live-update channel disconnects mid-generation | WebSocket/notification-events connection drop (mechanism still pending Architecture Review — see cross-team open item) | Falls back to the existing 5s single-job polling already specified; if that also fails, the status chip shows "Reconnecting…" reusing the app-wide "Live" badge disconnected pattern (`app/CLAUDE.md`), never silently goes stale with no indication |
+
+---
+
+## Responsive Design (added 2026-07-01)
+
+*Grounded in the app's existing three-breakpoint system (`useBreakpoint()`: Mobile <768px, Tablet 768–1023px, Desktop ≥1024px) and its no-horizontal-scroll rule — no new responsive pattern is introduced where an existing one already covers the case.*
+
+**Hub KPI strip (now 5 tiles):** Desktop `grid-cols-5`. Tablet stays `grid-cols-4`, wrapping to a 4+1 second row rather than compressing tile width. Mobile stays `grid-cols-2` (the existing pattern) — the 5th tile wraps to its own full-width row (`col-span-2`) rather than introducing a horizontal-scroll carousel, which would violate the project's no-horizontal-scroll rule for the sake of one orphaned tile.
+
+**Weekly Brief card (Hub teaser):** already full-width and vertical by construction — no layout change needed across breakpoints; collapsed-state truncation moves from 1 line to 2 on mobile, where there's more vertical room relative to width.
+
+**Tag Groups strip:** Desktop/tablet render as a horizontal row of cards. **Mobile reflows to a vertical, full-width stack** — a "strip" cannot stay horizontal under 768px without violating the no-horizontal-scroll rule, so this is a genuine layout change, not just a reflow of the same DOM.
+
+**Full Command Center page (`/app/experience/org/trends`):**
+- Health Score component breakdown: desktop uses hover-reveal; **mobile has no hover, so this becomes tap-to-expand** — an accessibility-driven change, not cosmetic.
+- Brief Archive timeline: vertical by design already, works unchanged on mobile; expanded entries drop to single-column content (no internal side-by-side) below 768px.
+- Manual Summary Generator: uses shadcn `Dialog` on desktop/tablet; **on mobile, use `Sheet` instead** (already an available primitive), consistent with how the app already prefers bottom-sheet patterns over centered dialogs on small screens — branch on `useBreakpoint()`, not a CSS-only media query, since the two are different components.
+- Full Tag Intelligence grid: same grid → vertical-stack reflow as the Tag Groups strip.
+- Program Alerts panel: a list — reflows to full-width naturally, no special-casing needed.
+- **Checkpoint Compare (`CheckpointDiffPanel`) — fully specified, see "Precision Component Specs" above:** desktop/tablet use a two-column before/after layout; **mobile cannot do side-by-side at all** (two columns of numbers don't fit under 375px) — it becomes a **sequential stacked layout: Before card, then After card, then the delta**, not a compressed version of the two-column layout.
+
+**Response Detail viewer:** a standard page-level route; follows the existing `AppShell`/`PageHeader` responsive conventions already used everywhere else — no new pattern required.
+
+---
+
+## Loading States (added 2026-07-01)
+
+| Component | Loading treatment |
+|---|---|
+| 5th KPI tile (Org Health Score) | Reuses `KpiTile`'s existing skeleton (`h-[112px] rounded-2xl bg-surface-container animate-pulse`) verbatim — no new skeleton needed |
+| Weekly Brief card (Hub teaser + full) | New skeleton matching its own aspect ratio (label placeholder + 2-line text placeholder) — does not reuse `KpiTile`'s shape, since the card is a different proportion |
+| Tag Groups strip | Reuses the existing Live Intelligence feed's skeleton pattern verbatim (`h-16 rounded-xl bg-surface-container animate-pulse`, 2–3 shown) |
+| Brief Archive — initial load | 3–4 skeleton timeline rows (dot + 2-line placeholder) |
+| Brief Archive — pagination / "load more" | A single small spinner appended at the bottom of the existing list only — never a full-list skeleton re-render, consistent with the cursor-pagination design ("reload re-fetches only the first page and prepends") |
+| Manual Summary dialog — cost/corpus preview | Skeleton line where cost/response-count/warnings will appear; **the Generate button stays disabled until the preview resolves** — never allow confirming against a stale or loading estimate |
+| Manual Summary — generation in progress | Already fully specified (the ambient-crystal status chip with rotating text) — this **is** the loading state for the whole generation flow |
+| Checkpoint Compare | Skeleton placeholder card(s) (two side-by-side on desktop, stacked on mobile per the responsive spec above) while the compare endpoint resolves; the Brief Archive entry itself is already rendered and interactive before this loads — compare is fetched lazily only on click, never blocking the entry's own expand |
+| General rule | Every skeleton/pulse loading state must respect `prefers-reduced-motion` per the app's existing convention — plain opacity-pulse skeletons are acceptable under reduced motion, but no new shimmer/gradient-sweep loading effect may be introduced without a reduced-motion fallback |
+
+---
+
 *This design specification is the contract between Design and Engineering. No UI component within Command Center may ship to production without matching this specification. Deviations require Marcus's written sign-off and a DECISIONS.md entry explaining the rationale.*

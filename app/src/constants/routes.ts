@@ -20,7 +20,6 @@ export const ROUTES = {
   CUSTOM_ANALYSIS:    '/app/surveys/:surveyId/intelligence/custom',
   CUSTOM_REPORT:      '/app/surveys/:surveyId/intelligence/custom/:reportId',
   INSIGHTS:           '/app/insights',
-  INSIGHTS_TOPICS:    '/app/insights/topics',
   ADVANCED_INSIGHTS:  '/app/insights/advanced',
   INSIGHTS_BRIEF:     '/app/insights/brief',
   INSIGHTS_METRICS:   '/app/insights/metrics',
@@ -32,6 +31,7 @@ export const ROUTES = {
   WORKFLOWS:          '/app/workflows',
   WORKFLOW_BUILD:     '/app/workflows/build',
   WORKFLOW_CANVAS:    '/app/workflows/canvas',
+  WORKFLOW_NL_BUILD:  '/app/workflows/build/nl',
   ALERTS:             '/app/alerts',
   NOTIFICATION_PREFS:      '/app/settings/notifications',
   NOTIFICATION_ANALYTICS:  '/app/settings/notification-analytics',
@@ -45,6 +45,7 @@ export const ROUTES = {
   SETTINGS_SEATS:        '/app/settings/users/seats',
   SETTINGS_AUDIT:        '/app/settings/users/audit',
   SETTINGS_TAGS:         '/app/settings/tags',
+  SETTINGS_INTEGRATIONS: '/app/settings/integrations',
   DATA:               '/app/data',
 
   // Prism — data ingestion / migration wizard
@@ -54,6 +55,7 @@ export const ROUTES = {
   PRISM_JOBS:         '/app/prism/jobs',
   EXPERIENCE:                  '/app/experience',
   EXPERIENCE_ORG_TRENDS:       '/app/experience/org/trends',
+  EXPERIENCE_TOPICS:           '/app/experience/topics',
   EXPERIENCE_SURVEY:           '/app/experience/survey/:surveyId',
   EXPERIENCE_SURVEY_REPORT:    '/app/experience/survey/:surveyId/report',
   EXPERIENCE_SURVEY_TOPICS:    '/app/experience/survey/:surveyId/topics',
@@ -61,6 +63,19 @@ export const ROUTES = {
   EXPERIENCE_SURVEY_TRENDS:    '/app/experience/survey/:surveyId/trends',
   GROUP_REPORT:        '/app/groups/:tagId/report/:runId',
   GROUP_REPORT_LATEST: '/app/groups/:tagId/report',
+
+  // Tag Report — cross-survey AI insight rollups, nested under Experience
+  // (DESIGN.md Appendix C: dedicated sub-route, not a top-level nav item nor
+  // a tab inside ExperienceHubPage).
+  TAG_REPORTS_INDEX:  '/app/experience/reports',
+  TAG_REPORT_NEW:     '/app/experience/tags/:tagId/report/new',
+  TAG_REPORT_LATEST:  '/app/experience/tags/:tagId/report',
+  TAG_REPORT:         '/app/experience/tags/:tagId/report/:runId',
+  TAG_REPORT_TRAIL:   '/app/experience/tags/:tagId/report/trail',
+
+  // Response Detail — R-T5 audit-trail terminus (survey-scoped, matches how
+  // response data is scoped elsewhere).
+  RESPONSE_DETAIL: '/app/surveys/:surveyId/responses/:responseId',
 
   // Admin — Crystal
   ADMIN_CRYSTAL:              '/app/admin/crystal',

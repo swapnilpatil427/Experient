@@ -82,6 +82,12 @@ MIN_TOKENS = {
     "insight_expert":  800,    # per-specialist narration
     "crystal":         600,    # Q&A response
     "report_full":     10000,  # full narrative report
+    # Regression floor for the 2026-07-06 fix: 8000 was too tight for
+    # agents/response_generator.py's batch of responses (each with full
+    # answers arrays across every question) and caused real truncated-JSON
+    # failures ("EOF while parsing a string") in production. Batch size was
+    # also lowered (5 -> 3) alongside this — see response_generator.py.
+    "response_gen":    10000,
 }
 SKILL_MIN_TOKENS = {
     "insight-narrator":  2000,  # 5 layered findings + summary + actions

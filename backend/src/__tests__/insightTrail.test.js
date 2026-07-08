@@ -206,3 +206,52 @@ describe('GET /api/insights/:surveyId/reports/:reportId', () => {
     expect(status).toBe(404);
   });
 });
+
+describe('GET /api/insights/:surveyId/checkpoints/:checkpointId/report', () => {
+  // Fixed 2026-07-04: this endpoint used to query ONLY survey_insight_checkpoints
+  // (legacy) by id, so a v2-sourced checkpointId (as returned by GET /checkpoints,
+  // which is v2-first) would 404 here even though the checkpoint exists. Now shares
+  // loadCheckpointRow (v2-then-legacy) with GET /trail/:checkpointId.
+  it('finds a v2 checkpoint and returns its inline blob in dev', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM insight_checkpoints_v2')) return { rows: [V2_ROW] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/insights/s1/checkpoints/cp-12/report');
+    expect(status).toBe(200);
+    expect(body.executive_summary).toBe('hi');
+  });
+
+  it('falls back to a legacy checkpoint when v2 has no match', async () => {
+    const seen = [];
+    dbQuery = vi.fn(async (text) => {
+      seen.push(text);
+      if (text.includes('FROM insight_checkpoints_v2')) return { rows: [] };
+      if (text.includes('FROM survey_insight_checkpoints')) {
+        return { rows: [{ id: 'leg-3', report_url: 'blob://leg-3' }] };
+      }
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/insights/s1/checkpoints/leg-3/report');
+    expect(status).toBe(200);
+    expect(body.executive_summary).toBe('hi');
+    expect(seen.some(t => t.includes('FROM survey_insight_checkpoints'))).toBe(true);
+  });
+
+  it('404s when the checkpoint exists in neither table', async () => {
+    dbQuery = vi.fn(async () => ({ rows: [] }));
+    const { status, body } = await api(buildApp(), 'GET', '/api/insights/s1/checkpoints/nope/report');
+    expect(status).toBe(404);
+    expect(body.error).toBe('checkpoint_not_found');
+  });
+
+  it('404s with report_not_ready when the row has no blob ref yet', async () => {
+    dbQuery = vi.fn(async (text) => {
+      if (text.includes('FROM insight_checkpoints_v2')) return { rows: [{ ...V2_ROW, report_blob_ref: null }] };
+      return { rows: [] };
+    });
+    const { status, body } = await api(buildApp(), 'GET', '/api/insights/s1/checkpoints/cp-12/report');
+    expect(status).toBe(404);
+    expect(body.error).toBe('report_not_ready');
+  });
+});

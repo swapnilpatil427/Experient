@@ -371,6 +371,47 @@ export async function generateGroupInsights(
 
 
 /**
+ * Fire Tag Report generation (TRACKER.md §1 reconciliation item 7 / §2). Mirrors
+ * generateGroupInsights's shape exactly: fire-and-forget, best-effort — caller
+ * should not await the full pipeline, only the HTTP kick-off. Unlike
+ * generateGroupInsights, no survey_ids are ever passed — Tag Report's backend
+ * layer never resolves survey membership (that is entirely CrystalOS's
+ * fetch_next_batch, working from tag_id + effectiveMaxSurveys as target_n).
+ *
+ * @param runId               - group_insight_runs.id created before calling this
+ * @param orgId
+ * @param tagId               - the single tag that defines this report (Tag Report is always single-tag, see TRACKER.md reconciliation item 5)
+ * @param runMode             - 'manual' | 'automated' | 'custom_range'
+ * @param effectiveMaxSurveys - already-resolved cap (3-tier COALESCE), passed to CrystalOS as target_n
+ * @param windowStart         - only set for custom_range; requested window start
+ * @param windowEnd           - only set for custom_range; requested window end
+ */
+export async function generateTagReport(
+  runId: string,
+  orgId: string,
+  tagId: string,
+  runMode: 'manual' | 'automated' | 'custom_range',
+  effectiveMaxSurveys: number,
+  windowStart: string | null = null,
+  windowEnd: string | null = null,
+): Promise<unknown> {
+  logger.info({ runId, orgId, tagId, runMode, effectiveMaxSurveys }, 'agents:generateTagReport');
+  return _fetch('/tag-reports/generate', {
+    method: 'POST',
+    body: JSON.stringify({
+      run_id:                runId,
+      org_id:                orgId,
+      tag_id:                tagId,
+      run_mode:              runMode,
+      window_start:          windowStart,
+      window_end:            windowEnd,
+      effective_max_surveys: effectiveMaxSurveys,
+    }),
+  }, 15_000);
+}
+
+
+/**
  * Fire insight generation for a survey. Best-effort; caller should not await
  * the full pipeline — only the HTTP kick-off.
  *
@@ -436,6 +477,34 @@ export async function triggerManualInsightRun({
       actor,
       sample_cap:   sample_cap  ?? null,
     }),
+  }, 15_000);
+}
+
+/**
+ * CrystalOS internal endpoint for the manual "Backfill Tagging" job
+ * (Experience → Topics page). Held as a const for the same reason as
+ * MANUAL_INSIGHT_RUN_PATH above.
+ */
+export const TOPIC_BACKFILL_PATH = '/topics/backfill';
+
+/**
+ * Fire a manual topic-tagging backfill job. Best-effort kick-off — CrystalOS
+ * starts a background task and reports progress into the SAME agent_runs row
+ * (run_id) via stream_events, pollable at GET /api/runs/:runId. The caller
+ * must have already inserted that row (run_type='topic_backfill') before
+ * calling this, matching triggerManualInsightRun's division of responsibility.
+ */
+export async function triggerTopicBackfill({
+  surveyId, orgId, runId,
+}: {
+  surveyId: string;
+  orgId: string;
+  runId: string;
+}): Promise<unknown> {
+  logger.info({ surveyId, orgId, runId }, 'agents:triggerTopicBackfill');
+  return _fetch(TOPIC_BACKFILL_PATH, {
+    method: 'POST',
+    body: JSON.stringify({ survey_id: surveyId, org_id: orgId, run_id: runId }),
   }, 15_000);
 }
 
@@ -639,6 +708,117 @@ export async function getCheckpointReadUrl(ref: string, expiryMin: number = 15):
     `/internal/checkpoint-read-url?ref=${encodeURIComponent(ref)}&expiry_minutes=${expiryMin}`,
   ) as { url: string };
   return result.url;
+}
+
+
+// ── Workflow automation: NL parsing (Wave 3) ────────────────────────────────────
+
+/**
+ * CrystalOS internal endpoint for NL → workflow structured-output parsing
+ * (Crystal Builder NL parser — TEAM.md's Amara Osei mandate, TRACKER Wave 3).
+ * Held as a const so the path is easy to fix once Amara's actual CrystalOS route
+ * lands — see docs/automation-hub/WORKFLOW_SIGNAL_CONTRACT.md for the
+ * reconciliation note: at the time this client function was written, Amara's
+ * CrystalOS-side implementation did not exist yet, so this path is a working
+ * assumption per BUILDER_SPEC_WAVE2.md §2.1, not a confirmed contract.
+ */
+export const PARSE_WORKFLOW_NL_PATH = '/workflows/parse-nl';
+
+export interface ParseWorkflowNLSuccess {
+  name: string;
+  description: string;
+  triggerType: string;
+  nodes: Record<string, unknown>[];
+  edges: Record<string, unknown>[];
+  confidence: number;
+  warnings: string[];
+  // Scope hint (Wave 12, docs/automation-hub/BUILDER_REDESIGN_V2_SCOPE.md) — Amara's
+  // CrystalOS parser matches an NL mention of a survey/tag against the real
+  // `surveys`/`tags` lists this client now forwards in the registry payload (see
+  // routes/workflows.ts's POST /parse-nl) and returns the match here. All three
+  // fields are OPTIONAL: an older/lagging CrystalOS deploy that predates this
+  // change simply omits them, and the route/frontend must treat that exactly like
+  // `scopeType: 'org'` with no survey/tag — i.e. today's byte-identical org-wide
+  // behavior — mirroring how `schemas/workflows.ts`'s `updateWorkflowSchema`
+  // already defaults an absent `scopeType` to `'org'`. Never guess: CrystalOS only
+  // populates these when it confidently matched a REAL org survey/tag; an
+  // unmatched/hallucinated mention is dropped there, not defaulted here.
+  scopeType?: 'org' | 'survey' | 'tag';
+  scopeSurveyId?: string;
+  scopeTagId?: string;
+}
+
+/**
+ * Thrown when CrystalOS returns a structured "unparseable" response (422) — the
+ * request succeeded at the transport level but Crystal could not produce a
+ * workflow it's confident enough to hand back. Distinct from AgentsError (network/
+ * non-2xx-without-structured-body) so the route handler can map this to the exact
+ * `{ error: 'unparseable', message, suggestions }` shape the frontend's
+ * `ParseWorkflowNLError`/`toParseWorkflowNLError` (app/src/lib/api.ts) expects.
+ */
+export class UnparseableWorkflowError extends Error {
+  suggestions: string[];
+  constructor(message: string, suggestions: string[] = []) {
+    super(message);
+    this.name = 'UnparseableWorkflowError';
+    this.suggestions = suggestions;
+  }
+}
+
+/**
+ * Parse a natural-language workflow description into a structured workflow via
+ * CrystalOS's NL parser skill. Passes the current workflowRegistry.ts catalog so
+ * CrystalOS validates triggerType/actions against the single source of truth
+ * (root CLAUDE.md: "CrystalOS proposes... the backend is the bridge").
+ *
+ * Uses LLM_TIMEOUT_MS (90s) since this is a full model-inference call, same class
+ * of operation as refineRun/addSkipLogic/applyRecommendation above. The Express
+ * route layers its own narrower client-facing timeout mapping (504) on top —
+ * see routes/workflows.ts's POST /parse-nl.
+ *
+ * @throws UnparseableWorkflowError on CrystalOS's structured 422 (low-confidence/
+ *   unparseable) response — callers should catch this distinctly from a generic
+ *   AgentsError (network failure, 5xx, or timeout).
+ */
+export async function parseWorkflowNL(
+  description: string,
+  registryPayload: unknown,
+  orgId: string,
+): Promise<ParseWorkflowNLSuccess> {
+  logger.info({ orgId, descriptionLength: description.length }, 'agents:parseWorkflowNL');
+  try {
+    return await _fetch(PARSE_WORKFLOW_NL_PATH, {
+      method: 'POST',
+      body: JSON.stringify({
+        org_id:      orgId,
+        description,
+        registry:    registryPayload,
+      }),
+    }, LLM_TIMEOUT_MS) as ParseWorkflowNLSuccess;
+  } catch (err: unknown) {
+    const agentsErr = err as AgentsError;
+    if (agentsErr.status === 422) {
+      // CrystalOS's error body was already stringified by _fetch's throw path
+      // (`Agents service error 422: <body>`) — but _fetch doesn't parse the body
+      // as JSON on the error path, only on success. Re-derive the structured
+      // fields defensively: if CrystalOS's 422 body is JSON matching
+      // { error: 'unparseable', message, suggestions }, surface those; otherwise
+      // fall back to a generic message so the route can still return a well-formed
+      // 422 rather than leaking a raw "Agents service error 422: ..." string.
+      const raw = agentsErr.message.replace(/^Agents service error 422:\s*/, '');
+      try {
+        const parsed = JSON.parse(raw) as { message?: string; suggestions?: string[] };
+        throw new UnparseableWorkflowError(
+          parsed.message ?? 'Crystal could not turn that into a workflow',
+          Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+        );
+      } catch (parseErr) {
+        if (parseErr instanceof UnparseableWorkflowError) throw parseErr;
+        throw new UnparseableWorkflowError('Crystal could not turn that into a workflow', []);
+      }
+    }
+    throw err;
+  }
 }
 
 

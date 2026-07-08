@@ -9,6 +9,9 @@ from crystalos.lib.topic_registry import (
     _parse_vector,
     add_candidates_batch,
     assign_batch_to_nearest,
+    dedupe_unassigned_to_one_per_response,
+    group_assignments_by_response,
+    mark_candidates_uncategorized,
     update_centroids_welford_batch,
 )
 
@@ -140,6 +143,99 @@ class TestAssignBatchToNearest:
         assert assignments.get("r1") == "topic_a"
         assert assignments.get("r2") == "topic_b"
 
+    @pytest.mark.asyncio
+    async def test_one_malformed_embedding_does_not_crash_the_whole_batch(self):
+        """Regression test (2026-07-13): a wrong-dimension or non-numeric embedding
+        used to raise straight out of this function, which — since callers run this
+        inside one all-or-nothing transaction — aborted the ENTIRE batch including
+        already-computed sentiment scoring, and because the caller always re-selects
+        the oldest untagged rows first, the same poison row would fail forever,
+        permanently starving every response behind it. Now a bad row is isolated:
+        treated as unassigned, everything else in the batch still gets scored."""
+        centroids = [{"topic_name": "topic_a", "centroid": [1.0, 0.0], "response_count": 5}]
+        with patch("crystalos.lib.topic_registry.get_centroids", return_value=centroids):
+            conn = AsyncMock()
+            assignments, unassigned = await assign_batch_to_nearest(
+                {
+                    "good": [1.0, 0.0],
+                    "wrong_dim": [1.0, 0.0, 0.0],   # zip() silently truncates — not this one
+                    "non_numeric": [None, "x"],      # TypeError inside the sum()
+                },
+                "s1", conn, threshold=0.5,
+            )
+        assert assignments.get("good") == "topic_a"
+        assert "non_numeric" in unassigned
+        assert "non_numeric" not in assignments
+
+    @pytest.mark.asyncio
+    async def test_malformed_embedding_logs_warning_not_raise(self):
+        centroids = [{"topic_name": "topic_a", "centroid": [1.0, 0.0], "response_count": 5}]
+        with (
+            patch("crystalos.lib.topic_registry.get_centroids", return_value=centroids),
+            patch("crystalos.lib.topic_registry.logger") as mock_logger,
+        ):
+            conn = AsyncMock()
+            assignments, unassigned = await assign_batch_to_nearest(
+                {"bad": [None, None]}, "s1", conn, threshold=0.5,
+            )
+        assert assignments == {}
+        assert unassigned == ["bad"]
+        mock_logger.warning.assert_called_once()
+
+
+# ── Multi-topic-per-response regrouping helpers (added 2026-07-06) ────────────
+# assign_batch_to_nearest itself is unchanged and key-agnostic (proven above by
+# using plain "r1"/"r2" keys) — these helpers let callers pass composite
+# "response_id::question_id" keys so a response with multiple open-text
+# answers can match multiple different existing topics, then regroup the
+# per-answer results back to per-response shape.
+
+class TestGroupAssignmentsByResponse:
+    def test_single_answer_per_response(self):
+        assignments = {"r1::q1": "Shipping Costs"}
+        assert group_assignments_by_response(assignments) == {"r1": ["Shipping Costs"]}
+
+    def test_two_different_answers_same_response_two_topics(self):
+        assignments = {"r1::q1": "Shipping Costs", "r1::q2": "Support Quality"}
+        result = group_assignments_by_response(assignments)
+        assert result == {"r1": ["Shipping Costs", "Support Quality"]}
+
+    def test_two_answers_same_response_same_topic_deduped(self):
+        assignments = {"r1::q1": "Shipping Costs", "r1::q2": "Shipping Costs"}
+        result = group_assignments_by_response(assignments)
+        assert result == {"r1": ["Shipping Costs"]}
+
+    def test_multiple_responses_kept_independent(self):
+        assignments = {"r1::q1": "Shipping Costs", "r2::q1": "Support Quality"}
+        result = group_assignments_by_response(assignments)
+        assert result == {"r1": ["Shipping Costs"], "r2": ["Support Quality"]}
+
+    def test_empty_assignments_returns_empty(self):
+        assert group_assignments_by_response({}) == {}
+
+
+class TestDedupeUnassignedToOnePerResponse:
+    def test_single_unassigned_answer(self):
+        embeddings = {"r1::q1": [0.1, 0.2]}
+        result = dedupe_unassigned_to_one_per_response(["r1::q1"], embeddings)
+        assert result == [("r1", [0.1, 0.2])]
+
+    def test_multiple_unassigned_answers_same_response_keeps_only_first(self):
+        """topic_candidates has UNIQUE(survey_id, response_id) — only one
+        candidate slot per response, so a response with 2 unmatched answers
+        must not produce 2 candidate rows."""
+        embeddings = {"r1::q1": [0.1, 0.2], "r1::q2": [0.9, 0.8]}
+        result = dedupe_unassigned_to_one_per_response(["r1::q1", "r1::q2"], embeddings)
+        assert result == [("r1", [0.1, 0.2])]  # first-seen wins
+
+    def test_different_responses_each_get_a_candidate(self):
+        embeddings = {"r1::q1": [0.1, 0.2], "r2::q1": [0.5, 0.6]}
+        result = dedupe_unassigned_to_one_per_response(["r1::q1", "r2::q1"], embeddings)
+        assert result == [("r1", [0.1, 0.2]), ("r2", [0.5, 0.6])]
+
+    def test_empty_list_returns_empty(self):
+        assert dedupe_unassigned_to_one_per_response([], {}) == []
+
 
 # ── Welford batch math ────────────────────────────────────────────────────────
 # We test the formula directly rather than mocking the psycopg3 cursor chain.
@@ -229,3 +325,66 @@ class TestAddCandidatesBatch:
         assert response_id == "resp-z"
         # Embedding is formatted as pgvector string
         assert emb_str.startswith("[")
+
+
+# ── mark_candidates_uncategorized ("Uncategorized" bucket, added 2026-07-15) ──
+
+class TestMarkCandidatesUncategorized:
+    @pytest.mark.asyncio
+    async def test_flags_currently_buffered_candidates_and_returns_count(self):
+        cur = AsyncMock()
+        cur.__aenter__ = AsyncMock(return_value=cur)
+        cur.__aexit__ = AsyncMock(return_value=None)
+        cur.fetchall = AsyncMock(return_value=[("r1",), ("r2",), ("r3",)])
+        conn = MagicMock()
+        conn.cursor = MagicMock(return_value=cur)
+
+        count = await mark_candidates_uncategorized("s1", "org1", conn)
+
+        assert count == 3
+        cur.execute.assert_called_once()
+        sql, params = cur.execute.call_args[0]
+        assert "UPDATE responses" in sql
+        assert "ai_topics_pending = TRUE" in sql
+        assert params == ("org1", "s1")
+
+    @pytest.mark.asyncio
+    async def test_query_reads_from_topic_candidates_and_excludes_already_resolved(self):
+        """Regression test: must never downgrade a response that a concurrent
+        discovery flush JUST resolved back to "pending" — the WHERE clause
+        guards ai_topics IS NULL, and selects response_ids from
+        topic_candidates (not e.g. all untagged responses generally)."""
+        cur = AsyncMock()
+        cur.__aenter__ = AsyncMock(return_value=cur)
+        cur.__aexit__ = AsyncMock(return_value=None)
+        cur.fetchall = AsyncMock(return_value=[])
+        conn = MagicMock()
+        conn.cursor = MagicMock(return_value=cur)
+
+        await mark_candidates_uncategorized("s1", "org1", conn)
+
+        sql, _ = cur.execute.call_args[0]
+        assert "ai_topics IS NULL" in sql
+        assert "topic_candidates" in sql
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_on_db_error_without_raising(self):
+        conn = MagicMock()
+        conn.cursor = MagicMock(side_effect=RuntimeError("connection lost"))
+
+        count = await mark_candidates_uncategorized("s1", "org1", conn)
+
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_zero_matching_candidates_returns_zero(self):
+        cur = AsyncMock()
+        cur.__aenter__ = AsyncMock(return_value=cur)
+        cur.__aexit__ = AsyncMock(return_value=None)
+        cur.fetchall = AsyncMock(return_value=[])
+        conn = MagicMock()
+        conn.cursor = MagicMock(return_value=cur)
+
+        count = await mark_candidates_uncategorized("s1", "org1", conn)
+
+        assert count == 0

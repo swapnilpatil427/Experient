@@ -90,6 +90,36 @@ Plus `/webhooks/clerk`, `/api/health`, `/api/metrics`.
     sample_size, low_confidence }` (no debit).
   - `GET /api/reports/custom?survey_id=` — list org's custom reports (newest first).
   - `GET /api/reports/custom/:reportId` — report row + isolated `custom_report_insights` + blob document.
+- **Tag Report** (`docs/tag-report/DESIGN.md` + `TRACKER.md`) — rolls up EXISTING per-survey
+  `insight_checkpoints_v2` checkpoints across every survey sharing a tag; **never generates fresh
+  AI insight** (zero `agentsClient`/CrystalOS calls in the selection path — only the explicit
+  generate-a-run kick-off). Selection logic lives in `lib/tagReportSelection.ts` (tag
+  validation/org-scoping, candidate-survey existence check, `effective_max_surveys` 3-tier
+  resolution — does NOT touch `insight_checkpoints_v2`, does NOT do recency/backfill; that is
+  CrystalOS's `tag_report.py` graph) and `lib/tagReportRunner.ts` (shared run-creation flow used
+  by all three trigger sources). `lib/groupInsightRunConcurrency.ts` wraps every
+  `INSERT INTO group_insight_runs` (both the pre-existing `/generate` route and Tag Report's new
+  endpoints) so a concurrent duplicate attaches to the in-flight run (`uq_gir_tag_inflight`) instead
+  of raising a raw `23505`. `lib/tagReportScheduler.ts` is Automated mode's due-tags sweep — reuses
+  `lib/workflowQueue.ts`'s Redis Streams queue for thundering-herd jitter, ticked every 15 min from
+  `eventEngine/processor.ts` (`ENABLE_EVENT_ENGINE=true`), dispatched via a dedicated
+  `tag_report.automated_due` trigger type in `workflowQueue.ts::handleTrigger` (NOT
+  `runWorkflowsForEvent`, which is for org-authored workflows only).
+  - `routes/survey-groups.ts` (mounted `/api/group-insights`): `GET tag-reports` (index list),
+    `POST tag-report/manual`, `POST tag-report/custom-range` (both `requireAuth` +
+    `requireRole('analyst')`), `POST tag-report/automated` (internal-only, `requireInternalKey`,
+    called by the scheduler — not `requireAuth`), `GET tag-report/:runId` (+ `group_insight_run_sources`
+    join, `metric_key` partitioning), `GET tag-report/:runId/trail` (bounded `parent_run_id` walk).
+  - `routes/tags.ts` (mounted `/api/survey-tags`): `GET/PATCH :id/report-config`,
+    `GET :id/tag-report-history`.
+  - `agentsClient.generateTagReport(...)` → CrystalOS `POST /tag-reports/generate`, mirrors
+    `generateGroupInsights`'s fire-and-forget shape; passes `tag_id` (never `survey_ids` — CrystalOS
+    resolves candidates itself from `effective_max_surveys` as `target_n`).
+  - **Known doc/reality mismatch (pre-existing, not introduced here):** this file's own historical
+    "Mounted at /api/survey-groups" header and `routes/tags.ts`'s "Mounted at /api/tags" header do
+    not match their actual `src/index.ts` mount paths (`/api/group-insights`, `/api/survey-tags`).
+    TRACKER.md's Tag Report endpoint list inherited the stale prefixes; the paths above are the real
+    ones.
 
 ## Postgres schema highlights
 See docs/SURVEY_DATA_MODEL.md for full schema.
@@ -105,6 +135,16 @@ Key tables: surveys, responses, templates, workflows, orgs, insights, survey_top
 - `insight_checkpoints_v2`: Insight Pipeline v2 linked-list checkpoints (lane automated|manual, parent_checkpoint_id, delta_from_prior, lineage_json); legacy `survey_insight_checkpoints` still read as fallback
 - `insight_reports`: manual insight run documents (run_mode manual_expert|manual_quick, window, blob_ref, status)
 - `custom_reports` + `custom_report_insights`: Custom Analysis (Phase 6) — ISOLATED from the insights pipeline; `custom_report_insights` rows never appear in the `insights` table and never supersede live projections
+- Tag Report additions (additive, `supabase/migrations/20260702{110000,120000,130000}_tag_report_*.sql`):
+  `group_insight_runs.{run_mode,window_start,window_end,parent_run_id,trigger}` + the
+  `uq_gir_tag_inflight` partial unique index (blocks any concurrent run per `(org_id, tag_ids)`
+  while `status IN ('pending','running')`); new table `group_insight_run_sources` (per-survey,
+  per-checkpoint provenance — `checkpoint_id` FKs to `insight_checkpoints_v2`, **not**
+  `insight_reports`; `bracket_position 'single'|'start'|'end'`); `group_insights.metric_key`
+  (`nps|csat|ces|NULL`); `survey_tags.max_surveys_override` +
+  `org_insight_defaults.max_surveys_per_tag_report` (3-tier cap resolution, platform fallback 5).
+  **`insight_checkpoints_v2` has no `status` column** — any row that exists is inherently a
+  completed checkpoint (written once, atomically, at publish time); never filter on `status='ready'`.
 
 ## Testing
 

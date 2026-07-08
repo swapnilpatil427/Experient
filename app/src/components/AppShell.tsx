@@ -12,6 +12,7 @@ import { useSidebarState } from '../hooks/useSidebarState';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useSurveys } from '../hooks/useSurveys';
 import { CrystalPanelProvider, useCrystalPanel } from '../contexts/crystalPanel';
+import { ROUTES } from '../constants/routes';
 
 const pageVariants: Variants = {
   initial: { opacity: 0, y: 10 },
@@ -29,7 +30,23 @@ function AppShellInner() {
 
   const isMobile = breakpoint === 'mobile';
   const isTablet = breakpoint === 'tablet';
-  const isBuilder = /\/surveys\/[^/]+\/build/.test(location.pathname);
+  // Full-bleed "no chrome" treatment is for the survey QUESTION builder only
+  // (it owns its own viewport + its own XperiqCopilot assistant/⌘K, per the
+  // comment below). This regex previously ALSO matched `/app/workflows/build`
+  // (Wave 14 bug report) — and, being a substring test, silently matched
+  // `/app/workflows/build/nl` too — meaning both workflow builder pages have
+  // been running chrome-less (no gutters/footer/BottomNav/CrystalPanel/⌘K)
+  // by accident. Neither page's own layout expects this (both use a normal
+  // `max-w-* mx-auto` container, per `app/src/pages/CLAUDE.md`'s page
+  // pattern) — narrowed to an exact regex so only the survey builder's
+  // dynamic `:id` segment matches, never a workflow route.
+  const isBuilder = /^\/surveys\/[^/]+\/build$/.test(location.pathname);
+  // The two "unified builder" pages (Wave 14) each mount their own
+  // contextual `AskCrystalFab` — suppress AppShell's generic default Crystal
+  // FAB there so re-enabling `CrystalPanel` on these routes (via the fix
+  // above) doesn't produce two overlapping "open Crystal" buttons in the
+  // same corner.
+  const hasOwnCrystalFab = location.pathname === ROUTES.WORKFLOW_BUILD || location.pathname === ROUTES.WORKFLOW_CANVAS;
 
   useEffect(() => {
     if (isTablet) setExpanded(false);
@@ -103,9 +120,11 @@ function AppShellInner() {
         <CrystalPanel scope={scope} surveys={surveys} insights={null} />
       )}
 
-      {/* Crystal FAB — collapsed icon when panel is closed */}
+      {/* Crystal FAB — collapsed icon when panel is closed. Suppressed on the
+          two Wave 14 unified-builder pages (they mount their own contextual
+          AskCrystalFab instead — see `hasOwnCrystalFab` above). */}
       <AnimatePresence>
-        {!isBuilder && !isOpen && (
+        {!isBuilder && !hasOwnCrystalFab && !isOpen && (
           <motion.button
             key="crystal-fab"
             initial={{ scale: 0, opacity: 0 }}
@@ -123,8 +142,8 @@ function AppShellInner() {
               right: '1.5rem',
               width: 52,
               height: 52,
-              background: 'linear-gradient(135deg, #2a4bd9 0%, #8329c8 100%)',
-              boxShadow: '0 8px 24px rgba(42,75,217,0.40), 0 2px 8px rgba(0,0,0,0.12)',
+              background: 'linear-gradient(135deg, var(--color-primary) 0%, var(--color-tertiary) 100%)',
+              boxShadow: '0 8px 24px color-mix(in srgb, var(--color-primary) 40%, transparent), 0 2px 8px rgba(0,0,0,0.12)',
             }}
           >
             <Icon name="diamond" size={22} style={{ color: 'white' }} />

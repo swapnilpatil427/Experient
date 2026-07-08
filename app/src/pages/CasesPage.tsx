@@ -118,7 +118,7 @@ function OwnerAvatar({ label }: { label?: string | null }) {
     <div className="flex items-center gap-1.5">
       <div
         className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
-        style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+        style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
       >
         {initials}
       </div>
@@ -142,7 +142,7 @@ function CaseCard({ cxCase }: { cxCase: CxCase }) {
   };
 
   const glassHover: React.CSSProperties = {
-    boxShadow: `0 20px 40px -8px color-mix(in srgb, #2a4bd9 14%, transparent), inset 0 1px 0 rgba(255,255,255,0.8)`,
+    boxShadow: `0 20px 40px -8px color-mix(in srgb, var(--color-primary) 14%, transparent), inset 0 1px 0 rgba(255,255,255,0.8)`,
     transform: 'perspective(1000px) rotateX(2deg) rotateY(-1deg)',
   };
 
@@ -211,9 +211,9 @@ function CaseCard({ cxCase }: { cxCase: CxCase }) {
               to={toPath(ROUTES.CASE_DETAIL, { caseId: cxCase.id })}
               className="text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:opacity-90"
               style={{
-                background: 'rgba(42,75,217,0.08)',
+                background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
                 color: 'var(--color-primary)',
-                border: '1px solid rgba(42,75,217,0.2)',
+                border: '1px solid color-mix(in srgb, var(--color-primary) 20%, transparent)',
               }}
             >
               {t('cases.viewCase')}
@@ -235,7 +235,7 @@ function SkeletonCard() {
         border: '1px solid rgba(255,255,255,0.6)',
         boxShadow: '0 4px 24px rgba(0,0,0,0.05)',
         borderRadius: '1rem',
-        borderLeft: '4px solid rgba(42,75,217,0.15)',
+        borderLeft: '4px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
       }}
     >
       <div className="flex items-center gap-4">
@@ -321,8 +321,8 @@ export function CasesPage() {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
             style={{
-              background: 'linear-gradient(135deg, rgba(42,75,217,0.08) 0%, rgba(131,41,200,0.06) 50%, rgba(0,100,124,0.05) 100%)',
-              border: '1px solid rgba(42,75,217,0.15)',
+              background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 8%, transparent) 0%, color-mix(in srgb, var(--color-tertiary) 6%, transparent) 50%, color-mix(in srgb, var(--color-secondary) 5%, transparent) 100%)',
+              border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
               borderRadius: '1.25rem',
               padding: '1.25rem 1.5rem',
               backdropFilter: 'blur(20px)',
@@ -341,7 +341,7 @@ export function CasesPage() {
               >
                 X+O Active
               </span>
-              <div className="h-px flex-1" style={{ background: 'rgba(42,75,217,0.12)' }} />
+              <div className="h-px flex-1" style={{ background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)' }} />
             </div>
 
             {/* Metric chips */}
@@ -380,7 +380,7 @@ export function CasesPage() {
               {/* Open cases */}
               <div
                 className="flex items-center gap-2 px-3 py-2 rounded-xl"
-                style={{ background: 'rgba(42,75,217,0.08)', border: '1px solid rgba(42,75,217,0.15)' }}
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
               >
                 <Icon name="work" size={14} style={{ color: 'var(--color-primary)' }} />
                 <span className="text-sm font-black" style={{ color: 'var(--color-primary)' }}>
@@ -400,7 +400,7 @@ export function CasesPage() {
           className="flex gap-1"
           style={{
             background: 'rgba(255,255,255,0.6)',
-            border: '1px solid rgba(42,75,217,0.1)',
+            border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)',
             borderRadius: '0.875rem',
             padding: '0.25rem',
           }}
@@ -413,7 +413,7 @@ export function CasesPage() {
               style={
                 statusTab === tab.key
                   ? {
-                      background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+                      background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
                       color: '#ffffff',
                       borderRadius: '0.625rem',
                     }
@@ -431,7 +431,7 @@ export function CasesPage() {
 
         {/* Severity filter */}
         <Select value={severity} onValueChange={setSeverity}>
-          <SelectTrigger className="w-36 rounded-xl border-0" style={{ background: 'rgba(255,255,255,0.6)', border: '1px solid rgba(42,75,217,0.1)' }}>
+          <SelectTrigger className="w-36 rounded-xl border-0" style={{ background: 'rgba(255,255,255,0.6)', border: '1px solid color-mix(in srgb, var(--color-primary) 10%, transparent)' }}>
             <SelectValue placeholder="Severity" />
           </SelectTrigger>
           <SelectContent>

@@ -10,9 +10,10 @@ const REDIS_PATH = _require.resolve(resolve(__dirname, '../lib/redis'));
 const DB_PATH    = _require.resolve(resolve(__dirname, '../lib/db'));
 const NOTIF_PATH = _require.resolve(resolve(__dirname, '../lib/notifications'));
 const EVENTS_PATH = _require.resolve(resolve(__dirname, '../lib/notificationEvents'));
+const WQ_PATH    = _require.resolve(resolve(__dirname, '../lib/workflowQueue'));
 const PROC_PATH  = _require.resolve(resolve(__dirname, '../eventEngine/processor'));
 
-let redisClient, dbQuery, createNotificationMock;
+let redisClient, dbQuery, createNotificationMock, publishWorkflowTriggerMock;
 function fakeMod(id, exports) { return { id, filename: id, loaded: true, exports, children: [] }; }
 
 function redisExports() {
@@ -27,6 +28,7 @@ function loadProcessor() {
   _require.cache[REDIS_PATH] = fakeMod(REDIS_PATH, redisExports());
   _require.cache[DB_PATH] = fakeMod(DB_PATH, { query: dbQuery, default: { query: dbQuery } });
   _require.cache[NOTIF_PATH] = fakeMod(NOTIF_PATH, { createNotification: createNotificationMock, serialize: (r) => r });
+  _require.cache[WQ_PATH] = fakeMod(WQ_PATH, { publishWorkflowTrigger: publishWorkflowTriggerMock });
   delete _require.cache[EVENTS_PATH];        // ensure processor uses fresh deps
   delete _require.cache[PROC_PATH];
   return _require(PROC_PATH);
@@ -36,6 +38,7 @@ beforeEach(() => {
   redisClient = null;
   dbQuery = vi.fn(async () => ({ rows: [] }));
   createNotificationMock = vi.fn(async () => ({ id: 'n1' }));
+  publishWorkflowTriggerMock = vi.fn(async () => 'wq-1-0');
 });
 
 describe('publishNotificationEvent', () => {
@@ -130,5 +133,41 @@ describe('processBatch', () => {
     redisClient = { status: 'ready', xack: vi.fn(), xreadgroup: vi.fn(async () => null) };
     const proc = loadProcessor();
     expect(await proc.processBatch(redisClient, 'c1', { block: 0 })).toBe(0);
+  });
+});
+
+describe('handleEvent → workflow trigger publish (decoupled from notification delivery)', () => {
+  it('enqueues onto the workflow queue instead of running workflows inline', async () => {
+    redisClient = {
+      status: 'ready', xack: vi.fn(async () => 1),
+      xreadgroup: vi.fn(async () => ([
+        ['notifications:events', [
+          ['13-0', ['type', 'score.nps_drop', 'org_id', 'o1', 'target_user_ids', '["u1"]', 'payload', '{"nps":3}']],
+        ]],
+      ])),
+    };
+    const proc = loadProcessor();
+    await proc.processBatch(redisClient, 'c1', { block: 0 });
+    expect(publishWorkflowTriggerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'o1', triggerType: 'score.nps_drop' })
+    );
+  });
+
+  it('ACKs the notification event even when the workflow publish fails (best-effort)', async () => {
+    publishWorkflowTriggerMock = vi.fn(async () => { throw new Error('redis down'); });
+    const xack = vi.fn(async () => 1);
+    redisClient = {
+      status: 'ready', xack,
+      xreadgroup: vi.fn(async () => ([
+        ['notifications:events', [
+          ['14-0', ['type', 'score.nps_drop', 'org_id', 'o1', 'target_user_ids', '["u1"]', 'payload', '{}']],
+        ]],
+      ])),
+    };
+    const proc = loadProcessor();
+    const handled = await proc.processBatch(redisClient, 'c1', { block: 0 });
+    expect(handled).toBe(1);
+    expect(createNotificationMock).toHaveBeenCalled(); // notification delivery unaffected
+    expect(xack).toHaveBeenCalledWith('notifications:events', 'notification-processor', '14-0');
   });
 });

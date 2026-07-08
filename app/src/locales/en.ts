@@ -1277,6 +1277,12 @@ const en = {
       automatedReportGenerationEnabledHelp: 'Full report documents at tier milestones. Turn off to save credits while keeping live cards.',
       streamResponseThreshold:        'New responses before auto-update',
       streamResponseThresholdHelp:    'Lower = more frequent updates. High-volume surveys may set 100–200 to avoid noise.',
+      responseTaggingBatchSize:       'Responses per tagging batch',
+      responseTaggingBatchSizeHelp:   'How many new responses to score for sentiment, emotion, effort, and topics before the next batch. Default 1 tags every response immediately; high-frequency surveys can raise this up to 10. Separate from the auto-update threshold above, which still gates full report generation.',
+      topicDiscoveryCandidateThreshold:     'New topics: responses needed to propose one',
+      topicDiscoveryCandidateThresholdHelp: 'How many unmatched responses must pile up before Crystal spends effort naming a brand-new topic. Lower = new topics appear sooner but more often; higher = fewer, more confident topics. Existing-topic tagging is unaffected — this only governs when a NEW topic gets created.',
+      topicDiscoveryMinClusterSize:         'New topics: minimum responses per topic',
+      topicDiscoveryMinClusterSizeHelp:     'Minimum number of similar responses required before a new topic is created and shown in reports. Raising this reduces one-off or noisy topics; lowering it surfaces emerging themes sooner but with less evidence behind them.',
       reportRegenThreshold:           'Responses before narrative refresh',
       reportRegenThresholdHelp:       'Minimum new data for a full report regen.',
       priorCheckpointLookback:        'Prior checkpoints to reference',
@@ -1833,13 +1839,16 @@ const en = {
     pageSubtitle: 'Automated Operations',
     mainHeading: 'Workflows & Triggers',
     mainDescription: 'Orchestrate your intelligence response. Connect AI-detected patterns directly to team actions and system events.',
-    newWorkflowButton: 'New Workflow',
-    buildVisually: 'Build Visually',
-    buildOnCanvas: 'Build on Canvas',
+    // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §1) — replaces the previous
+    // buildWithCrystal/buildVisually*/buildOnCanvas* keys (3 header buttons
+    // collapsed into 1). Not "New Workflow" (Wave 10 killed that label
+    // deliberately) and not "Build Visually" (that name only made sense
+    // disambiguating itself from two sibling buttons).
+    buildWorkflow: 'Build Workflow',
+    buildWorkflowTooltip: 'Build Workflow — a guided sentence builder; ask Crystal for help or switch to Advanced canvas from inside it',
     templatesHeading: 'Workflow Templates',
     featured: 'Featured',
-    useTemplate: 'Use Template',
-    adding: 'Adding…',
+    useTemplate: 'Start from Template',
     approvals: {
       heading: 'Pending Approvals',
       waiting: 'Waiting for approval',
@@ -1855,6 +1864,111 @@ const en = {
       pause: 'Pause',
       resume: 'Resume',
       edit: 'Edit',
+      test: 'Run test',
+      history: 'View run history',
+      // Wave 11 (Nina — TRACKER.md Wave 11 Part 1, GET /:id/audit-log) —
+      // distinct from "View run history" above (execution history, i.e. WHEN
+      // did this fire) — this is config-CHANGE history (WHO edited/enabled/
+      // disabled/deleted this workflow and when).
+      auditLog: 'View change history',
+      delete: 'Delete workflow',
+    },
+    status: {
+      draft: 'Draft',
+      active: 'Active',
+      paused: 'Paused',
+      archived: 'Archived',
+      error: 'Error',
+    },
+    card: {
+      triggerCount: '{count} triggers',
+      runCount: '{count} runs',
+      successRate: '{rate}% success',
+      lastRun: 'Last run: {when}',
+      neverRun: 'never',
+      testSucceeded: 'Test run succeeded ({ms}ms)',
+      testFailed: 'Test run failed',
+      scope: {
+        org: 'Org-wide',
+        survey: 'Survey: {name}',
+        tag: 'Tag: {name}',
+        programSuffix: 'Program',
+        subtextSurvey: 'Applies to responses from {name}',
+        subtextTag: 'Applies to {count} surveys tagged "{name}"',
+      },
+    },
+    scopeFilter: {
+      all: 'All',
+      orgWide: 'Org-wide',
+      bySurvey: 'By survey',
+      byTag: 'By tag',
+      searchSurveyPlaceholder: 'Search surveys…',
+      searchTagPlaceholder: 'Search tags…',
+    },
+    loadError: 'Could not load workflows from the server — showing sample data.',
+    deleteModal: {
+      heading: 'Delete workflow?',
+      description: 'This will permanently delete "{name}". This cannot be undone.',
+      cancelButton: 'Cancel',
+      confirmButton: 'Delete',
+    },
+    history: {
+      heading: 'Run History',
+      empty: 'No runs yet.',
+      stepCount: '{count} steps',
+      status: {
+        completed: 'Completed',
+        failed: 'Failed',
+        skipped: 'Skipped',
+        waiting: 'Waiting for approval',
+        cooldown: 'Suppressed by cooldown',
+        executing: 'Running…',
+      },
+      willRetry: 'Will retry automatically',
+      retriesExhausted: 'Retries exhausted',
+      retryButton: 'Retry',
+      retrying: 'Retrying…',
+      retrySucceeded: 'Retry succeeded.',
+      retryFailed: 'Retry failed — try again shortly.',
+      technicalDetails: 'Technical details',
+      // Per-step graceful-skip reasons (workflowEngine.ts's `output.reason`
+      // machine codes — these are NOT run through backend humanizeExecutionError,
+      // since a skip never populates error_message at all; the DB only stores the
+      // machine string on `output.reason`, so this mapping lives on the frontend).
+      skipReason: {
+        no_recipient_configured: 'No recipient was configured for this step.',
+        role_has_no_members: 'The target role has no members — no one was notified.',
+        department_has_no_members: 'The target department has no members — no one was notified.',
+        group_has_no_members: 'The target group has no members — no one was notified.',
+        no_url: 'No webhook URL was configured for this step.',
+        missing_target: 'This step is missing required target information.',
+        not_wired: 'This action type is not yet fully implemented.',
+      },
+    },
+    // Audit trail (Wave 11, Nina — TRACKER.md Wave 11 Part 1, GET
+    // /:id/audit-log) — config-CHANGE history, distinct from `history` above
+    // (execution/run history). Minimal paginated list: actor, action,
+    // timestamp, one-line summary of what changed.
+    auditLog: {
+      heading: 'Change History',
+      empty: 'No changes recorded yet.',
+      loadError: 'Could not load change history.',
+      unknownActor: 'Unknown user',
+      action: {
+        created: 'Created',
+        updated: 'Updated',
+        status_changed: 'Status changed',
+        deleted: 'Deleted',
+      },
+      loadMore: 'Load more',
+      loadingMore: 'Loading…',
+      // One-line "what changed" summaries built from the summary jsonb blob
+      // (diffChangedFields's shape: { field: { before, after } }).
+      summaryStatusChange: 'Status changed to {status}',
+      summaryFieldsChanged: '{count} field{s} changed',
+      summaryFieldsChangedOne: '1 field changed',
+      summaryCreatedWithName: 'Created "{name}"',
+      summaryDeletedWithName: 'Deleted "{name}"',
     },
     conditionOptions: [
       { label: 'Sentiment = Negative', field: 'sentiment', operator: '=', value: 'Negative' },
@@ -1888,6 +2002,8 @@ const en = {
       subtitle: 'Define trigger, conditions, and actions in a linear flow',
       nameLabel: 'Workflow name',
       namePlaceholder: 'e.g. Detractor follow-up',
+      descriptionLabel: 'Description',
+      descriptionPlaceholder: 'What does this workflow do? (optional)',
       whenTrigger: 'When (trigger)',
       pickTrigger: 'Select a trigger…',
       ifConditions: 'If (conditions)',
@@ -1895,8 +2011,336 @@ const en = {
       thenActions: 'Then (actions)',
       addAction: 'Add action',
       save: 'Save workflow',
+      saveChanges: 'Save changes',
       incomplete: 'Enter a name, pick a trigger, and add at least one action.',
       saveError: 'Could not save workflow.',
+      editTitle: 'Edit Workflow',
+      editSubtitle: 'Update the trigger, conditions, and actions for {name}',
+      loadError: 'Could not load this workflow.',
+      notFoundHeading: 'Workflow not found',
+      notFoundBody: 'It may have been deleted, or you may not have access to it.',
+      loadErrorBody: 'Something went wrong loading this workflow. Try again.',
+      backToList: 'Back to Workflows',
+      needBranching: 'Need to branch into different actions depending on the result?',
+      switchToCanvas: 'Switch to canvas builder',
+      // Wave 14 (WAVE14_UNIFIED_BUILDER_SPEC.md §2.3) — AskCrystalFab copy.
+      // `label` is the one-time first-view chip; `aria` is fuller (screen
+      // reader announcement + hover title once the chip's been dismissed).
+      askCrystal: {
+        label: 'Ask Crystal',
+        aria: 'Ask Crystal — get help or build with AI',
+      },
+      unified: {
+        // NOTE: this namespace is legacy-named (Wave 5's "Unified Builder") but
+        // still live — ScheduleTriggerConfigPanel.tsx, WorkflowSettingsPanel.tsx,
+        // and the new sentence UI (WorkflowBuilderPage.tsx) all read keys from
+        // here (schedule.*, settings.*, palette.{advancedCanvas,crystalBadge,
+        // crystalTooltip,groups.*}, rightPanel.canvasTip*, newAutomationPlaceholder,
+        // save/saveChanges). Everything Wave-5-shell-specific (canvas card stack,
+        // palette section headers, automation-type/scope pickers that were never
+        // wired) has been removed — see docs/automation-hub/TRACKER.md Wave 6.
+        newAutomationPlaceholder: 'Untitled automation',
+        save: 'Save',
+        saveChanges: 'Save changes',
+        palette: {
+          crystalBadge: 'Crystal',
+          crystalTooltip: 'Crystal Signals require a Growth plan. Learn more.',
+          advancedCanvas: 'Advanced: Branching Canvas',
+          groups: {
+            alerts: 'Alerts',
+            thresholds: 'Thresholds',
+            aiSignals: 'AI Signals',
+            scheduled: 'Scheduled',
+            events: 'Events',
+          },
+        },
+        rightPanel: {
+          canvasTipsHeading: 'Canvas tips',
+          canvasTip1: 'Drag palette items into the canvas, or click to append.',
+          canvasTip2: 'Click any card to configure it in this panel.',
+          canvasTip3: 'Need branching? Use the Advanced: Branching Canvas link.',
+        },
+        settings: {
+          heading: 'Workflow Settings',
+          cooldownHeading: 'Cooldown period',
+          cooldownDescription: 'How often can this workflow fire? Leave as "No cooldown" for workflows that should fire on every matching event.',
+          cooldownNone: 'No cooldown — fire every time',
+          cooldown15: '15 minutes',
+          cooldown30: '30 minutes',
+          cooldown60: '1 hour',
+          cooldown240: '4 hours',
+          cooldown1440: '24 hours',
+          cooldownCustom: 'Custom',
+          cooldownCustomUnit: 'minutes',
+          cooldownNotApplicable: 'Not applicable',
+          cooldownScheduleNote: 'Cooldown is irrelevant for scheduled triggers — the schedule itself is the throttle.',
+          suggestedHeading: 'Suggested defaults by trigger type:',
+          suggestedAlerts: 'NPS / Sentiment alerts:',
+          suggestedAlertsValue: '4 hours',
+          suggestedThemes: 'New theme detected:',
+          suggestedThemesValue: '24 hours',
+          suggestedEvents: 'Response submitted:',
+          suggestedEventsValue: 'No cooldown',
+          suggestedScheduled: 'Scheduled:',
+          suggestedScheduledValue: 'Not applicable',
+        },
+        schedule: {
+          frequencyHeading: 'How often?',
+          frequencyDaily: 'Daily',
+          frequencyWeekly: 'Weekly',
+          frequencyMonthly: 'Monthly',
+          frequencyCustom: 'Custom',
+          weeklyDaysHeading: 'On which days?',
+          weekdayShort0: 'Su',
+          weekdayShort1: 'Mo',
+          weekdayShort2: 'Tu',
+          weekdayShort3: 'We',
+          weekdayShort4: 'Th',
+          weekdayShort5: 'Fr',
+          weekdayShort6: 'Sa',
+          monthlyVariantHeading: 'Which day of the month?',
+          monthlyDayOfMonth: 'The {ordinal} day of the month',
+          monthlyOrdinalWeekday: 'The {ordinal} {weekday} of the month',
+          monthlyLastDay: 'The last day of the month',
+          monthlyPickerLabel: 'Day of the month',
+          monthlySkipWarning: 'Not all months have this day — the schedule will skip months without it.',
+          ordinalFirst: 'First',
+          ordinalSecond: 'Second',
+          ordinalThird: 'Third',
+          ordinalFourth: 'Fourth',
+          ordinalLast: 'Last',
+          customIntervalHeading: 'Repeat every',
+          customIntervalUnitHours: 'Hours',
+          customIntervalUnitDays: 'Days',
+          customIntervalUnitWeeks: 'Weeks',
+          customIntervalUnitMonths: 'Months',
+          startingFromLabel: 'Starting from next',
+          timeHeading: 'At what time?',
+          pickExactMinute: 'Pick exact minute',
+          useDefaultMinutes: 'Use 15-minute increments',
+          timezoneHeading: 'Timezone',
+          useBrowserTimezone: "Use my browser's timezone",
+          chooseTimezone: 'Choose a timezone',
+          timezoneSearchPlaceholder: 'Search timezones…',
+          timezoneEmpty: 'No timezone found.',
+          previewNextRun: 'Next run: {when}',
+          previewNextRunUnknown: 'Next run: unable to calculate',
+          developerMode: 'Developer mode',
+          cronLabel: 'Cron expression',
+          cronPlaceholder: 'e.g. 0 9 * * 1',
+          cronValidatesAs: 'Validates as: {description}',
+          cronHelp: 'Advanced — this is an implementation detail. Most users should use the picker above.',
+        },
+      },
+      // Wave 6 — Sentence Builder (docs/automation-hub/BUILDER_REDESIGN_V2_CONCEPT.md).
+      // Replaces the Wave-5 3-panel shell entirely; see TRACKER.md Wave 6.
+      sentence: {
+        backAria: 'Back to workflows',
+        settingsAria: 'Workflow settings',
+        when: 'When',
+        on: 'on',
+        // Wave 11, Rohan WAVE11_UX_SPECS.md §1.1 — the condition step's
+        // connective word, sitting between the scope pill and "then":
+        // "When [trigger] on [scope] if [condition] then [action]…".
+        if: 'if',
+        then: 'then',
+        helperText: "Fill in each blank to build your automation. Order doesn't matter.",
+        pill: {
+          pickTrigger: '+ pick a trigger',
+          scopeOrg: 'Org-wide',
+          scopeSurvey: 'Survey: {name}',
+          scopeTag: 'Tag: {name}',
+          addAction: '+ add an action',
+          addAnotherAction: '+ add another action',
+          // Wave 11 §1.5 — "(optional)" is load-bearing copy: this is the
+          // first pill in the sentence that is explicitly NOT required to save.
+          pickCondition: '+ add a condition (optional)',
+          conditionCount: '{count} conditions',
+        },
+        saveReason: {
+          name: 'Name your workflow to save',
+          trigger: 'Choose a trigger to save',
+          action: 'Add at least one action to save',
+        },
+        stepPanel: {
+          backAria: 'Back to sentence',
+          cancel: 'Cancel',
+          done: 'Done',
+          triggerLabel: 'Choosing your trigger',
+          scopeLabel: 'Choosing your scope',
+          actionLabel: 'Adding an action',
+          editActionLabel: 'Editing: {label}',
+          conditionLabel: 'Adding a condition',
+        },
+        canvasSwitchWarning: {
+          title: 'Switch to the canvas builder?',
+          body: "Switching to the canvas builder will carry over your trigger and actions, but scope and cooldown settings aren't supported there yet and won't be carried over. Continue?",
+          continue: 'Continue',
+        },
+        // Concurrent-edit conflict (Wave 11, Nina — TRACKER.md Wave 11 Part 2).
+        // Shown on a 409 from PUT /api/workflows/:id (a stale `version`).
+        conflictDialog: {
+          title: 'This workflow was changed by someone else',
+          body: 'Someone else saved changes to this workflow after you started editing. Reload to see their latest version (your unsaved edits will be lost), or overwrite their changes with yours.',
+          reload: 'Reload latest',
+          overwrite: 'Overwrite anyway',
+        },
+        trigger: {
+          scheduleHeading: 'Schedule',
+          readinessLive: 'This trigger has a real event producer and will fire correctly.',
+          readinessNoProducer: 'This trigger has no backend producer wired up yet — a workflow built on it will never fire.',
+        },
+        scope: {
+          orgLabel: 'Org-wide',
+          orgSubtext: 'Applies to every survey in your organization.',
+          orgConsequence: 'This workflow will evaluate every response across the whole org.',
+          surveyLabel: 'A specific survey',
+          surveySubtext: "Scope to one survey's responses.",
+          surveyConsequence: 'This workflow will only consider responses from {name}.',
+          surveySearchPlaceholder: 'Search surveys…',
+          surveyEmpty: 'No surveys found.',
+          responseCount: '{count} responses',
+          tagLabel: 'A tag / group',
+          tagSubtext: 'Scope to every survey sharing a tag (e.g. "Onboarding").',
+          tagConsequence: 'This workflow will apply to {count} surveys tagged "{name}".',
+          tagSearchPlaceholder: 'Search tags…',
+          tagEmpty: 'No tags found.',
+          surveyCountShort: '{count} surveys',
+          programLabel: 'Program',
+          disabledReason: 'Not available — this trigger type applies to the whole org.',
+          autoResetNotice: 'Scope was reset to Org-wide because this trigger type only supports org-wide scope.',
+        },
+        // Wave 11, Rohan WAVE11_UX_SPECS.md §1.3/§1.3a — the condition-step
+        // panel: field/operator/value rows + the "+add another condition"
+        // multi-condition pattern. Operator tokens are never rendered as raw
+        // engine strings ('gte' etc.) — always through this label map.
+        condition: {
+          valuePlaceholder: 'Value…',
+          removeAria: 'Remove condition',
+          addAnother: '+ add another condition',
+          op: {
+            eq: 'is',
+            neq: 'is not',
+            gt: 'is greater than',
+            lt: 'is less than',
+            gte: 'is at least',
+            lte: 'is at most',
+            contains: 'contains',
+            notContains: 'does not contain',
+            in: 'is one of',
+            notIn: 'is not one of',
+          },
+        },
+        action: {
+          configureHeading: 'Configure',
+          readinessLive: 'This action is fully wired and ready to use.',
+          readinessStub: 'This action is not yet fully wired — it will be a no-op in production for now.',
+          readinessEnv: 'Requires environment configuration by your admin before this will work.',
+          readinessDisconnected: 'Your org hasn\'t connected this integration yet — this action will silently skip every time it runs.',
+          disconnectedBannerText: 'This action needs a connected integration to work. Your org hasn\'t configured it yet.',
+          disconnectedBannerLink: 'Configure in Integrations Settings',
+        },
+        actionClause: {
+          dragAria: 'Drag to reorder',
+          removeAria: 'Remove action',
+          // Wave 11, Rohan WAVE11_UX_SPECS.md §2.3 — the lightweight
+          // execution-order fix for Flow-category actions mixed with regular
+          // actions (category-tint pill + this one-time caption), shown only
+          // when the sentence contains at least one Flow action.
+          flowOrderHint: 'Actions before a pause run immediately; actions after resume only once the pause clears.',
+        },
+        content: {
+          presetLabel: 'Start from a preset',
+          presetStandard: 'Standard Digest',
+          presetMetricsOnly: 'Metrics Only',
+          presetFullDetail: 'Full Detail',
+          presetCustom: 'Custom',
+          sectionCrystalSummary: 'Crystal AI Summary',
+          sectionKeyMetrics: 'Key Metrics (NPS/CSAT)',
+          sectionTopVerbatims: 'Top Verbatims',
+          sectionTrendChart: 'Trend Chart',
+          sectionRecommendedActions: 'Recommended Actions',
+          sectionRawResponseCount: 'Raw Response Count',
+          previewChromeSlack: 'Slack message preview',
+          previewChromeEmail: 'Email preview',
+          previewChromeSummary: 'Crystal summary preview',
+          previewEmpty: 'No sections selected — this message will be empty.',
+          previewCrystalSummary: "Crystal's AI-generated summary of this period's responses",
+          previewKeyMetrics: 'NPS and CSAT scores for this period',
+          previewTrendChart: 'A chart showing the trend over recent periods',
+          previewTopVerbatims: 'The most notable verbatim responses',
+          previewRecommendedActions: "Crystal's recommended next actions",
+          previewRawResponseCount: 'Total number of responses received',
+          advancedFieldsHeading: 'Advanced fields',
+          subjectLabel: 'Subject line',
+          subjectPlaceholder: 'e.g. Weekly NPS Digest',
+          channelLabel: 'Channel',
+          channelPlaceholder: '#cx-team',
+        },
+        notifyTarget: {
+          heading: 'Notify who?',
+          mode: {
+            users: 'Specific people',
+            role: 'A role',
+            department: 'A department',
+            group: 'A group',
+          },
+          searchPlaceholder: 'Search people by name or email…',
+          noResults: 'No matching people found.',
+          removePersonAria: 'Remove {name}',
+          pickRole: 'Choose a role…',
+          pickDepartment: 'Choose a department…',
+          pickGroup: 'Choose a group…',
+          permissionDenied: "Ask an admin to enable role/department/group targeting for you.",
+          summaryPeopleOne: 'This will notify 1 person.',
+          summaryPeopleOther: 'This will notify {count} people.',
+          summaryRole: 'This will notify {count} people with the "{name}" role.',
+          summaryDepartment: 'This will notify {count} people in {name}.',
+          summaryGroup: 'This will notify {count} people in "{name}".',
+          summaryZeroRole: 'This role currently has no one assigned — no one will be notified.',
+          summaryZeroDepartment: 'This department currently has no members — no one will be notified.',
+          summaryZeroGroup: 'This group currently has no members — no one will be notified.',
+        },
+        simpleForm: {
+          noConfigNeeded: 'No additional configuration needed for this action.',
+          tagLabel: 'Tag name',
+          tagPlaceholder: 'e.g. escalated',
+          jiraProjectLabel: 'Jira project key',
+          jiraProjectPlaceholder: 'e.g. CX',
+          salesforceFieldLabel: 'Field to update',
+          salesforceFieldPlaceholder: 'e.g. Status',
+          servicenowCategoryLabel: 'Incident category',
+          servicenowCategoryPlaceholder: 'e.g. customer_escalation',
+          zendeskPriorityLabel: 'Ticket priority',
+          zendeskPriorityPlaceholder: 'e.g. high',
+          approverLabel: 'Approver email',
+          approverPlaceholder: 'manager@company.com',
+          webhookUrlLabel: 'Webhook URL',
+          webhookUrlPlaceholder: 'https://your-endpoint.example.com/hook',
+          webhookMethodLabel: 'HTTP method',
+          webhookHeadersLabel: 'Headers (JSON, optional)',
+          webhookHeadersPlaceholder: '{ "Content-Type": "application/json" }',
+          webhookPayloadLabel: 'Payload (JSON, optional)',
+          webhookPayloadPlaceholder: '{ "event": "{{trigger}}" }',
+          webhookSecretLabel: 'Signing secret (optional)',
+          webhookSecretPlaceholder: 'Used to sign the request so your endpoint can verify it came from Xperiq',
+          // flow.delay (Wave 11, Rohan WAVE11_UX_SPECS.md §2.1/§2.2) — friendly
+          // unit-aware duration input + live preview line. No ICU plural
+          // support in this codebase's i18n lib (confirmed in the spec), so
+          // singular/plural are separate literal keys per unit.
+          delayLabel: 'Wait for',
+          delayUnitMinutes: 'Minutes',
+          delayUnitHours: 'Hours',
+          delayUnitDays: 'Days',
+          delayUnitMinutesOne: '{count} minute',
+          delayUnitMinutesOther: '{count} minutes',
+          delayUnitHoursOne: '{count} hour',
+          delayUnitHoursOther: '{count} hours',
+          delayUnitDaysOne: '{count} day',
+          delayUnitDaysOther: '{count} days',
+          delayPreview: 'Then wait {duration} before continuing.',
+        },
+      },
     },
     canvas: {
       title: 'Workflow Canvas',
@@ -1905,9 +2349,66 @@ const en = {
       addAction: 'Add action',
       trigger: 'Trigger',
       condition: 'Condition',
+      conditionFieldAria: 'Condition field',
       action: 'Action',
       true: 'True',
       false: 'False',
+      loadError: 'Could not load this workflow.',
+      loadingWorkflow: 'Loading workflow…',
+      actionNode: {
+        needsConfig: 'Needs configuration',
+        configured: 'Configured',
+        configureAria: 'Configure {action}',
+        panelDone: 'Done',
+      },
+      saveBlockedUnconfigured: '{count} action{s} still need configuration before this workflow can be saved.',
+      // C-3 (DEEP_AUDIT_UX_FINDINGS.md §7/§8) — the canvas builder's drag/zoom/
+      // connect interactions are desktop-pointer-shaped; this is a pragmatic
+      // advisory, not a touch-gesture rework (explicitly out of scope).
+      mobileAdvisory: 'The canvas builder works best on a larger screen. For the smoothest experience, switch to a desktop or use the sentence builder instead.',
+    },
+    nlBuilder: {
+      title: 'Describe Your Workflow',
+      subtitle: 'Tell Crystal what you want to happen, in plain English',
+      placeholder: 'e.g. "When NPS drops below 30, notify the support team on Slack and create a Jira ticket"',
+      examplesLabel: 'Try an example',
+      examples: [
+        'When a response mentions "cancel" or "refund", create a Zendesk ticket',
+        'Every Monday at 9am, email the team a summary of last week\'s responses',
+        'When NPS drops below 30, send a Slack message to #customer-success',
+      ],
+      generateButton: 'Generate Workflow',
+      thinkingLabel: 'Crystal is building your workflow…',
+      thinkingSubtext: 'Reading your description and matching it to triggers and actions',
+      thinkingSlow: 'Still working — complex requests can take a little longer',
+      confirmHeading: "Here's what Crystal understood",
+      confidenceHigh: 'High',
+      confidenceMedium: 'Medium — review before enabling',
+      assumedHeading: 'Crystal assumed:',
+      editInCanvas: 'Edit in canvas',
+      discard: 'Discard',
+      createWorkflow: 'Create Workflow',
+      lowConfidenceHeading: "Crystal wasn't fully sure about this one",
+      lowConfidenceBody: "Here's a rough idea of what it understood, but double-check it in the canvas builder before creating it.",
+      tryRewording: 'Try rewording instead',
+      unparseableHeading: "Crystal couldn't turn that into a workflow",
+      unparseableHint: 'Try being more specific about:',
+      unparseableHintTrigger: 'What should trigger it (a survey response, a score, a schedule)',
+      unparseableHintAction: 'What should happen (send a message, create a ticket, tag something)',
+      timeoutHeading: 'This is taking too long',
+      timeoutBody: "Crystal didn't respond in time. You can try again, or build this workflow manually.",
+      tryAgain: 'Try again',
+      buildManually: 'Build manually',
+      registryDriftWarning: '"{type}" isn\'t recognized — you can still create this workflow, but review it in canvas first',
+      // Scope summary row (Wave 12 Phase 2, TRACKER.md) — mirrors the copy
+      // conventions already established in workflows.builder.sentence.scope
+      // (ScopeStepPanelContent.tsx) so "Org-wide" reads identically everywhere
+      // in the product. The two fallback strings only render if a
+      // scopeSurveyId/scopeTagId Crystal resolved at parse-time no longer
+      // matches a real survey/tag (deleted in between) — never a raw UUID.
+      scopeOrgWide: 'Org-wide',
+      scopeSurveyFallback: 'a specific survey',
+      scopeTagFallback: 'a specific tag',
     },
   },
 
@@ -2084,6 +2585,15 @@ const en = {
     settingsTitle: 'Tags',
     settingsSubtitle: 'Organize surveys into groups for cross-survey insights.',
     generateReport: 'Group Report',
+    // Fixed 2026-07-03 (customer-journey review finding): SurveysListPage's
+    // multi-tag toolbar button previously reused `generateReport`/the
+    // `auto_awesome` icon — visually near-identical to Tag Report's own
+    // entry points on the same page, despite this path making REAL, PAID
+    // fresh-LLM calls (Tag Report never does). Relabeled to make the distinct
+    // identity and cost unambiguous; only shown now when >1 tag is selected
+    // (single-tag selection routes to the free Tag Report flow instead).
+    generateGroupInsightsCta: 'Generate Group Insights',
+    generateReportTooltip: 'Runs fresh AI analysis across the selected tags (uses credits).',
     generatingReport: 'Generating report across {count} surveys…',
     groupReportTitle: '{name} — Group Report',
     surveysInGroup: '{count} surveys in this group',
@@ -2763,6 +3273,8 @@ const en = {
     colSentiment: 'Sentiment',
     colEmotion: 'Emotion',
     colTopics: 'Topics',
+    topicUncategorized: 'Uncategorized',
+    topicUncategorizedHint: "Couldn't be matched to an existing topic or grouped with enough similar responses yet — worth a manual look.",
     colEffortScore: 'Effort',
     colDevice: 'Device',
     colCountry: 'Country',
@@ -3455,12 +3967,16 @@ const en = {
     notResolved:        'Not resolved? Create a ticket',
     thumbsUp:           'This helped',
     thumbsDown:         'Not helpful',
+    // Tag Report auto-scoping — Crystal is focused on a single tag's cross-survey rollup
+    tagScopeChip:       'Tag: {name}',
+    tagScopeSubtitle:   'Ask about tag: {name}',
+    tagReportGenerating: 'Tag report generation started: "{title}". It will appear here once complete.',
   },
 
   topicsAnalysis: {
     pageTitle: 'Topics Analysis',
     pageSubtitle: 'Explore themes and topics discovered across your survey responses.',
-    breadcrumbInsights: 'Insights',
+    breadcrumbExperience: 'Experience',
     breadcrumbTopics: 'Topics',
     askCrystal: 'Ask Crystal',
     selectSurveyTitle: 'Select a survey to explore topics',
@@ -3536,6 +4052,20 @@ const en = {
     noThemesTitle: 'No topics discovered yet',
     noThemesDesc: 'Run the insight pipeline on this survey to discover themes and topics.',
     generateInsights: 'Run Pipeline',
+    backfillTagging: 'Catch Up Tagging',
+    backfillTaggingHint: 'New responses are tagged automatically. Use this to catch up older responses — e.g. after a large import.',
+    backfillRunning: 'Catching up… {pct}%',
+    backfillComplete: 'Catch-up complete',
+    backfillNothingToDo: 'Everything is already tagged — nothing to catch up.',
+    backfillFailed: 'Catch-up failed',
+    backfillAlreadyRunning: 'A catch-up is already running for this survey.',
+    backfillProgressLabel: 'Tagging responses… {processed} / {total} done',
+    backfillCompleteDetail: 'Catch-up complete — {processed} responses tagged',
+    backfillCompleteWithQuarantine: "Catch-up complete — {processed} tagged. {quarantined} response(s) were skipped because their text couldn't be analyzed; everything else is fully tagged.",
+    backfillNavigateAwayHint: 'This runs in the background — feel free to navigate away or close this tab.',
+    backfillDismiss: 'Dismiss',
+    backfillBootstrapPending: "Sentiment and emotion are tagged. This survey doesn't have topics yet — generate a report to discover them.",
+    backfillGenerateReport: 'Generate report',
   },
 
   support: {
@@ -3862,6 +4392,101 @@ const en = {
       duration: 'Duration',
     },
     deleteConfirm: 'Delete connection "{name}"? Existing contacts will not be removed.',
+  },
+
+  integrationsSettings: {
+    title: 'Integrations',
+    subtitle: 'Connect the tools your automations can act on',
+    sections: {
+      workflowActions: {
+        title: 'Workflow Actions',
+        subtitle: 'Connect the tools your automations can act on',
+      },
+    },
+    connectors: {
+      jira:       { label: 'Jira',       description: 'Create and update issues from workflow actions' },
+      salesforce: { label: 'Salesforce', description: 'Update contact records when a workflow runs' },
+      servicenow: { label: 'ServiceNow', description: 'Create incidents from workflow actions' },
+      zendesk:    { label: 'Zendesk',    description: 'Create support tickets from workflow actions' },
+      slack:      { label: 'Slack',      description: 'Post automation notifications to a channel' },
+    },
+    status: {
+      notConnected: 'Not connected',
+      connected: 'Connected',
+      sharedDefault: 'Using shared default',
+      connectionError: 'Connection error',
+      configuredAgo: 'Configured {time} ago',
+    },
+    actions: {
+      connect: 'Connect',
+      edit: 'Edit',
+      reconnect: 'Reconnect',
+      disconnect: 'Disconnect {connector}',
+      testConnection: 'Test Connection',
+      sendTestMessage: 'Send Test Message',
+      testing: 'Testing…',
+      testSucceeded: 'Connected',
+      testFailed: 'Test failed',
+      cancel: 'Cancel',
+      save: 'Save',
+      saving: 'Saving…',
+    },
+    modal: {
+      connectHeading: 'Connect {connector}',
+      editHeading: 'Edit {connector}',
+      reconnectHeading: 'Reconnect {connector}',
+    },
+    fields: {
+      baseUrl: 'Base URL',
+      email: 'Email',
+      jiraEmail: 'Atlassian account email',
+      zendeskEmail: 'Agent email',
+      apiToken: 'API Token',
+      projectKey: 'Project Key',
+      instanceUrl: 'Instance URL',
+      accessToken: 'Access Token',
+      user: 'Username',
+      password: 'Password',
+      subdomain: 'Subdomain',
+      webhookUrl: 'Webhook URL',
+    },
+    helpText: {
+      jiraApiToken: 'Create a token at id.atlassian.com/manage-profile/security/api-tokens',
+      zendeskApiToken: 'Create a token in Zendesk Admin Center → Apps and integrations → APIs → Zendesk API',
+      salesforceTokenExpiry: 'A Salesforce OAuth access token. Note: tokens expire — you may need to reconnect periodically.',
+      zendeskSubdomainPreview: 'Tickets will be created at {subdomain}.zendesk.com',
+      slackHowTo: "In Slack, go to your workspace's App Directory → Incoming Webhooks → Add to Slack, choose a channel, and copy the Webhook URL here.",
+    },
+    validation: {
+      required: 'This field is required',
+      invalidUrl: 'Enter a valid URL',
+      invalidEmail: 'Enter a valid email address',
+      invalidProjectKey: 'Project keys are uppercase letters and numbers, e.g. ENG',
+      invalidSubdomain: 'Just the subdomain, e.g. "yourorg" — not the full URL',
+      invalidSlackWebhook: 'Must start with https://hooks.slack.com/services/',
+    },
+    masking: {
+      replace: 'Replace',
+      cancelReplace: 'Cancel',
+    },
+    test: {
+      verified: 'Connection verified — you can now save.',
+      slackSent: 'Test message sent — check your Slack channel.',
+      rateLimited: "You're testing too often — wait a few minutes and try again.",
+      genericFailure: "Couldn't connect — check your credentials and try again.",
+    },
+    emptyState: {
+      banner: 'Connect at least one integration to let your workflows create tickets, update records, or post notifications automatically.',
+      vaultUnconfigured: "The credentials vault isn't configured on this deployment yet. Contact your platform administrator.",
+    },
+    disconnectConfirm: {
+      title: 'Disconnect {connector}',
+      body: "This will stop workflow actions from using your {connector} credentials. Workflows using {connector} actions will fall back to your organization's shared credentials, if configured, or fail.",
+      confirmButton: 'Disconnect',
+      cancelButton: 'Cancel',
+    },
+    accessDenied: "You don't have permission to manage integrations.",
+    entryPointLabel: 'Integrations',
   },
 
   contactDetail: {
@@ -4423,6 +5048,213 @@ const en = {
       loading: 'Loading…',
       retry: 'Try again',
       back: 'Back',
+    },
+  },
+
+  tagReport: {
+    nav: {
+      overview: 'Overview',
+      reports: 'Reports',
+    },
+    tagBadge: {
+      viewReport: 'View Tag Report for {name}',
+    },
+    // Fixed 2026-07-03 (customer-journey review finding): SurveysListPage's
+    // toolbar CTA, single-tag case — routes to the mode-picker (TAG_REPORT_NEW)
+    // for the one selected tag, using Tag Report's own icon/wording family so
+    // it reads as the same free, zero-fresh-AI feature as the per-survey
+    // TagBadge entry points elsewhere on this page. Label matches
+    // tagReport.new.title exactly (the page it lands on) rather than
+    // "View Tag Report", since the destination is the mode-picker, not an
+    // existing report.
+    toolbarCta: {
+      tooltip: 'Opens the trust-weighted cross-survey report for this tag — no new AI generation.',
+    },
+    // Fixed 2026-07-03 (customer-journey review finding, minor/cosmetic):
+    // TagsSettingsPage's per-tag-card hover hint already correctly navigates
+    // to TAG_REPORT_LATEST, but previously displayed the stale `groups.
+    // generateReport` string ("Group Report") — a label from the older,
+    // unrelated feature, on a card that goes to the right (Tag Report)
+    // destination.
+    settingsCardHint: 'View Tag Report',
+    breadcrumbs: {
+      experience: 'Experience',
+      reports: 'Reports',
+    },
+    page: {
+      // Fixed 2026-07-03 (customer-journey review finding): TagReportPage
+      // previously borrowed groups.groupReportTitle ("{name} — Group Report")
+      // from the older, unrelated Group Insights feature — the page/tab title
+      // never said "Tag Report" anywhere.
+      title: '{name} — Tag Report',
+    },
+    new: {
+      title: 'Generate Tag Report',
+      subtitle: 'Choose how to roll up existing insights across surveys tagged “{tagName}”.',
+      manualTitle: 'Generate Now',
+      manualDescription: 'Uses each survey’s latest existing insight checkpoint. No new AI generation.',
+      manualCta: 'Generate Report',
+      customRangeTitle: 'Custom Range',
+      customRangeDescription: 'Compares the nearest checkpoint at your window’s start to the nearest at its end.',
+      windowStartLabel: 'Start date',
+      windowEndLabel: 'End date',
+      customRangeCta: 'Compare Range',
+      generating: 'Generating…',
+      errorGeneric: 'Could not start the report. Please try again.',
+      errorWindowRequired: 'Choose both a start and end date.',
+      errorWindowOrder: 'End date must be after start date.',
+      noRunsYet: 'No reports have been generated for this tag yet.',
+    },
+    inFlight: {
+      banner: 'A report is already generating for this tag (started {time}) — showing that run.',
+      dismiss: 'Dismiss',
+      momentsAgo: 'moments ago',
+      minuteAgo: '1 min ago',
+      minutesAgo: '{count} min ago',
+      hourAgo: '1 hour ago',
+      hoursAgo: '{count} hours ago',
+    },
+    stream: {
+      stageLabel: {
+        discovery: 'Survey Discovery',
+        checkpoint: 'Checkpoint Resolution',
+        comparison: 'Comparison',
+        gating: 'Gating',
+        merge: 'Merge & Voting',
+        narrative: 'Narrative Generation',
+      },
+      backfillNote: 'Checking next most recent…',
+      excludedReason: {
+        no_checkpoint_in_range: 'No checkpoint in range',
+        excluded_by_recency_cap: 'Excluded by recency cap',
+      },
+      loopStopReason: {
+        target_reached: 'Target reached',
+        ceiling_hit: 'Survey ceiling reached',
+        pool_exhausted: 'No more surveys in this tag',
+      },
+      liveAnnouncement: '{stage} — {detail}',
+      surveysScanned: '{scanned} surveys scanned, {included} included',
+      llmCalls: '{count} AI narration calls',
+      collapseHint: 'Pipeline visualization',
+    },
+    stepper: {
+      ariaLabel: 'Tag Report generation progress',
+      surveysHeading: 'Surveys',
+      metricsHeading: 'Metric tracks',
+      backfillBadge: 'Backfill',
+    },
+    disclosure: {
+      examined: 'Examined {examined} of {pool} surveys to find {included} usable',
+      backfillNote: 'Backfilled after {excludedCount} exclusion(s).',
+      expand: 'Show details',
+      collapse: 'Hide details',
+      includedHeading: 'Included',
+      excludedHeading: 'Excluded',
+      noExclusions: 'No surveys were excluded.',
+      responseCount: '{count} responses',
+      belowStatFloor: 'Below reliability threshold',
+    },
+    metricCard: {
+      trendEligibleSurveys: '{count} trend-eligible surveys',
+      singleSurveySourced: 'Only 1 survey supports this finding',
+      singleSurveyNamed: 'Sourced from {name} only',
+      viewSource: 'View source',
+      corroboratedWith: 'Agrees with {metric}',
+      confidence: {
+        high: 'High confidence',
+        medium: 'Medium confidence',
+        low: 'Low confidence',
+        severe: 'Severe offset — descriptive only',
+        insufficient: 'Insufficient agreement',
+      },
+      metricLabel: {
+        nps: 'NPS',
+        csat: 'CSAT',
+        ces: 'CES',
+      },
+      // Fixed 2026-07-03 (customer-journey review finding): these previously
+      // had no t() lookup at all — the raw snake_case identifier the pipeline
+      // emits (crystalos/graphs/tag_report.py) rendered directly in the
+      // warning pill, e.g. a chip literally reading "cadence_mismatch".
+      warningType: {
+        temporal_offset: 'Checkpoint date doesn’t exactly match the requested boundary',
+        staleness: 'This survey’s data is older than the others in this report',
+        question_type_mismatch: 'Measured with different question types across surveys',
+        scale_mismatch: 'Surveys use different rating scales',
+        cadence_mismatch: 'Surveys run on different schedules',
+        // Fallback for any future/unrecognized warning_type — still a real
+        // sentence, never the bare identifier.
+        unknown: 'This finding has a data comparability caveat',
+      },
+    },
+    comparisonCard: {
+      title: '{metric} Wave Comparison',
+      noComparisonAvailable: 'No comparison available in this range',
+      perSurveyBreakdown: 'Per-survey breakdown',
+      requestedWindow: 'Requested: {start} → {end}',
+      actualWindow: 'Actual: {start} → {end}',
+    },
+    trailEntry: {
+      cta: 'View Full Audit Trail',
+      description: 'See every checkpoint, survey, and exclusion behind this report.',
+    },
+    trailPage: {
+      title: 'Audit Trail',
+      subtitle: 'Full provenance for {tagName}',
+      runHistoryHeading: 'Run History',
+      sourcesHeading: 'Sources',
+      viewResponse: 'View cited response',
+      viewRun: 'View report ({count} metrics)',
+      lineageTruncated: 'Only the most recent runs in this chain are shown.',
+      noRuns: 'No runs found for this tag.',
+    },
+    index: {
+      title: 'Reports',
+      subtitle: 'Cross-survey AI insight rollups by tag.',
+      stats: {
+        tagsWithReports: 'Tags with reports',
+        needsAttention: 'Needs attention',
+        automatedActive: 'Automated schedules active',
+      },
+      searchPlaceholder: 'Search tags…',
+      sort: {
+        recent: 'Recently generated',
+        alpha: 'Alphabetical',
+        survey_count: 'Most surveys',
+      },
+      card: {
+        surveyCount: '{count} surveys',
+        generated: 'Generated {time}',
+        needsAttention: 'Needs attention',
+        modeBadge: {
+          manual: 'Manual',
+          automated: 'Automated',
+          custom_range: 'Custom Range',
+        },
+      },
+      emptyOrgWide: {
+        heading: 'No tag reports yet',
+        description: 'Tag a few surveys, then generate your first cross-survey report.',
+        cta: 'Go to Tags',
+      },
+      emptySearch: {
+        heading: 'No tags match “{query}”',
+        clear: 'Clear search',
+      },
+    },
+    responseDetail: {
+      title: 'Response Detail',
+      backToSurvey: 'Back to survey',
+      unavailable: 'This response is no longer available.',
+      context: 'Question context',
+      sentiment: 'Sentiment',
+      emotion: 'Emotion',
+      loading: 'Loading response…',
+      notFound: 'This response could not be found.',
+    },
+    citation: {
+      viewResponse: 'View response',
     },
   },
 };

@@ -46,7 +46,7 @@ function trendColor(trending: SurveyTopic['trending']): string {
   switch (trending) {
     case 'up':     return '#059669';
     case 'down':   return '#dc2626';
-    case 'new':    return '#2a4bd9';
+    case 'new':    return 'var(--color-primary)';
     default:       return '#6b7280';
   }
 }
@@ -311,8 +311,8 @@ export function TopicCard({ topic, onSelect, onAskCrystal }: TopicCardProps) {
             <span
               className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold"
               style={{
-                background: 'rgba(42,75,217,0.09)',
-                color: '#2a4bd9',
+                background: 'color-mix(in srgb, var(--color-primary) 9%, transparent)',
+                color: 'var(--color-primary)',
               }}
             >
               {topic.theme}
@@ -330,7 +330,7 @@ export function TopicCard({ topic, onSelect, onAskCrystal }: TopicCardProps) {
           {topic.is_new && !topic.chronic && (
             <span
               className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold"
-              style={{ background: 'rgba(42,75,217,0.09)', color: '#2a4bd9' }}
+              style={{ background: 'color-mix(in srgb, var(--color-primary) 9%, transparent)', color: 'var(--color-primary)' }}
             >
               {t('topicsAnalysis.cardNew')}
             </span>

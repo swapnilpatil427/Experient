@@ -64,7 +64,10 @@ def test_action_tools_have_correct_schema():
             assert "description" in tool
             assert "scope" in tool
             assert "input_schema" in tool
-            assert tool["scope"] in ("survey", "org", "both")
+            # 'tag' added for the Tag Report action proposals (propose_view_tag_report /
+            # propose_generate_tag_report — docs/tag-report/DESIGN.md), the first
+            # action tools scoped to a tag/survey-group rather than a single survey or org.
+            assert tool["scope"] in ("survey", "org", "both", "tag")
 
 
 def test_survey_scope_includes_action_tools():
@@ -202,17 +205,37 @@ async def test_propose_distribution_returns_channel():
 
 @pytest.mark.asyncio
 async def test_propose_workflow_returns_trigger():
+    """execute_propose_workflow (reconciled, Xperiq Actions Wave 3) now emits the
+    modern nodes/edges engine graph shape via crystal.workflow_nl, not the old
+    flat trigger/action_type/action_config shape — see
+    tests/test_insight_tools.py::TestProposeWorkflowModernShape for full coverage
+    of the reconciliation. This test just confirms the tool's top-level envelope
+    (proposal_type/requires_confirmation/params) is unchanged and params now
+    carries trigger_type/nodes/edges."""
     from crystalos.crystal.tools import execute_propose_workflow
+    from crystalos.crystal.workflow_nl import (
+        WorkflowNLDraft, WorkflowNLTriggerDraft, WorkflowNLActionDraft,
+    )
     ctx = make_ctx()
-    result = await execute_propose_workflow(ctx, {
-        "survey_id": "s1",
-        "trigger_condition": "NPS score 0-6",
-        "desired_outcome": "Alert CSM via email within 2 hours",
-    })
+    draft = WorkflowNLDraft(
+        name="NPS detractor alert",
+        description="Alert CSM when NPS score is 0-6",
+        trigger=WorkflowNLTriggerDraft(trigger_type="score.nps_drop"),
+        conditions=[],
+        actions=[WorkflowNLActionDraft(action="notify.email", config={})],
+        confidence=0.9,
+    )
+    with patch("crystalos.crystal.workflow_nl._call_llm", new=AsyncMock(return_value=draft)):
+        result = await execute_propose_workflow(ctx, {
+            "survey_id": "s1",
+            "trigger_condition": "NPS score 0-6",
+            "desired_outcome": "Alert CSM via email within 2 hours",
+        })
     assert result["proposal_type"] == "workflow"
     assert result["requires_confirmation"] is True
     assert "params" in result
-    assert "trigger" in result["params"] or "trigger_condition" in result["params"]
+    assert "trigger_type" in result["params"]
+    assert "nodes" in result["params"] and "edges" in result["params"]
 
 
 @pytest.mark.asyncio

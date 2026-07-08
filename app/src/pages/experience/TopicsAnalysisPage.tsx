@@ -1,9 +1,15 @@
-// TopicsAnalysisPage — /app/insights/topics?survey=ID&topic=ID&window=all_time|30d|7d
+// TopicsAnalysisPage — /app/experience/topics?survey=ID&topic=ID&window=all_time|30d|7d
 //
 // Three modes:
 //   • No survey selected  → nudge to pick survey
 //   • surveyId, no topic  → overview (hierarchy tree + scatter chart)
 //   • surveyId + topicId  → deep-dive (TopicDetailPanel)
+//
+// Lives under pages/experience/ (moved from pages/insights/) but still pulls
+// its hierarchy/detail/chart components and GlassCard from pages/insights/ —
+// those are shared across several insights pages (see pages/experience/
+// SurveyReportPage.tsx, TopicAnalysisHubPage.tsx etc. for the same
+// cross-folder import pattern), not duplicated here.
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -18,10 +24,12 @@ import { PageHeader } from '../../components/PageHeader';
 import { Icon } from '../../components/Icon';
 import { Button } from '@/components/ui/button';
 import { SurveyScopePicker } from '../../components/SurveyScopePicker';
-import { GlassCard } from './shared';
-import { TopicHierarchyTree, type ThemeGroup } from './components/TopicHierarchyTree';
-import { TopicDetailPanel } from './components/TopicDetailPanel';
-import { ImpactScatterChart } from './components/ImpactScatterChart';
+import { Progress } from '@/components/ui/progress';
+import { ManualRunError } from '../../lib/api';
+import { GlassCard } from '../insights/shared';
+import { TopicHierarchyTree, type ThemeGroup } from '../insights/components/TopicHierarchyTree';
+import { TopicDetailPanel } from '../insights/components/TopicDetailPanel';
+import { ImpactScatterChart } from '../insights/components/ImpactScatterChart';
 import type { SurveyTopic, TopicDetail, TopicVerbatim, TopicTheme } from '../../types';
 
 // ── Time window constants ──────────────────────────────────────────────────────
@@ -108,6 +116,127 @@ export function TopicsAnalysisPage() {
       setGenerating(false);
     }
   }, [api, surveyId, generating, loadHierarchy]);
+
+  // ── Backfill Tagging ─────────────────────────────────────────────────────
+  // Drains a survey's entire untagged-response backlog in the background
+  // (lib/topic_backfill.py on CrystalOS). Runs server-side — resumable on
+  // reload (checked below) and safe to navigate away from mid-run.
+  type BackfillStatus = 'idle' | 'running' | 'completed' | 'failed';
+  const [backfillRunId, setBackfillRunId] = useState<string | null>(null);
+  const [backfillStatus, setBackfillStatus] = useState<BackfillStatus>('idle');
+  const [backfillProgress, setBackfillProgress] = useState<{ total: number; processed: number; quarantined: number; bootstrapPending: boolean } | null>(null);
+  const [backfillError, setBackfillError] = useState<string | null>(null);
+
+  // Resume: if a backfill job is already running for this survey (started
+  // before a reload, or from another tab), pick up its progress instead of
+  // letting the button silently look idle while the server keeps working.
+  useEffect(() => {
+    setBackfillRunId(null);
+    setBackfillStatus('idle');
+    setBackfillProgress(null);
+    setBackfillError(null);
+    if (!surveyId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const runId = await api.getActiveTopicBackfillRun(surveyId);
+        if (!cancelled && runId) {
+          setBackfillRunId(runId);
+          setBackfillStatus('running');
+        }
+      } catch {
+        // no active run discoverable — button just starts idle, harmless
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [api, surveyId]);
+
+  useEffect(() => {
+    if (!backfillRunId || backfillStatus !== 'running') return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const run = await api.getRun(backfillRunId);
+        if (cancelled) return;
+        const events = run.stream_events ?? [];
+        const latest = [...events].reverse().find(
+          (e) => e.event === 'backfill_progress' || e.event === 'backfill_started',
+        ) as { data?: { total_untagged?: number; processed?: number; quarantined?: number; bootstrap_pending?: boolean } } | undefined;
+        if (latest?.data) {
+          setBackfillProgress({
+            total:            Number(latest.data.total_untagged ?? 0),
+            processed:        Number(latest.data.processed ?? 0),
+            quarantined:      Number(latest.data.quarantined ?? 0),
+            bootstrapPending: Boolean(latest.data.bootstrap_pending),
+          });
+        }
+        if (run.status !== 'running') {
+          setBackfillStatus(run.status === 'completed' ? 'completed' : 'failed');
+          if (run.status === 'completed') await loadHierarchy();
+        }
+      } catch {
+        // transient poll failure — try again next tick, don't flip to failed
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [backfillRunId, backfillStatus, api, loadHierarchy]);
+
+  // Deliberately NO auto-dismiss timer here (fixed 2026-07-13, independent
+  // customer review finding — the single highest-priority UX gap found): the
+  // completion banner is the ONLY place a quarantined-response count is ever
+  // shown, and a 6-second self-erasing message meant a customer who glanced
+  // away, switched tabs, or wasn't watching when the job finished would never
+  // learn that any responses were skipped. The banner now persists until the
+  // user explicitly dismisses it (dismissBackfillBanner below) or starts a
+  // new backfill. The button itself is already re-clickable in 'completed'/
+  // 'failed' states (see disabled prop below), so nothing is blocked by
+  // leaving it visible.
+  const dismissBackfillBanner = useCallback(() => {
+    setBackfillStatus('idle');
+    setBackfillRunId(null);
+    setBackfillProgress(null);
+    setBackfillError(null);
+  }, []);
+
+  const handleBackfillTagging = useCallback(async () => {
+    if (!surveyId || backfillStatus === 'running') return;
+    setBackfillError(null);
+    setBackfillProgress(null);
+    setBackfillStatus('running');
+    try {
+      const res = await api.triggerTopicBackfill(surveyId);
+      if (res.status === 'nothing_to_backfill' || !res.run_id) {
+        // Nothing was untagged — the backend skips starting (and charging
+        // for) a job entirely. Show the same "complete" shape with zero
+        // counts rather than leaving the button stuck in a spinner with
+        // no run to poll. bootstrap_pending (fully sentiment-tagged, but the
+        // survey has never had its first topic-bootstrap run) must carry
+        // through here — hardcoding it false is what caused "Everything is
+        // already tagged" to show even when topics were never assigned.
+        setBackfillProgress({ total: 0, processed: 0, quarantined: 0, bootstrapPending: Boolean(res.bootstrap_pending) });
+        setBackfillStatus('completed');
+        return;
+      }
+      setBackfillRunId(res.run_id);
+    } catch (err) {
+      setBackfillStatus('failed');
+      setBackfillError(
+        err instanceof ManualRunError && err.code === 'RATE_LIMITED'
+          ? t('topicsAnalysis.backfillAlreadyRunning')
+          : err instanceof ManualRunError
+            ? err.message
+            : t('topicsAnalysis.backfillFailed'),
+      );
+    }
+  }, [api, surveyId, backfillStatus, t]);
+
+  const backfillPct = backfillProgress && backfillProgress.total > 0
+    ? Math.min(100, Math.round((backfillProgress.processed / backfillProgress.total) * 100))
+    : 0;
 
   // ── Topic detail ─────────────────────────────────────────────────────────
   const [topicDetail, setTopicDetail] = useState<TopicDetail | null>(null);
@@ -227,8 +356,8 @@ export function TopicsAnalysisPage() {
   // ── Breadcrumbs ──────────────────────────────────────────────────────────
   const crumbs = useMemo(() => {
     const base = [
-      { label: t('topicsAnalysis.breadcrumbInsights'), path: ROUTES.INSIGHTS },
-      { label: t('topicsAnalysis.breadcrumbTopics'),   path: ROUTES.INSIGHTS_TOPICS },
+      { label: t('topicsAnalysis.breadcrumbExperience'), path: ROUTES.EXPERIENCE },
+      { label: t('topicsAnalysis.breadcrumbTopics'),     path: ROUTES.EXPERIENCE_TOPICS },
     ];
     if (selectedTopicId && detailTopic) {
       return [...base, { label: detailTopic.name }];
@@ -266,9 +395,9 @@ export function TopicsAnalysisPage() {
             style={
               timeWindow === value
                 ? {
-                    background: '#2a4bd9',
+                    background: 'var(--color-primary)',
                     color: '#fff',
-                    boxShadow: '0 1px 6px rgba(42,75,217,0.3)',
+                    boxShadow: '0 1px 6px color-mix(in srgb, var(--color-primary) 30%, transparent)',
                   }
                 : { color: 'var(--color-on-surface-variant, #6b7280)' }
             }
@@ -295,6 +424,27 @@ export function TopicsAnalysisPage() {
         <Icon name="auto_awesome" size={14} />
         {t('topicsAnalysis.askCrystal')}
       </Button>
+
+      {/* Backfill Tagging — drains the survey's entire untagged-response
+          backlog in the background; safe to click regardless of whether
+          topics exist yet. */}
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-2"
+        disabled={!surveyId || backfillStatus === 'running'}
+        onClick={handleBackfillTagging}
+        title={t('topicsAnalysis.backfillTaggingHint')}
+      >
+        <Icon
+          name={backfillStatus === 'running' ? 'sync' : 'auto_fix_high'}
+          size={14}
+          className={backfillStatus === 'running' ? 'animate-spin' : ''}
+        />
+        {backfillStatus === 'running'
+          ? t('topicsAnalysis.backfillRunning', { pct: backfillPct })
+          : t('topicsAnalysis.backfillTagging')}
+      </Button>
     </div>
   );
 
@@ -307,6 +457,80 @@ export function TopicsAnalysisPage() {
         actions={headerActions}
       />
 
+      {backfillStatus !== 'idle' && (
+        <div
+          className="flex items-center gap-3 px-4 py-3 rounded-xl border mb-4"
+          style={{
+            background:  backfillStatus === 'failed' ? 'rgba(220,38,38,0.05)' : 'rgba(0,100,124,0.05)',
+            borderColor: backfillStatus === 'failed' ? 'rgba(220,38,38,0.2)' : 'rgba(0,100,124,0.2)',
+          }}
+        >
+          <Icon
+            name={backfillStatus === 'failed' ? 'error_outline' : backfillStatus === 'completed' ? 'check_circle' : 'sync'}
+            size={16}
+            className={backfillStatus === 'running' ? 'animate-spin' : ''}
+            style={{ color: backfillStatus === 'failed' ? '#dc2626' : 'var(--color-secondary, #00647c)', flexShrink: 0 }}
+          />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold" style={{ color: backfillStatus === 'failed' ? '#dc2626' : undefined }}>
+              {backfillStatus === 'running' && t('topicsAnalysis.backfillProgressLabel', {
+                processed: backfillProgress?.processed ?? 0,
+                total:     backfillProgress?.total ?? 0,
+              })}
+              {backfillStatus === 'completed' && (
+                backfillProgress?.total === 0
+                  ? (backfillProgress?.bootstrapPending
+                      // Sentiment/emotion tagging is done, but this survey has
+                      // never had its first topic-bootstrap run — "Everything
+                      // is already tagged" would be false here (topics were
+                      // never assigned), so use the bootstrap-specific copy
+                      // instead of the generic "nothing to catch up" message.
+                      ? t('topicsAnalysis.backfillBootstrapPending')
+                      : t('topicsAnalysis.backfillNothingToDo'))
+                  : (backfillProgress?.quarantined ?? 0) > 0
+                    ? t('topicsAnalysis.backfillCompleteWithQuarantine', {
+                        processed:   backfillProgress?.processed ?? 0,
+                        quarantined: backfillProgress?.quarantined ?? 0,
+                      })
+                    : t('topicsAnalysis.backfillCompleteDetail', {
+                        processed: backfillProgress?.processed ?? 0,
+                      })
+              )}
+              {backfillStatus === 'failed' && (backfillError || t('topicsAnalysis.backfillFailed'))}
+            </p>
+            {backfillStatus === 'running' && (
+              <>
+                <Progress value={backfillPct} className="h-1.5 mt-2" />
+                <p className="text-xs text-muted-foreground mt-1">{t('topicsAnalysis.backfillNavigateAwayHint')}</p>
+              </>
+            )}
+            {backfillStatus === 'completed' && backfillProgress?.bootstrapPending && (
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                {/* total === 0 already shows this exact copy as the primary
+                    message above — don't repeat it, just surface the action. */}
+                {backfillProgress.total !== 0 && (
+                  <p className="text-xs text-muted-foreground">{t('topicsAnalysis.backfillBootstrapPending')}</p>
+                )}
+                <Button variant="outline" size="sm" className="gap-1 h-7 text-xs" onClick={handleGenerate}>
+                  <Icon name="auto_awesome" size={12} />
+                  {t('topicsAnalysis.backfillGenerateReport')}
+                </Button>
+              </div>
+            )}
+          </div>
+          {backfillStatus !== 'running' && (
+            <button
+              type="button"
+              onClick={dismissBackfillBanner}
+              aria-label={t('topicsAnalysis.backfillDismiss')}
+              className="flex-shrink-0 rounded-full p-1 hover:bg-black/5 transition-colors"
+            >
+              <Icon name="close" size={16} style={{ color: 'var(--color-on-surface-variant, #6b7280)' }} />
+            </button>
+          )}
+        </div>
+      )}
+
       <AnimatePresence mode="wait">
         {/* ═══════════════════════════════════════════════════════════
             MODE 1: No survey selected
@@ -317,7 +541,7 @@ export function TopicsAnalysisPage() {
               <Icon
                 name="hub"
                 size={48}
-                style={{ color: '#2a4bd9', display: 'block', margin: '0 auto 16px' }}
+                style={{ color: 'var(--color-primary)', display: 'block', margin: '0 auto 16px' }}
               />
               <h3 className="text-lg font-bold text-on-surface mb-2">
                 {t('topicsAnalysis.selectSurveyTitle')}

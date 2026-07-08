@@ -19,11 +19,13 @@ import express from 'express';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const _require = createRequire(import.meta.url);
 
-const AUTH_PATH   = _require.resolve(resolve(__dirname, '../middleware/auth'));
-const DB_PATH     = _require.resolve(resolve(__dirname, '../lib/db'));
-const AGENTS_PATH = _require.resolve(resolve(__dirname, '../lib/agentsClient'));
-const LOGGER_PATH = _require.resolve(resolve(__dirname, '../lib/logger'));
-const ROUTER_PATH = _require.resolve(resolve(__dirname, '../routes/survey-groups'));
+const AUTH_PATH        = _require.resolve(resolve(__dirname, '../middleware/auth'));
+const ROLE_PATH        = _require.resolve(resolve(__dirname, '../middleware/requireRole'));
+const DB_PATH          = _require.resolve(resolve(__dirname, '../lib/db'));
+const AGENTS_PATH      = _require.resolve(resolve(__dirname, '../lib/agentsClient'));
+const LOGGER_PATH      = _require.resolve(resolve(__dirname, '../lib/logger'));
+const CONCURRENCY_PATH = _require.resolve(resolve(__dirname, '../lib/groupInsightRunConcurrency'));
+const ROUTER_PATH      = _require.resolve(resolve(__dirname, '../routes/survey-groups'));
 
 let dbQuery;
 let generateGroupInsights;
@@ -39,6 +41,12 @@ function buildApp() {
       req.userId = 'test-user';
       next();
     },
+  });
+  // requireRole('analyst') was added to /generate (TRACKER.md §1 Task 12) — pass
+  // through in these tests exactly like tags.test.js does for its own mutation
+  // routes; role-gate behavior itself is covered by requireRole's own unit tests.
+  _require.cache[ROLE_PATH] = fakeMod(ROLE_PATH, {
+    requireRole: () => (req, res, next) => next(),
   });
   _require.cache[DB_PATH] = fakeMod(DB_PATH, {
     query: dbQuery,
@@ -57,6 +65,12 @@ function buildApp() {
     default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   });
 
+  // groupInsightRunConcurrency.ts is a REAL module (not faked above) that reads
+  // `query` from lib/db at its own require-time. Because it isn't the router
+  // itself, it stays cached across tests unless explicitly invalidated here too
+  // — otherwise it keeps a stale reference to whichever dbQuery mock happened to
+  // be installed the first time it was loaded, instead of the current test's.
+  delete _require.cache[CONCURRENCY_PATH];
   delete _require.cache[ROUTER_PATH];
   const router = _require(ROUTER_PATH);
   const app = express();
@@ -230,13 +244,16 @@ describe('POST /api/group-insights/generate', () => {
   });
 
   it('uses provided survey_ids directly and skips tag-mapping query', async () => {
-    const tagValidation = vi.fn(async () => ({ rows: [{ id: 'tag-1' }] }));
-    const mappingQuery  = vi.fn(async () => ({ rows: [] }));
-    const insertQuery   = vi.fn(async () => ({ rows: [{ id: 'run-xyz' }] }));
+    const tagValidation    = vi.fn(async () => ({ rows: [{ id: 'tag-1' }] }));
+    const mappingQuery     = vi.fn(async () => ({ rows: [] }));
+    const surveyValidation = vi.fn(async () => ({ rows: [{ id: 'survey-explicit' }] }));
+    const insertQuery      = vi.fn(async () => ({ rows: [{ id: 'run-xyz', created_at: 't' }] }));
 
     dbQuery = vi.fn(async (sql) => {
       if (sql.includes('FROM survey_tags')) return tagValidation();
       if (sql.includes('survey_tag_mappings')) return mappingQuery();
+      // Task 12b — provided survey_ids are now validated for org ownership.
+      if (sql.includes('FROM surveys WHERE')) return surveyValidation();
       if (sql.includes('INSERT INTO group_insight_runs')) return insertQuery();
       return { rows: [] };
     });
@@ -252,11 +269,92 @@ describe('POST /api/group-insights/generate', () => {
     expect(res.json()).toMatchObject({ run_id: 'run-xyz' });
     // Mapping query should NOT have been called since survey_ids were provided
     expect(mappingQuery).not.toHaveBeenCalled();
+    // The provided survey_ids are still validated against the org (Task 12b).
+    expect(surveyValidation).toHaveBeenCalled();
     // generateGroupInsights should receive the explicit survey ids
     await new Promise((r) => setTimeout(r, 10));
     expect(generateGroupInsights).toHaveBeenCalledWith(
       'run-xyz', ['tag-1'], ['survey-explicit'], 'test-org'
     );
+  });
+
+  // ── TRACKER.md §1 Task 12b regression test ──────────────────────────────────
+  // Root cause: this endpoint used to accept client-supplied survey_ids with
+  // ZERO validation that they belong to the calling org, flowing straight to the
+  // DB insert and to CrystalOS. This test would have caught that gap.
+  it('returns 400 when provided survey_ids do not belong to the org (Task 12b)', async () => {
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
+      // Org-scoped survey lookup finds none of the provided IDs.
+      if (sql.includes('FROM surveys WHERE')) return { rows: [] };
+      return { rows: [] };
+    });
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/group-insights/generate',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tag_ids: ['tag-1'], survey_ids: ['someone-elses-survey'] }),
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/invalid|do not belong/i);
+    expect(generateGroupInsights).not.toHaveBeenCalled();
+  });
+
+  it('attaches to an in-flight run on a 23505 conflict instead of erroring (Appendix A.5)', async () => {
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
+      if (sql.includes('survey_tag_mappings')) return { rows: [{ survey_id: 'survey-a' }] };
+      if (sql.startsWith('INSERT INTO group_insight_runs')) {
+        const e = new Error('duplicate key value violates unique constraint "uq_gir_tag_inflight"');
+        e.code = '23505';
+        throw e;
+      }
+      if (sql.includes("status IN ('pending', 'running')")) {
+        return { rows: [{ id: 'already-running-run', created_at: 't0' }] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/group-insights/generate',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tag_ids: ['tag-1'] }),
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ run_id: 'already-running-run', attached_to_existing: true });
+    // Attaching to an in-flight run must never trigger a second generation.
+    expect(generateGroupInsights).not.toHaveBeenCalled();
+  });
+
+  it('enforces the Tag Report daily limit on this route too (security review fix, 2026-07-02)', async () => {
+    // Regression test for Riley's MEDIUM-severity finding: this route writes
+    // into the same group_insight_runs table for the same (org_id, tag_ids) as
+    // Tag Report's manual/custom-range endpoints, and its underlying graph
+    // (group_insights.py) makes real fresh LLM calls per run — so leaving it
+    // unrate-limited was a genuine cost/quota bypass, not cosmetic.
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('FROM survey_tags')) return { rows: [{ id: 'tag-1' }] };
+      if (sql.includes('survey_tag_mappings')) return { rows: [{ survey_id: 'survey-a' }] };
+      if (sql.includes('FROM group_insight_runs') && sql.includes('COUNT(*)')) {
+        return { rows: [{ run_count: 10 }] }; // at/above TAG_REPORT_MANUAL_DAILY_LIMIT default (10)
+      }
+      return { rows: [] };
+    });
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/group-insights/generate',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tag_ids: ['tag-1'] }),
+    });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.json()).toMatchObject({ code: 'RATE_LIMITED', tag_id: 'tag-1' });
+    expect(generateGroupInsights).not.toHaveBeenCalled();
   });
 });
 

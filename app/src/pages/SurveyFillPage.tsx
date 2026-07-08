@@ -91,7 +91,7 @@ function CsatQuestion({ q, value, onChange }: CsatQuestionProps) {
             className="flex flex-col items-center gap-1.5 p-3 rounded-2xl transition-all active:scale-95"
             style={{
               background: value === i + 1 ? '#e0e7ff' : '#f5f7f9',
-              border: value === i + 1 ? '2px solid #2a4bd9' : '2px solid transparent',
+              border: value === i + 1 ? '2px solid var(--color-primary)' : '2px solid transparent',
               transform: value === i + 1 ? 'scale(1.1)' : 'scale(1)',
             } as React.CSSProperties}>
             <span className="text-3xl">{emoji}</span>
@@ -239,9 +239,9 @@ function RatingQuestion({ q, value, onChange }: RatingQuestionProps) {
         <Button key={i + 1} onClick={() => onChange(i + 1)} variant="secondary"
           className="flex-1 py-4 rounded-xl font-black text-xl transition-all active:scale-95 border-0"
           style={{
-            background: (value as number) >= i + 1 ? '#2a4bd9' : '#eef1f3',
+            background: (value as number) >= i + 1 ? 'var(--color-primary)' : '#eef1f3',
             color: (value as number) >= i + 1 ? '#ffffff' : '#c4c4c4',
-            boxShadow: (value as number) >= i + 1 ? '0 8px 20px rgba(42,75,217,0.2)' : 'none',
+            boxShadow: (value as number) >= i + 1 ? '0 8px 20px color-mix(in srgb, var(--color-primary) 20%, transparent)' : 'none',
           } as React.CSSProperties}>
           {q.ratingStyle === 'numbers' ? i + 1 : '★'}
         </Button>
@@ -264,11 +264,11 @@ function MultipleChoiceQuestion({ question, value, onChange }: MultipleChoiceQue
           className="flex items-center gap-3 px-5 py-4 rounded-xl text-left transition-all active:scale-95"
           style={{
             background: value === opt ? '#e0e7ff' : '#eef1f3',
-            border: value === opt ? '2px solid #2a4bd9' : '2px solid transparent',
-            color: value === opt ? '#2a4bd9' : '#2c2f31',
+            border: value === opt ? '2px solid var(--color-primary)' : '2px solid transparent',
+            color: value === opt ? 'var(--color-primary)' : '#2c2f31',
           } as React.CSSProperties}>
           <div className="w-5 h-5 rounded-full flex-shrink-0 flex items-center justify-center"
-            style={{ border: value === opt ? '2px solid #2a4bd9' : '2px solid #d0d5d8', background: value === opt ? '#2a4bd9' : 'transparent' }}>
+            style={{ border: value === opt ? '2px solid var(--color-primary)' : '2px solid #d0d5d8', background: value === opt ? 'var(--color-primary)' : 'transparent' }}>
             {value === opt && <div className="w-2 h-2 rounded-full bg-white" />}
           </div>
           <span className="font-semibold text-sm">{opt}</span>
@@ -296,13 +296,13 @@ function CheckboxQuestion({ question, value = [], onChange }: CheckboxQuestionPr
           className="flex items-center gap-3 px-5 py-4 rounded-xl text-left transition-all active:scale-95"
           style={{
             background: value.includes(opt) ? '#e0e7ff' : '#eef1f3',
-            border: value.includes(opt) ? '2px solid #2a4bd9' : '2px solid transparent',
+            border: value.includes(opt) ? '2px solid var(--color-primary)' : '2px solid transparent',
           } as React.CSSProperties}>
           <div className="w-5 h-5 rounded flex-shrink-0 flex items-center justify-center"
-            style={{ border: value.includes(opt) ? '2px solid #2a4bd9' : '2px solid #d0d5d8', background: value.includes(opt) ? '#2a4bd9' : 'transparent' }}>
+            style={{ border: value.includes(opt) ? '2px solid var(--color-primary)' : '2px solid #d0d5d8', background: value.includes(opt) ? 'var(--color-primary)' : 'transparent' }}>
             {value.includes(opt) && <Icon name="check" size={12} style={{ color: '#fff' }} />}
           </div>
-          <span className="font-semibold text-sm" style={{ color: value.includes(opt) ? '#2a4bd9' : '#2c2f31' }}>{opt}</span>
+          <span className="font-semibold text-sm" style={{ color: value.includes(opt) ? 'var(--color-primary)' : '#2c2f31' }}>{opt}</span>
         </button>
       ))}
     </div>
@@ -417,7 +417,7 @@ function RankingQuestion({ question, value = [], onChange }: RankingQuestionProp
     <div className="mt-4 space-y-2">
       {ranked.map((opt, i) => (
         <div key={opt} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#f5f7f9] border border-[#dfe3e6]">
-          <span className="w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black bg-[#e0e7ff] text-[#2a4bd9]">{i + 1}</span>
+          <span className="w-6 h-6 rounded-lg flex items-center justify-center text-xs font-black bg-[#e0e7ff] text-[var(--color-primary)]">{i + 1}</span>
           <span className="flex-1 text-sm font-semibold text-on-surface">{opt}</span>
           <div className="flex flex-col gap-0.5">
             <button onClick={() => { if (i > 0) move(i, i - 1); }}
@@ -478,8 +478,8 @@ function MatrixQuestion({ question, value = {}, onChange }: MatrixQuestionProps)
                   <button onClick={() => toggle(row, col)}
                     className={`w-5 h-5 mx-auto flex items-center justify-center transition-all ${multi ? 'rounded' : 'rounded-full'}`}
                     style={{
-                      border: isSelected(row, col) ? '2px solid #2a4bd9' : '2px solid #d0d5d8',
-                      background: isSelected(row, col) ? '#2a4bd9' : 'transparent',
+                      border: isSelected(row, col) ? '2px solid var(--color-primary)' : '2px solid #d0d5d8',
+                      background: isSelected(row, col) ? 'var(--color-primary)' : 'transparent',
                     } as React.CSSProperties}>
                     {isSelected(row, col) && <Icon name="check" size={11} style={{ color: '#fff' }} />}
                   </button>
@@ -566,7 +566,7 @@ function SurveyErrorScreen({ type, onRetry }: SurveyErrorScreenProps) {
           <Button
             onClick={onRetry}
             className="rounded-xl font-bold px-6"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)', color: '#fff', border: 'none' } as React.CSSProperties}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: '#fff', border: 'none' } as React.CSSProperties}
           >
             {t('fill.errors.network.retry')}
           </Button>
@@ -625,7 +625,7 @@ function PasswordGate({ token, onUnlocked }: { token: string; onUnlocked: () => 
         <Card className="p-8 rounded-3xl border-white/60 shadow-xl flex flex-col items-center gap-5">
           <div
             className="w-14 h-14 rounded-2xl flex items-center justify-center"
-            style={{ background: 'rgba(42,75,217,0.1)' }}
+            style={{ background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
           >
             <Icon name="lock" size={28} className="text-primary" fill={1} />
           </div>
@@ -670,7 +670,7 @@ function PasswordGate({ token, onUnlocked }: { token: string; onUnlocked: () => 
             onClick={handleSubmit}
             disabled={submitting || !password.trim()}
             className="w-full py-3 font-bold rounded-xl text-white"
-            style={{ background: 'linear-gradient(135deg, #2a4bd9, #879aff)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-primary-container))' }}
           >
             {submitting ? t(`${pg}.submitting`) : t(`${pg}.submitButton`)}
           </Button>
@@ -795,7 +795,7 @@ export function SurveyFillPage() {
           animate={{ rotate: 360 }}
           transition={{ duration: 1.2, ease: 'linear', repeat: Infinity }}
           className="w-10 h-10 rounded-full border-2 border-t-transparent"
-          style={{ borderColor: 'rgba(42,75,217,0.2)', borderTopColor: '#2a4bd9' } as React.CSSProperties}
+          style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)', borderTopColor: 'var(--color-primary)' } as React.CSSProperties}
         />
         <p className="text-sm font-semibold text-on-surface-variant">{t('fill.loading')}</p>
       </div>
@@ -870,7 +870,7 @@ export function SurveyFillPage() {
             <Button
               onClick={() => { setError(null); handleSubmit(); }}
               className="rounded-xl font-bold px-6"
-              style={{ background: 'linear-gradient(135deg, #2a4bd9, #8329c8)', color: '#fff', border: 'none' } as React.CSSProperties}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color: '#fff', border: 'none' } as React.CSSProperties}
             >
               {t('fill.submitError.retry')}
             </Button>
@@ -893,11 +893,11 @@ export function SurveyFillPage() {
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
         <div
           className="absolute rounded-full"
-          style={{ top: '-15%', left: '-10%', width: '40%', height: '40%', background: 'rgba(42,75,217,0.12)', filter: 'blur(120px)' } as React.CSSProperties}
+          style={{ top: '-15%', left: '-10%', width: '40%', height: '40%', background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)', filter: 'blur(120px)' } as React.CSSProperties}
         />
         <div
           className="absolute rounded-full"
-          style={{ bottom: '-10%', right: '-10%', width: '50%', height: '50%', background: 'rgba(131,41,200,0.12)', filter: 'blur(150px)' } as React.CSSProperties}
+          style={{ bottom: '-10%', right: '-10%', width: '50%', height: '50%', background: 'color-mix(in srgb, var(--color-tertiary) 12%, transparent)', filter: 'blur(150px)' } as React.CSSProperties}
         />
       </div>
 
@@ -905,7 +905,7 @@ export function SurveyFillPage() {
       <div className="fixed top-0 left-0 w-full z-50">
         <Progress
           value={progress}
-          className="h-[3px] rounded-none bg-surface-container [&>div]:bg-gradient-to-r [&>div]:from-primary [&>div]:to-[#8329c8] [&>div]:transition-all [&>div]:duration-500"
+          className="h-[3px] rounded-none bg-surface-container [&>div]:bg-gradient-to-r [&>div]:from-primary [&>div]:to-[var(--color-tertiary)] [&>div]:transition-all [&>div]:duration-500"
         />
       </div>
 
@@ -946,7 +946,7 @@ export function SurveyFillPage() {
             >
             <Card
               className="glass-card-premium p-8 rounded-2xl"
-              style={{ boxShadow: '0 40px 100px -20px rgba(42,75,217,0.14), 0 0 0 1px rgba(255,255,255,0.6) inset' }}
+              style={{ boxShadow: '0 40px 100px -20px color-mix(in srgb, var(--color-primary) 14%, transparent), 0 0 0 1px rgba(255,255,255,0.6) inset' }}
             >
               <div className="mb-6">
                 <h2 className="text-xl font-bold leading-tight font-headline text-on-surface">
@@ -990,11 +990,11 @@ export function SurveyFillPage() {
                   className="flex-1 py-3 font-bold text-base transition-all active:scale-95 flex items-center justify-center gap-2 font-headline rounded-xl border-0"
                   style={{
                     background: canContinue
-                      ? 'linear-gradient(135deg, #2a4bd9, #8329c8)'
+                      ? 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))'
                       : '#dfe3e6',
                     color: canContinue ? '#ffffff' : '#9a9d9f',
                     cursor: canContinue ? 'pointer' : 'not-allowed',
-                    boxShadow: canContinue ? '0 10px 30px rgba(42,75,217,0.25)' : 'none',
+                    boxShadow: canContinue ? '0 10px 30px color-mix(in srgb, var(--color-primary) 25%, transparent)' : 'none',
                   } as React.CSSProperties}
                 >
                   {submitting ? (

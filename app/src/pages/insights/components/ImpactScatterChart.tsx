@@ -88,7 +88,7 @@ function CustomTooltipContent({
       {p.theme && (
         <div
           className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold mb-1.5"
-          style={{ background: 'rgba(42,75,217,0.09)', color: '#2a4bd9' }}
+          style={{ background: 'color-mix(in srgb, var(--color-primary) 9%, transparent)', color: 'var(--color-primary)' }}
         >
           {p.theme}
         </div>

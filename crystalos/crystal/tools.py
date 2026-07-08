@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import time as _time
 import traceback
@@ -542,6 +543,58 @@ async def execute_get_segment_breakdown(ctx: CrystalContext, params: dict) -> di
         return {"error": str(exc)}
 
 
+async def _v2_then_legacy_rows(
+    survey_id: str, org_id: str, limit: int, v2_select: str, legacy_select: str,
+) -> list[dict]:
+    """Shared v2-first / legacy-fallback row loader.
+
+    Fixed 2026-07-04: execute_get_checkpoint_history and execute_get_recent_checkpoints
+    used to query ONLY survey_insight_checkpoints (legacy), found during the same audit
+    that fixed node_delta_compute's identical mistake (graphs/insights.py) — any survey
+    whose history has moved to insight_checkpoints_v2 (and especially once
+    STOP_LEGACY_CHECKPOINT_WRITE is ever enabled) would silently get empty results from
+    these tools. execute_get_checkpoint_chain/get_insight_trail already used this
+    v2-first-with-fallback shape; this factors it out for the two callers below instead
+    of hand-rolling a third and fourth copy.
+    """
+    rows: list[dict] = []
+    try:
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""SELECT {v2_select}
+                        FROM insight_checkpoints_v2
+                        WHERE survey_id = %s AND org_id = %s AND lane = 'automated'
+                        ORDER BY checkpoint_number DESC
+                        LIMIT %s""",
+                    (survey_id, org_id, limit),
+                )
+                fetched = await cur.fetchall()
+                if fetched:
+                    cols = [d[0] for d in cur.description]
+                    rows = [dict(zip(cols, r)) for r in fetched]
+    except Exception as exc:
+        logger.debug("checkpoint_rows_v2_unavailable", survey_id=survey_id, error=str(exc))
+        rows = []
+
+    if not rows:
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""SELECT {legacy_select}
+                        FROM survey_insight_checkpoints
+                        WHERE survey_id = %s AND org_id = %s
+                        ORDER BY checkpoint_number DESC
+                        LIMIT %s""",
+                    (survey_id, org_id, limit),
+                )
+                fetched = await cur.fetchall()
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, r)) for r in fetched]
+
+    return rows
+
+
 async def execute_get_checkpoint_history(ctx: CrystalContext, params: dict) -> dict:
     try:
         survey_id = params.get("survey_id") or ctx.survey_id
@@ -549,24 +602,14 @@ async def execute_get_checkpoint_history(ctx: CrystalContext, params: dict) -> d
         if not survey_id:
             return {"error": "survey_id required"}
 
-        async with db._pool_conn().connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """SELECT id, checkpoint_number, response_count_at_checkpoint,
-                              nps_at_checkpoint, csat_at_checkpoint, topic_fingerprint,
-                              delta_from_prior, created_at
-                       FROM survey_insight_checkpoints
-                       WHERE survey_id = %s AND org_id = %s
-                       ORDER BY checkpoint_number DESC
-                       LIMIT %s""",
-                    (survey_id, ctx.org_id, limit),
-                )
-                rows = await cur.fetchall()
-                cols = [d[0] for d in cur.description]
+        cols = ("id, checkpoint_number, response_count_at_checkpoint, "
+                "nps_at_checkpoint, csat_at_checkpoint, topic_fingerprint, "
+                "delta_from_prior, created_at")
+        rows = await _v2_then_legacy_rows(survey_id, ctx.org_id, limit, cols, cols)
 
         checkpoints = []
         for row in rows:
-            cp = dict(zip(cols, row))
+            cp = dict(row)
             cp["id"] = str(cp["id"])
             if cp.get("created_at"):
                 cp["created_at"] = str(cp["created_at"])
@@ -585,7 +628,8 @@ async def execute_get_recent_checkpoints(ctx: CrystalContext, params: dict) -> d
     """Return the most recent insight checkpoints with delta_from_prior + meaningful_delta.
 
     Phase 0.5 (Insight Pipeline v2) read tool — surfaces the code-computed delta so
-    Crystal can narrate "what changed since the last checkpoint".
+    Crystal can narrate "what changed since the last checkpoint". v2-first with legacy
+    fallback (see _v2_then_legacy_rows).
     """
     try:
         survey_id = params.get("survey_id") or ctx.survey_id
@@ -593,23 +637,12 @@ async def execute_get_recent_checkpoints(ctx: CrystalContext, params: dict) -> d
         if not survey_id:
             return {"error": "survey_id required"}
 
-        async with db._pool_conn().connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """SELECT checkpoint_number, nps_at_checkpoint,
-                              delta_from_prior, meaningful_delta, created_at
-                       FROM survey_insight_checkpoints
-                       WHERE survey_id = %s AND org_id = %s
-                       ORDER BY checkpoint_number DESC
-                       LIMIT %s""",
-                    (survey_id, ctx.org_id, limit),
-                )
-                rows = await cur.fetchall()
-                cols = [d[0] for d in cur.description]
+        cols = "checkpoint_number, nps_at_checkpoint, delta_from_prior, meaningful_delta, created_at"
+        rows = await _v2_then_legacy_rows(survey_id, ctx.org_id, limit, cols, cols)
 
         checkpoints = []
         for row in rows:
-            cp = dict(zip(cols, row))
+            cp = dict(row)
             if cp.get("created_at"):
                 cp["created_at"] = str(cp["created_at"])
             if cp.get("nps_at_checkpoint") is not None:
@@ -1034,22 +1067,76 @@ async def execute_propose_distribution(ctx: CrystalContext, params: dict) -> dic
 
 
 async def execute_propose_workflow(ctx: CrystalContext, params: dict) -> dict:
-    """Propose an automation workflow based on response patterns."""
+    """Propose an automation workflow based on response patterns.
+
+    Reconciled (Xperiq Actions Wave 3) to emit the SAME modern `nodes`/`edges`
+    engine graph shape as the dedicated NL builder's `POST /workflows/parse-nl`
+    endpoint, via the shared `crystal.workflow_nl.parse_workflow_nl()` core —
+    previously this returned an old flat `trigger`/`action_type: "notify"`/
+    `action_config` shape that the graph engine (`workflowEngine.ts`) cannot
+    execute. Both "AI creates a workflow" paths (in-chat proposal vs. the NL
+    builder page) now produce engine-compatible output.
+
+    NOTE (flagged for a frontend follow-up, out of this wave's scope):
+    `CrystalPanel.tsx`'s `create_workflow` proposal handler still reads only
+    `params.trigger` / `params.action_type` / `params.action_config` and calls
+    `api.createWorkflow()` — it does not yet read `params.nodes`/`params.edges`
+    or call `api.createGraphWorkflow()`. Until that handler is updated, an
+    in-chat "create this workflow" confirm will create a workflow row with the
+    new `trigger_type`/`nodes`/`edges` fields present in the POST body (the
+    backend's `createWorkflowSchema` already accepts them) but the handler
+    itself won't pass them through. This tool now emits the CORRECT shape so
+    that frontend fix is a small, isolated change rather than a second
+    reconciliation of the tool's output later.
+    """
+    from crystalos.crystal.workflow_nl import parse_workflow_nl, FALLBACK_REGISTRY
+
     survey_id         = params.get("survey_id") or ctx.survey_id
     trigger_condition = params.get("trigger_condition", "")
     desired_outcome   = params.get("desired_outcome", "")
+    description = f"When {trigger_condition}, {desired_outcome}".strip() if trigger_condition or desired_outcome else ""
+
+    if not description:
+        return {
+            "proposal_type": "workflow",
+            "title": "Create response automation",
+            "description": "Not enough detail to propose a workflow yet.",
+            "requires_confirmation": True,
+            "params": {"survey_id": survey_id, "trigger_type": None, "nodes": [], "edges": []},
+            "cta_label": "Create Workflow",
+            "business_rationale": "Describe both a trigger and desired outcome so Crystal can propose a working automation.",
+        }
+
+    result = await parse_workflow_nl(description, FALLBACK_REGISTRY)
+
+    if not result.ok:
+        return {
+            "proposal_type": "workflow",
+            "title": "Create response automation",
+            "description": result.message or f"Trigger: {trigger_condition} → Action: {desired_outcome}",
+            "requires_confirmation": True,
+            "params": {"survey_id": survey_id, "trigger_type": None, "nodes": [], "edges": []},
+            "cta_label": "Create Workflow",
+            "business_rationale": (
+                f"Automatically {desired_outcome or 'responds'} when {trigger_condition or 'the trigger fires'}, "
+                f"cutting manual follow-up time and ensuring no at-risk response slips through."
+            )[:159],
+        }
 
     return {
         "proposal_type": "workflow",
-        "title": "Create response automation",
-        "description": f"Trigger: {trigger_condition} → Action: {desired_outcome}",
+        "title": result.name or "Create response automation",
+        "description": result.description or f"Trigger: {trigger_condition} → Action: {desired_outcome}",
         "requires_confirmation": True,
         "params": {
-            "survey_id":       survey_id,
-            "trigger":         trigger_condition,
-            "name":            f"Auto: {trigger_condition[:50]}",
-            "action_type":     "notify",
-            "action_config":   {"message": desired_outcome},
+            "survey_id":    survey_id,
+            "name":         result.name,
+            "description":  result.description,
+            "trigger_type": result.trigger_type,
+            "nodes":        result.nodes,
+            "edges":        result.edges,
+            "confidence":   result.confidence,
+            "warnings":     result.warnings,
         },
         "estimated_time": "2 minutes to configure",
         "cta_label": "Create Workflow",
@@ -2606,6 +2693,11 @@ async def execute_get_changelog_recent(ctx: CrystalContext, params: dict) -> dic
 _REPORT_URL = "/experience/surveys/{sid}/intelligence/reports/{rid}"
 _TRAIL_URL = "/experience/surveys/{sid}/intelligence/trail/{cid}"
 
+# Tag Report — routes per docs/tag-report/DESIGN.md Appendix C (matches
+# app/src/constants/routes.ts TAG_REPORT / TAG_REPORT_TRAIL exactly).
+_TAG_REPORT_URL = "/app/experience/tags/{tag_id}/report/{run_id}"
+_TAG_REPORT_TRAIL_URL = "/app/experience/tags/{tag_id}/report/trail"
+
 
 def _ckpt_summary(nps, nps_delta, emerged_count: int | None = None) -> str:
     """One-line checkpoint summary, e.g. 'NPS 41 (−3.2) · 2 emerged themes'."""
@@ -3159,6 +3251,469 @@ async def execute_propose_generate_intelligence_report(ctx: CrystalContext, para
     }
 
 
+# ── Tag Report tools (cross-survey trust-weighted rollup) ────────────────────
+# Read-only, full stop — these tools only ever read group_insight_runs /
+# group_insight_run_sources / group_insights rows already written by
+# graphs/tag_report.py. They never trigger generation (that only happens via
+# the propose_generate_tag_report action-proposal path, which the frontend
+# posts to a trigger endpoint on user confirmation — this module makes no such
+# call itself). Every query below is org_id-scoped, including a tag-ownership
+# check before any data is read, so a client-supplied tag_id from a different
+# org can never leak data.
+
+async def execute_list_tags(ctx: CrystalContext, params: dict) -> dict:
+    """Resolve tags by name (case-insensitive substring) or list recent tags.
+
+    Always org-scoped. This is how Crystal turns a user's reference to a tag
+    ("the onboarding tag") into a real tag_id before calling get_tag_report or
+    any other tag/group-scoped tool.
+    """
+    try:
+        search = (params.get("query") or "").strip()
+        limit = min(int(params.get("limit", 10)), 50)
+
+        conditions = ["t.org_id = %s"]
+        args: list = [ctx.org_id]
+        if search:
+            conditions.append("t.name ILIKE %s")
+            args.append(f"%{search}%")
+        args.append(limit)
+
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""SELECT t.id, t.name, t.color,
+                               (SELECT COUNT(*)::int FROM survey_tag_mappings m
+                                  JOIN surveys s ON s.id = m.survey_id
+                                WHERE m.tag_id = t.id AND m.org_id = t.org_id
+                                  AND s.deleted_at IS NULL) AS survey_count
+                        FROM survey_tags t
+                        WHERE {' AND '.join(conditions)}
+                        ORDER BY t.created_at DESC
+                        LIMIT %s""",
+                    args,
+                )
+                rows = await cur.fetchall()
+                cols = [d[0] for d in cur.description] if rows else []
+
+        tags = []
+        for row in rows:
+            r = dict(zip(cols, row))
+            tags.append({
+                "tag_id": str(r["id"]),
+                "name": r.get("name"),
+                "color": r.get("color"),
+                "survey_count": r.get("survey_count") or 0,
+            })
+        return {"tags": tags, "count": len(tags)}
+    except Exception as exc:
+        logger.error("tool_list_tags_failed", error=str(exc), traceback=traceback.format_exc())
+        return {"error": str(exc)}
+
+
+async def _load_org_tag(ctx: CrystalContext, tag_id: str) -> dict | None:
+    """Load a tag row, scoped to the caller's org. None if it doesn't exist or
+    belongs to a different org — the caller must treat that identically to
+    'not found' (never leak whether a cross-org tag_id exists)."""
+    if not tag_id:
+        return None
+    async with db._pool_conn().connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, name, color FROM survey_tags WHERE id = %s AND org_id = %s",
+                (tag_id, ctx.org_id),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cur.description]
+            return dict(zip(cols, row))
+
+
+def _parse_jsonish(value: Any) -> Any:
+    """Best-effort JSON parse — group_insight_runs/group_insights JSONB columns
+    sometimes arrive as already-decoded Python objects and sometimes as raw
+    strings, depending on the driver/cursor path. Mirrors tagReportView.ts's
+    parseJsonMaybe/parseArrayMaybe so this stays a faithful port."""
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _approximate_trust_score(response_count: int) -> int:
+    """Monotonic-in-response-count display/sort proxy — faithful port of
+    tagReportView.ts's approximateTrustScore. Not the real CrystalOS trust
+    score (that's computed in-memory during generation and never persisted
+    per-survey anywhere in the schema); this exists only so survey_breakdown's
+    field NAME matches the backend's shape exactly, for the same reason the
+    rest of this port is line-for-line rather than reinvented."""
+    if response_count <= 0:
+        return 0
+    return max(0, min(100, round(40 + 15 * math.log2(response_count + 1))))
+
+
+def _build_tag_metric_tracks(insights: list[dict], sources: list[dict], run: dict) -> list[dict]:
+    """Port of backend/src/lib/tagReportView.ts::buildMetricTracks (authoritative
+    reference for this shape — see that file's docstring for the full history of
+    why the shape looks the way it does). Kept a faithful line-for-line port
+    rather than reinvented so Crystal's prose and the Tag Report page never
+    disagree about what a given run's data means.
+    """
+    stream_events = _parse_jsonish(run.get("stream_events")) or []
+    sources_by_survey = {s["survey_id"]: s for s in sources}
+    is_custom_range = run.get("run_mode") == "custom_range"
+
+    comparability_warnings = [e for e in stream_events if e.get("event") == "comparability_warning"]
+    corroboration_events = [e for e in stream_events if e.get("event") == "corroboration_detected"]
+    bracket_delta_events = [e for e in stream_events if e.get("event") == "bracket_delta_computed"]
+
+    tracks: list[dict] = []
+    for row in insights:
+        metric_key = row.get("metric_key")
+        if not metric_key:
+            continue
+        metric_json = _parse_jsonish(row.get("metric_json")) or {}
+        eligible_survey_ids = row.get("survey_ids") or []
+        confidence_tier = metric_json.get("confidence_tier")
+        single_survey_sourced = confidence_tier == "insufficient" or len(eligible_survey_ids) == 1
+
+        # A metric-scoped warning (has metric_key — R-T3's question_type_mismatch/
+        # scale_mismatch/cadence_mismatch) must match THIS track's metric_key, not
+        # just overlap on survey_id. Survey-scoped warnings (temporal_offset/
+        # staleness, no metric_key) match on survey overlap alone.
+        warnings = [
+            w for w in comparability_warnings
+            if any(sid in eligible_survey_ids for sid in (w.get("affected_survey_ids") or []))
+            and (w.get("metric_key") is None or w.get("metric_key") == metric_key)
+        ]
+
+        corroborated_with: set[str] = set()
+        for evt in corroboration_events:
+            evt_tracks = evt.get("tracks") or []
+            if metric_key in evt_tracks:
+                corroborated_with.update(t for t in evt_tracks if t != metric_key)
+
+        # Only real, response-level citations (survey_id + response_id present)
+        # are exposed — the checkpoint-only placeholder shape has no response_id.
+        citations = [
+            c for c in (_parse_jsonish(row.get("citations_json")) or [])
+            if isinstance(c, dict) and isinstance(c.get("response_id"), str)
+        ]
+
+        track = {
+            "metric_key": metric_key,
+            "headline": row.get("headline"),
+            "narrative": row.get("narrative"),
+            "trust_score": row.get("trust_score"),
+            "eligible_survey_count": len(eligible_survey_ids),
+            "agreement_count": metric_json.get("agreement_count"),
+            "confidence_tier": confidence_tier,
+            "merged_delta": metric_json.get("merged_delta"),
+            "direction": metric_json.get("direction"),
+            "single_survey_sourced": single_survey_sourced,
+            "warnings": warnings,
+            "citations": citations,
+        }
+
+        single_survey_id = metric_json.get("single_survey_id")
+        if single_survey_sourced and single_survey_id:
+            source = sources_by_survey.get(single_survey_id)
+            if source and source.get("survey_title"):
+                track["single_survey_name"] = source["survey_title"]
+        if corroborated_with:
+            track["corroborated_with"] = sorted(corroborated_with)
+
+        if is_custom_range:
+            breakdown = []
+            for sid in eligible_survey_ids:
+                source = sources_by_survey.get(sid) or {}
+                delta_event = next((e for e in bracket_delta_events if e.get("survey_id") == sid), None)
+                delta = delta_event.get(f"{metric_key}_delta") if delta_event else None
+                breakdown.append({
+                    "survey_id": sid,
+                    "survey_title": source.get("survey_title"),
+                    "trust_score": _approximate_trust_score(source.get("response_count_at_generation") or 0),
+                    "delta": delta,
+                    "no_comparison_available": delta is None,
+                })
+            breakdown.sort(key=lambda b: b["trust_score"], reverse=True)
+            track["survey_breakdown"] = breakdown
+
+        tracks.append(track)
+
+    return tracks
+
+
+def _build_tag_disclosure(run: dict, sources: list[dict]) -> dict:
+    """Port of backend/src/lib/tagReportView.ts::buildDisclosure."""
+    stream_events = _parse_jsonish(run.get("stream_events")) or []
+    batch_fetched_events = [e for e in stream_events if e.get("event") == "batch_fetched"]
+    pool_size = (batch_fetched_events[0].get("pool_size") if batch_fetched_events else 0) or 0
+    examined_survey_ids = {s["survey_id"] for s in sources}
+    included_survey_ids = {s["survey_id"] for s in sources if s.get("checkpoint_id")}
+    return {
+        "pool_size": pool_size,
+        "examined_count": len(examined_survey_ids),
+        "included_count": len(included_survey_ids),
+        "backfill_occurred": len(batch_fetched_events) > 1,
+    }
+
+
+async def execute_get_tag_report(ctx: CrystalContext, params: dict) -> dict:
+    """Fetch a Tag Report — the trust-weighted cross-survey rollup for a tag.
+
+    tag_id is required and is always re-validated against ctx.org_id before any
+    other query runs (never trust a client-supplied tag_id). run_id is an
+    optional filter; when omitted, the latest run for the tag is used. Output
+    carries render_hint='document' (mirrors execute_get_insight_report).
+    """
+    try:
+        tag_id = params.get("tag_id") or (ctx.tag_ids[0] if ctx.tag_ids else None)
+        run_id = params.get("run_id")
+        if not tag_id:
+            return {"error": "tag_id required"}
+
+        tag = await _load_org_tag(ctx, tag_id)
+        if tag is None:
+            return {"error": "tag not found"}
+
+        conditions = ["org_id = %s", "%s = ANY(tag_ids)"]
+        args: list = [ctx.org_id, tag_id]
+        if run_id:
+            conditions.append("id = %s")
+            args.append(run_id)
+
+        run_row: dict | None = None
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""SELECT id, run_mode, status, stream_events, created_at, completed_at
+                        FROM group_insight_runs
+                        WHERE {' AND '.join(conditions)}
+                        ORDER BY created_at DESC LIMIT 1""",
+                    args,
+                )
+                r = await cur.fetchone()
+                if r:
+                    cols = [d[0] for d in cur.description]
+                    run_row = dict(zip(cols, r))
+
+        if not run_row:
+            return {
+                "report": None, "tag_id": str(tag_id), "tag_name": tag.get("name"),
+                "render_hint": "document",
+                "message": "No Tag Report found for this tag.",
+            }
+
+        resolved_run_id = str(run_row["id"])
+
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT girs.survey_id, s.title AS survey_title, girs.checkpoint_id,
+                              girs.trend_eligible, girs.response_count_at_generation,
+                              girs.exclusion_reason
+                       FROM group_insight_run_sources girs
+                       LEFT JOIN surveys s ON s.id = girs.survey_id
+                       WHERE girs.run_id = %s AND girs.org_id = %s""",
+                    (resolved_run_id, ctx.org_id),
+                )
+                source_rows = await cur.fetchall()
+                source_cols = [d[0] for d in cur.description] if source_rows else []
+
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT metric_key, headline, narrative, trust_score, survey_ids,
+                              citations_json, metric_json
+                       FROM group_insights
+                       WHERE run_id = %s AND org_id = %s AND metric_key IS NOT NULL""",
+                    (resolved_run_id, ctx.org_id),
+                )
+                insight_rows = await cur.fetchall()
+                insight_cols = [d[0] for d in cur.description] if insight_rows else []
+
+        sources = []
+        for row in source_rows:
+            s = dict(zip(source_cols, row))
+            s["survey_id"] = str(s["survey_id"])
+            if s.get("checkpoint_id"):
+                s["checkpoint_id"] = str(s["checkpoint_id"])
+            sources.append(s)
+
+        insights = []
+        for row in insight_rows:
+            i = dict(zip(insight_cols, row))
+            i["survey_ids"] = [str(sid) for sid in (i.get("survey_ids") or [])]
+            i["trust_score"] = float(i["trust_score"]) if i.get("trust_score") is not None else None
+            insights.append(i)
+
+        run_row["run_mode"] = run_row.get("run_mode") or "manual"
+        metric_tracks = _build_tag_metric_tracks(insights, sources, run_row)
+        disclosure = _build_tag_disclosure(run_row, sources)
+
+        return {
+            "run_id": resolved_run_id,
+            "tag_id": str(tag_id),
+            "tag_name": tag.get("name"),
+            "run_mode": run_row.get("run_mode"),
+            "status": run_row.get("status"),
+            "created_at": str(run_row["created_at"]) if run_row.get("created_at") else None,
+            "completed_at": str(run_row["completed_at"]) if run_row.get("completed_at") else None,
+            "metric_tracks": metric_tracks,
+            "disclosure": disclosure,
+            "report_url": _TAG_REPORT_URL.format(tag_id=tag_id, run_id=resolved_run_id),
+            "render_hint": "document",
+        }
+    except Exception as exc:
+        logger.error("tool_get_tag_report_failed", error=str(exc), traceback=traceback.format_exc())
+        return {"error": str(exc)}
+
+
+async def execute_get_tag_report_trail(ctx: CrystalContext, params: dict) -> dict:
+    """List the Tag Report run history for a tag (newest first), one-line summary
+    per run + a trail URL. Mirrors execute_get_insight_trail's shape."""
+    try:
+        tag_id = params.get("tag_id") or (ctx.tag_ids[0] if ctx.tag_ids else None)
+        limit = min(int(params.get("limit", 10)), 50)
+        if not tag_id:
+            return {"error": "tag_id required"}
+
+        tag = await _load_org_tag(ctx, tag_id)
+        if tag is None:
+            return {"error": "tag not found"}
+
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT id, run_mode, status, created_at, completed_at, parent_run_id, result_json
+                       FROM group_insight_runs
+                       WHERE org_id = %s AND %s = ANY(tag_ids)
+                       ORDER BY created_at DESC LIMIT %s""",
+                    (ctx.org_id, tag_id, limit),
+                )
+                rows = await cur.fetchall()
+                cols = [d[0] for d in cur.description] if rows else []
+
+        nodes = []
+        for row in rows:
+            r = dict(zip(cols, row))
+            result_json = _parse_jsonish(r.get("result_json")) or {}
+            headline_count = result_json.get("metric_tracks_narrated") or 0
+            rid = str(r["id"])
+            mode = r.get("run_mode") or "manual"
+            created_at = str(r["created_at"]) if r.get("created_at") else None
+            summary = f"{mode} · {headline_count} finding{'s' if headline_count != 1 else ''}"
+            if created_at:
+                summary = f"{summary} · {created_at}"
+            nodes.append({
+                "run_id": rid,
+                "run_mode": mode,
+                "status": r.get("status"),
+                "created_at": created_at,
+                "completed_at": str(r["completed_at"]) if r.get("completed_at") else None,
+                "parent_run_id": str(r["parent_run_id"]) if r.get("parent_run_id") else None,
+                "headline_count": headline_count,
+                "summary": summary,
+                "url": _TAG_REPORT_URL.format(tag_id=tag_id, run_id=rid),
+            })
+
+        return {
+            "tag_id": str(tag_id),
+            "tag_name": tag.get("name"),
+            "nodes": nodes,
+            "count": len(nodes),
+            "trail_url": _TAG_REPORT_TRAIL_URL.format(tag_id=tag_id),
+        }
+    except Exception as exc:
+        logger.error("tool_get_tag_report_trail_failed", error=str(exc), traceback=traceback.format_exc())
+        return {"error": str(exc)}
+
+
+async def execute_propose_view_tag_report(ctx: CrystalContext, params: dict) -> dict:
+    """Propose opening an existing Tag Report (read-only navigation — no API call).
+
+    Fixed 2026-07-03 (security review, Riley — contained, but inconsistent with
+    this module's own convention): this and execute_propose_generate_tag_report
+    previously didn't call _load_org_tag before building a proposal, unlike
+    execute_get_tag_report/execute_get_tag_report_trail. No live exploit existed
+    (no DB/HTTP call happens in either function — the actual mutation/navigation
+    only occurs after the user clicks Apply, and THAT path is independently
+    org-scoped downstream), but gating here too means a garbage/cross-org tag_id
+    is rejected up front with a clean error instead of silently producing a
+    plausible-looking proposal, and lets the proposal surface the tag's real
+    (validated) name instead of a generic title.
+    """
+    tag_id = params.get("tag_id") or (ctx.tag_ids[0] if ctx.tag_ids else None)
+    if not tag_id:
+        return {"error": "tag_id required"}
+    tag = await _load_org_tag(ctx, tag_id)
+    if tag is None:
+        return {"error": "tag not found"}
+
+    run_id = params.get("run_id")
+    url = params.get("url")
+    if not url:
+        if run_id:
+            url = _TAG_REPORT_URL.format(tag_id=tag_id, run_id=run_id)
+        else:
+            url = f"/app/experience/tags/{tag_id}/report"
+    tag_name = tag.get("name")
+    return {
+        "proposal_type": "view_tag_report",
+        "title": f"Open Tag Report for \"{tag_name}\""[:60] if tag_name else "Open Tag Report",
+        "description": params.get("summary") or "Open the existing Tag Report.",
+        "requires_confirmation": True,
+        "params": {
+            "tag_id": tag_id,
+            "run_id": run_id,
+            "url":    url,
+            "summary": params.get("summary", ""),
+        },
+        "cta_label": "Open Tag Report",
+    }
+
+
+async def execute_propose_generate_tag_report(ctx: CrystalContext, params: dict) -> dict:
+    """Propose generating a fresh Tag Report (frontend → tag-report trigger endpoint).
+
+    Fixed 2026-07-03 (security review, Riley) — see execute_propose_view_tag_report's
+    docstring for the full rationale; same _load_org_tag gate applied here.
+    """
+    tag_id = params.get("tag_id") or (ctx.tag_ids[0] if ctx.tag_ids else None)
+    if not tag_id:
+        return {"error": "tag_id required"}
+    tag = await _load_org_tag(ctx, tag_id)
+    if tag is None:
+        return {"error": "tag not found"}
+
+    run_mode = params.get("run_mode") or "manual"
+    if run_mode not in ("manual", "custom_range"):
+        run_mode = "manual"
+    tag_name = tag.get("name")
+    return {
+        "proposal_type": "generate_tag_report",
+        "title": f"Generate Tag Report for \"{tag_name}\""[:60] if tag_name else "Generate Tag Report",
+        "description": "Generate a fresh cross-survey Tag Report for this tag's surveys.",
+        "requires_confirmation": True,
+        "params": {
+            "tag_id":       tag_id,
+            "run_mode":     run_mode,
+            "window_start": params.get("window_start"),
+            "window_end":   params.get("window_end"),
+        },
+        "cta_label": "Generate Tag Report",
+        "business_rationale": (
+            "Rolls up already-generated per-survey insights into one trust-weighted "
+            "cross-survey view — no fresh AI generation, just aggregation."
+        )[:159],
+    }
+
+
 # ── Tool dispatch table ───────────────────────────────────────────────────────
 
 TOOL_EXECUTORS: dict[str, Any] = {
@@ -3213,6 +3768,12 @@ TOOL_EXECUTORS: dict[str, Any] = {
     "analyze_group_coverage": execute_analyze_group_coverage,
     "detect_data_gaps":       execute_detect_data_gaps,
     "suggest_new_survey":     execute_suggest_new_survey,
+    # Tag Report tools (cross-survey trust-weighted rollup)
+    "list_tags":                     execute_list_tags,
+    "get_tag_report":                execute_get_tag_report,
+    "get_tag_report_trail":          execute_get_tag_report_trail,
+    "propose_view_tag_report":       execute_propose_view_tag_report,
+    "propose_generate_tag_report":   execute_propose_generate_tag_report,
     # Tier 3 data tools
     "get_contact_identity":    execute_get_contact_identity,
     "get_ownership_route":     execute_get_ownership_route,

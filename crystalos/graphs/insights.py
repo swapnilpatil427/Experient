@@ -38,7 +38,7 @@ from crystalos.lib.constants import (
     USE_SKILL_RUNTIME,
     PROGRESSIVE_TIER_FIRST_VOICES, PROGRESSIVE_TIER_EARLY_SIGNALS,
     PROGRESSIVE_TIER_GROWING_PICTURE, PROGRESSIVE_TIER_FULL_REPORT,
-    STOP_LEGACY_CHECKPOINT_WRITE,
+    STOP_LEGACY_CHECKPOINT_WRITE, DEFAULT_STREAM_THRESHOLD,
 )
 from crystalos.lib.logger import logger
 from crystalos.lib.openrouter import call_agent
@@ -77,6 +77,7 @@ from crystalos.lib.constants import (
     INSIGHT_CHECKPOINTS_V2_ENABLED,
     INSIGHT_PROFILE_AUTOMATED, INSIGHT_PROFILE_REFRESH,
     INSIGHT_PROFILE_MANUAL_EXPERT, INSIGHT_PROFILE_MANUAL_QUICK,
+    TOPIC_DISCOVERY_SIMILARITY_THRESHOLD,
 )
 
 
@@ -822,15 +823,38 @@ async def node_resolve_context(state: dict) -> dict:
         max_age = None
     prior_chain = await walk_parent_chain(survey_id, org_id, lookback, max_age_days=max_age)
     parent = prior_chain[0] if prior_chain else None
+    # Fixed 2026-07-04: walk_parent_chain() falls back to the LEGACY
+    # survey_insight_checkpoints table when insight_checkpoints_v2 has no rows
+    # yet for this survey — necessary for delta/watermark context, but its `id`
+    # is a legacy-table primary key, never a row in insight_checkpoints_v2.
+    # insight_checkpoints_v2.parent_checkpoint_id has a foreign key to
+    # insight_checkpoints_v2(id) itself, so using a legacy id there always
+    # fails with a FK violation, silently dropping every checkpoint write for
+    # any survey whose only prior history predates the v2 migration. Both
+    # tables stamp schema_version (legacy DEFAULT 1, v2 DEFAULT 2) — a parent
+    # is only a valid v2 lineage link when it's genuinely from v2.
+    is_v2_parent = bool(parent) and parent.get("schema_version") == 2
     parent_ckpt_id = state.get("parent_checkpoint_id") or (
-        str(parent.get("id")) if parent and parent.get("id") else ""
+        str(parent.get("id")) if is_v2_parent and parent.get("id") else ""
     )
 
     # ── Watermark = parent.response_high_watermark; bootstrap → epoch ─────────
     watermark = None
     if parent is not None:
         watermark = parent.get("response_high_watermark")
-    is_bootstrap = parent is None
+    # Fixed 2026-07-04: a legacy-only parent must ALSO count as bootstrap, not
+    # just have its id blanked above. This state's is_bootstrap gets ANDed
+    # with node_ingest's own (correctly v2-based) bootstrap check further
+    # downstream — if this stayed False here, that AND silently overrode
+    # node_ingest's correct answer, making it treat the run as a narrow
+    # incremental fetch (against an empty new_response_ids, since watermark
+    # is also None for a legacy parent) instead of the wide historical sample
+    # a real first v2 run needs. Confirmed against a real reproduction: a
+    # survey whose only prior history was legacy got its checkpoint written
+    # successfully (previous fix), but ABSA/topics/sentiment/emotion/effort
+    # were never computed for any of its 150 existing responses because
+    # node_ingest believed there was nothing new to look at.
+    is_bootstrap = parent is None or not is_v2_parent
 
     out: dict = {
         **state,
@@ -873,7 +897,7 @@ async def node_resolve_context(state: dict) -> dict:
         # Threshold gate (04 §2 step 6): skip when below stream threshold AND not
         # bootstrap AND not a tier milestone. Milestone is detected later by count;
         # here we honour an explicit milestone trigger.
-        threshold = int(settings.get("stream_response_threshold", 10) or 10)
+        threshold = int(settings.get("stream_response_threshold", DEFAULT_STREAM_THRESHOLD) or DEFAULT_STREAM_THRESHOLD)
         is_milestone = trigger == "milestone"
         if (not is_bootstrap) and (not is_milestone) and watermark is not None and len(new_ids) < threshold:
             logger.info("resolve_context_below_threshold", survey_id=survey_id,
@@ -2022,12 +2046,9 @@ async def node_cluster(state: dict) -> dict:
 
     # Build (response_id, question_id) → embedding lookup
     emb_lookup: dict[tuple[str, str], list[float]] = {}
-    emb_by_rid: dict[str, list[float]] = {}   # first embedding per response_id
     for t in embedded_texts:
         if t.get("embedding"):
             emb_lookup[(t["response_id"], t["question_id"])] = t["embedding"]
-            if str(t["response_id"]) not in emb_by_rid:
-                emb_by_rid[str(t["response_id"])] = t["embedding"]
 
     clusters: list[dict] = []
 
@@ -2100,44 +2121,77 @@ async def node_cluster(state: dict) -> dict:
     absa_by_rid: dict[str, list[dict]] = {}
     for a in state["absa_results"]:
         absa_by_rid.setdefault(str(a["response_id"]), []).append(a)
+    # Per-answer lookup ("response_id::question_id" -> absa item) so a topic
+    # match can be traced back to the SPECIFIC answer that matched it — added
+    # 2026-07-06 alongside multi-topic-per-response support, below.
+    absa_by_key: dict[str, dict] = {
+        f"{str(a['response_id'])}::{str(a['question_id'])}": a
+        for a in state["absa_results"]
+    }
 
     topic_assignments: dict[str, list[dict]] = {}  # topic_name → absa items
 
     try:
+        # Resolved BEFORE acquiring the connection below, not while holding it — each
+        # resolver opens its OWN connection internally (lib/insight_settings.py::
+        # _fetch_row), and doing that while already inside `async with
+        # db._pool_conn().connection()` doubles concurrent connection demand from this
+        # node alone. Harmless at low volume, but under real batch load (fixed
+        # 2026-07-06) it can exhaust the pool and cause a silent timeout that this
+        # node's own except-everything wrapper then swallows, falling back to
+        # bootstrap-style reclustering — i.e. topic tagging looking like it's simply
+        # not running.
+        from crystalos.lib.insight_settings import (
+            resolve_topic_discovery_candidate_threshold, resolve_topic_discovery_min_cluster_size,
+        )
+        flush_threshold = await resolve_topic_discovery_candidate_threshold(survey_id, org_id)
+        min_cluster_size = await resolve_topic_discovery_min_cluster_size(survey_id, org_id)
+
         async with db._pool_conn().connection() as conn:
-            embeddings_by_rid: dict[str, list[float]] = {}
+            # Keyed per OPEN-TEXT ANSWER ("response_id::question_id"), not deduped
+            # to one embedding per response (fixed 2026-07-06) — a response with
+            # two open-text questions about two different things can genuinely
+            # match two different existing topics. assign_batch_to_nearest itself
+            # doesn't care about key shape; group_assignments_by_response (used
+            # implicitly below via absa_by_key) regroups per-answer results back
+            # to per-response topic lists downstream in node_topics's writeback.
+            embeddings_by_key: dict[str, list[float]] = {}
             for item in new_absa:
                 rid = str(item["response_id"])
-                embedding = emb_by_rid.get(rid)
+                qid = str(item["question_id"])
+                embedding = emb_lookup.get((item["response_id"], item["question_id"]))
                 if embedding:
-                    embeddings_by_rid[rid] = embedding
+                    embeddings_by_key[f"{rid}::{qid}"] = embedding
 
-            # Batch ANN: one centroid fetch + Python cosine sim for all responses
-            assignments, unassigned_rids = await topic_registry.assign_batch_to_nearest(
-                embeddings_by_rid, survey_id, conn
+            # Batch ANN: one centroid fetch + Python cosine sim for all answers
+            assignments, unassigned_keys = await topic_registry.assign_batch_to_nearest(
+                embeddings_by_key, survey_id, conn
             )
 
             topic_emb_groups: dict[str, list[list[float]]] = {}
-            for rid, tname in assignments.items():
-                items = absa_by_rid.get(rid)
-                if items:
-                    topic_assignments.setdefault(tname, []).append(items[0])
-                if rid in embeddings_by_rid:
-                    topic_emb_groups.setdefault(tname, []).append(embeddings_by_rid[rid])
+            for key, tname in assignments.items():
+                absa_item = absa_by_key.get(key)
+                if absa_item:
+                    topic_assignments.setdefault(tname, []).append(absa_item)
+                topic_emb_groups.setdefault(tname, []).append(embeddings_by_key[key])
 
             # Batch Welford: one SELECT FOR UPDATE + executemany UPDATE
             await topic_registry.update_centroids_welford_batch(survey_id, topic_emb_groups, conn)
 
-            cand_pairs = [
-                (rid, embeddings_by_rid[rid])
-                for rid in unassigned_rids
-                if rid in embeddings_by_rid
-            ]
+            # At most one candidate per response — topic_candidates has
+            # UNIQUE(survey_id, response_id); see dedupe_unassigned_to_one_per_
+            # response's docstring. A response's OTHER answers that DID match an
+            # existing topic are unaffected — this only caps how many of a
+            # response's unmatched answers get a shot at seeding a new topic.
+            cand_pairs = topic_registry.dedupe_unassigned_to_one_per_response(
+                unassigned_keys, embeddings_by_key,
+            )
             await topic_registry.add_candidates_batch(survey_id, org_id, cand_pairs, conn)
 
-            # Adaptive flush threshold: at least 5, or 3% of total survey responses
-            total_responses = len(state.get("responses", []))
-            flush_threshold = max(5, int(total_responses * 0.03))
+            # Candidate-buffer floor before a new topic gets clustered + named —
+            # resolved per survey/org/platform above (fixed 2026-07-06; was a flat
+            # constant), shared with lib/response_tagging.py's lightweight sweep so
+            # both "when is there enough evidence for a new topic" checks agree.
             candidate_count = await topic_registry.get_candidate_count(survey_id, conn)
 
             new_topic_clusters: list[dict] = []
@@ -2158,7 +2212,10 @@ async def node_cluster(state: dict) -> dict:
                         for a in absa_by_rid.get(rid, []):
                             cand_texts.append({**a, "embedding": emb})
                     if cand_texts:
-                        raw_new = cluster_texts(cand_texts, threshold=TOPIC_ASSIGNMENT_THRESHOLD, min_cluster_size=2)
+                        raw_new = cluster_texts(
+                            cand_texts, threshold=TOPIC_DISCOVERY_SIMILARITY_THRESHOLD,
+                            min_cluster_size=min_cluster_size,
+                        )
                         for i, raw in enumerate(raw_new):
                             new_topic_clusters.append(_make_cluster_from_items(
                                 len(topic_assignments) + i + 1,
@@ -2711,8 +2768,16 @@ async def node_topics(state: dict) -> dict:
             updates = [(json.dumps(tlist), rid) for rid, tlist in resp_topics.items()]
             async with db._pool_conn().connection() as conn:
                 async with conn.cursor() as cur:
+                    # ai_topics_pending=FALSE (added 2026-07-15): a response
+                    # previously flagged "Uncategorized" by the manual Catch
+                    # Up Tagging job's evidence-collection-stall handling
+                    # (lib/topic_backfill.py) that THIS full-pipeline run
+                    # successfully clusters into a real topic must stop
+                    # showing as pending — see
+                    # lib/topic_registry.py::mark_candidates_uncategorized's
+                    # docstring for the full rationale.
                     await cur.executemany(
-                        "UPDATE responses SET ai_topics=%s, ai_enriched_at=NOW() WHERE id=%s",
+                        "UPDATE responses SET ai_topics=%s, ai_enriched_at=NOW(), ai_topics_pending=FALSE WHERE id=%s",
                         updates,
                     )
                 await conn.commit()
@@ -2948,12 +3013,15 @@ async def node_delta_compute(state: dict) -> dict:
     """Compute delta from the prior checkpoint. Runs BETWEEN topics and narrate.
 
     Phase 0.5: uses compute_delta() output only (NPS/CSAT/CES + topic name-set
-    changes). Loads up to 5 prior checkpoints from survey_insight_checkpoints
-    (ordered by checkpoint_number DESC, report_url IS NOT NULL), reads the latest
-    prior blob, computes current metrics from state + parent metrics from the blob,
-    sets meaningful_delta, and builds scalar prior_checkpoint_summaries (oldest
-    first). On bootstrap or any load failure it falls back to the bootstrap path
-    (delta_from_prior=None, meaningful_delta=True) — never crashes the pipeline.
+    changes). Uses up to 5 prior checkpoints from state["prior_checkpoints"]
+    (resolve_context's already-walked, schema-aware chain — v2-first, legacy
+    fallback, correctly reading each row's blob ref regardless of which table
+    it came from; fixed 2026-07-04, see _checkpoint_blob_ref), reads the
+    latest prior blob, computes current metrics from state + parent metrics
+    from the blob, sets meaningful_delta, and builds scalar
+    prior_checkpoint_summaries (oldest first). On bootstrap or any load
+    failure it falls back to the bootstrap path (delta_from_prior=None,
+    meaningful_delta=True) — never crashes the pipeline.
 
     Phase 2 extension: walk_parent_chain + compute_topic_lifecycle (share-weighted).
     """
@@ -2978,32 +3046,38 @@ async def node_delta_compute(state: dict) -> dict:
             "delta_from_prior":           None,
             "meaningful_delta":           True,   # bootstrap always writes
             "prior_checkpoint_summaries": [],
+            "ai_trigger_baseline_negative_pct": None,
         }
 
-    # Load prior checkpoints (Phase 0.5 has no parent_checkpoint_id — order by
-    # checkpoint_number; Phase 2 replaces this with walk_parent_chain).
+    # Fixed 2026-07-04: this previously ran its OWN independent query against
+    # ONLY the legacy survey_insight_checkpoints table — never
+    # insight_checkpoints_v2 — despite this docstring claiming "Phase 2
+    # replaces this with walk_parent_chain". That replacement was never
+    # actually done. Found during a deep audit prompted by the
+    # parent_checkpoint_id/is_bootstrap/lineage fixes above: if
+    # STOP_LEGACY_CHECKPOINT_WRITE is ever enabled (the documented next step
+    # once v2 migration is complete), this would silently stop finding ANY
+    # prior data — every automated run would report "no meaningful delta,
+    # treat as fresh" instead of a real trend comparison, with no error
+    # anywhere. Now reuses resolve_context's own already-resolved,
+    # schema-aware chain (state["prior_checkpoints"]) instead of a second,
+    # independent, legacy-only lookup — one canonical source of "what's the
+    # prior checkpoint history" for the whole run, not two that can disagree.
     prior_rows: list[dict] = []
     prior_blob: dict | None = None
     try:
-        async with db._pool_conn().connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """SELECT checkpoint_number, report_url, created_at,
-                              nps_at_checkpoint, topic_fingerprint
-                       FROM survey_insight_checkpoints
-                       WHERE survey_id = %s AND org_id = %s
-                         AND report_url IS NOT NULL
-                       ORDER BY checkpoint_number DESC LIMIT 5""",
-                    (survey_id, org_id),
-                )
-                rows = await cur.fetchall()
-                if rows:
-                    cols = [d[0] for d in cur.description]
-                    prior_rows = [dict(zip(cols, r)) for r in rows]
-                    prior_blob_url = prior_rows[0]["report_url"]
-                    if prior_blob_url:
-                        from crystalos.lib.checkpoint_store import read_checkpoint_blob
-                        prior_blob = await read_checkpoint_blob(prior_blob_url)
+        for row in (state.get("prior_checkpoints") or []):
+            if not isinstance(row, dict):
+                continue
+            blob_ref = _checkpoint_blob_ref(row)
+            if not blob_ref:
+                continue
+            prior_rows.append({**row, "report_url": blob_ref})
+            if len(prior_rows) >= 5:
+                break
+        if prior_rows:
+            from crystalos.lib.checkpoint_store import read_checkpoint_blob
+            prior_blob = await read_checkpoint_blob(prior_rows[0]["report_url"])
     except Exception as exc:
         logger.warning("node_delta_compute_load_failed", survey_id=survey_id, error=str(exc))
 
@@ -3014,6 +3088,7 @@ async def node_delta_compute(state: dict) -> dict:
             "delta_from_prior":           None,
             "meaningful_delta":           True,
             "prior_checkpoint_summaries": [],
+            "ai_trigger_baseline_negative_pct": None,
         }
 
     current_metrics = extract_metrics_from_state(state)
@@ -3088,11 +3163,20 @@ async def node_delta_compute(state: dict) -> dict:
         topics_resolved=len(delta.get("topic_changes", {}).get("resolved", [])),
     )
 
+    # Xperiq Actions Wave 3 (AI triggers) — carry the prior blob's negative-
+    # sentiment share forward as the sentiment_spike baseline. Additive-only
+    # read of a field node_publish started writing this wave
+    # (`ai_trigger_negative_pct`); absent on older blobs, so this is None for
+    # any survey whose most recent checkpoint predates this wave — the trigger
+    # simply doesn't fire until one post-wave checkpoint exists to seed it.
+    prior_negative_pct = prior_blob.get("ai_trigger_negative_pct")
+
     return {
         **state,
         "delta_from_prior":           delta,
         "meaningful_delta":           meaningful,
         "prior_checkpoint_summaries": prior_checkpoint_summaries,
+        "ai_trigger_baseline_negative_pct": prior_negative_pct,
     }
 
 
@@ -4107,6 +4191,38 @@ async def _append_metric_snapshot(state: dict) -> None:
         logger.warning("append_metric_snapshot_failed", error=str(exc))
 
 
+def _checkpoint_blob_ref(row: dict) -> str | None:
+    """Return the checkpoint-blob storage ref for a walked prior-checkpoint
+    row, regardless of which table it came from. v2 rows store this as
+    report_blob_ref; legacy rows store the equivalent concept as report_url —
+    same purpose, different column name across the two schemas. Used by
+    node_delta_compute (fixed 2026-07-04 to stop reading survey_insight_
+    checkpoints directly and reuse resolve_context's already-walked,
+    schema-aware chain instead)."""
+    if row.get("schema_version") == 2:
+        return row.get("report_blob_ref")
+    return row.get("report_url")
+
+
+def _v2_only_prior_refs(prior_chain: list) -> list[str]:
+    """Extract insight_checkpoints_v2 ids from a walked prior-checkpoint chain,
+    filtering out legacy-sourced rows. Fixed 2026-07-04: walk_parent_chain()
+    can return LEGACY survey_insight_checkpoints rows (when v2 has no history
+    yet for this survey) — their `id` is real in that table but was never
+    inserted into insight_checkpoints_v2. Unlike parent_checkpoint_id (a real
+    FK, so a legacy id there crashes the insert outright), lineage_json and
+    the citations manifest are plain JSONB with no referential integrity, so
+    this doesn't crash — it silently stores a dangling reference that Crystal's
+    get_checkpoint_detail tool passes straight through as
+    prior_checkpoint_refs, misinforming any lineage/trail lookup that tries to
+    resolve it against insight_checkpoints_v2. Both tables stamp schema_version
+    (legacy DEFAULT 1, v2 DEFAULT 2) — only a genuine v2 row's id belongs here."""
+    return [
+        str(p.get("id")) for p in prior_chain
+        if isinstance(p, dict) and p.get("id") and p.get("schema_version") == 2
+    ]
+
+
 def _build_citations_manifest(state: dict, insights: list[dict]) -> dict:
     """Build the citations manifest (04 §11). Phase 2: prior_checkpoint refs come from
     walked v2 chain when available, else fall back to Phase 0.5 checkpoint_number refs."""
@@ -4119,7 +4235,7 @@ def _build_citations_manifest(state: dict, insights: list[dict]) -> dict:
     snapshots = state.get("metric_snapshots") or []
     snapshot_ids = [str(s.get("id")) for s in snapshots if isinstance(s, dict) and s.get("id")]
     prior_chain = state.get("prior_checkpoints") or []
-    prior_refs = [str(p.get("id")) for p in prior_chain if isinstance(p, dict) and p.get("id")]
+    prior_refs = _v2_only_prior_refs(prior_chain)
     if not prior_refs:
         prior_refs = [
             f"checkpoint#{s['checkpoint_number']}"
@@ -4140,7 +4256,7 @@ def _build_lineage_json(state: dict, *, run_mode: str, blob_ref: str | None,
                         insight_report_id: str | None = None) -> dict:
     """Assemble lineage_json for an insight_checkpoints_v2 row (03 §3a)."""
     prior_chain = state.get("prior_checkpoints") or []
-    prior_refs = [str(p.get("id")) for p in prior_chain if isinstance(p, dict) and p.get("id")]
+    prior_refs = _v2_only_prior_refs(prior_chain)
     new_ids = list(state.get("new_response_ids") or set())[:500]  # cap in-row; full list in manifest
     snapshots = state.get("metric_snapshots") or []
     snapshot_ids = [str(s.get("id")) for s in snapshots if isinstance(s, dict) and s.get("id")]
@@ -4388,6 +4504,151 @@ async def node_publish_manual(state: dict) -> dict:
     logger.info("node_publish_manual_done", run_id=run_id, run_mode=run_mode,
                 report_id=report_id, checkpoint_id=checkpoint_id)
     return {**state, "report_id": report_id, "manual_report_url": report_url}
+
+
+# ── AI-driven workflow triggers (Xperiq Actions Wave 3) ───────────────────────
+
+def _aggregate_negative_pct(topic_signals: dict[str, dict]) -> float | None:
+    """Response-count-weighted average `sentiment_negative_pct` across all
+    topics in this run — the survey-level negative-sentiment share used as the
+    sentiment_spike signal and persisted into the checkpoint blob as next
+    run's baseline. Returns None when there's no topic data at all (e.g. a
+    very early / no-open-text survey) rather than a misleading 0.0.
+    """
+    total_n = 0
+    weighted_sum = 0.0
+    for sig in (topic_signals or {}).values():
+        n = sig.get("response_count") or 0
+        pct = sig.get("sentiment_negative_pct")
+        if n <= 0 or pct is None:
+            continue
+        total_n += n
+        weighted_sum += pct * n
+    if total_n == 0:
+        return None
+    return weighted_sum / total_n
+
+
+async def node_ai_triggers(state: dict) -> dict:
+    """Detect sentiment_spike / new_theme_detected / anomaly_detected signals
+    and emit a `workflow_signal` for each one that fires, AFTER publish has
+    finalized this run's insights/checkpoint.
+
+    Deliberately placed as its own node after `publish` rather than folded
+    into `delta_compute`/`narrate`/`publish` themselves: every signal this
+    node needs (`delta_from_prior`, `meaningful_delta`, `topic_signals`,
+    `metrics`, `prior_checkpoint_summaries`, `ai_trigger_baseline_negative_pct`)
+    is already fully computed by the time `publish` returns — this node reads,
+    it never recomputes. Detection logic itself lives in `lib/ai_triggers.py`
+    (pure, unit-testable functions); this node is just the plumbing that reads
+    pipeline state, calls those functions, applies Redis-backed hysteresis, and
+    calls `lib/workflow_signal_client.emit_workflow_signal` for anything that
+    passes both the threshold AND the hysteresis check.
+
+    Never raises — a trigger-detection failure must not fail an otherwise-
+    successful insight run (the insights are already published by the time
+    this node runs). Skipped entirely when `state.get("skip_run")` or
+    `state.get("skipped_checkpoint")` — a run with no meaningful new signal
+    is definitionally not a candidate for a NEW AI trigger to fire on top of.
+
+    Also skipped for manual/refresh profiles (`manual_expert`, `manual_quick`,
+    `refresh`) — those are explicit, user-requested deep-dives over an
+    arbitrary window, not part of the regular automated checkpoint cadence the
+    hysteresis/baseline model (rolling vs. the immediately-prior AUTOMATED
+    checkpoint) assumes. Comparing a manual refresh's window against the
+    automated baseline would conflate two different sampling populations and
+    could fire (or wrongly suppress) a trigger based on a non-comparable
+    snapshot.
+    """
+    if state.get("skip_run") or state.get("skipped_checkpoint"):
+        return state
+
+    profile = state.get("profile") or INSIGHT_PROFILE_AUTOMATED
+    if profile != INSIGHT_PROFILE_AUTOMATED:
+        return state
+
+    survey_id = state.get("survey_id")
+    org_id = state.get("org_id")
+    run_id = state.get("run_id")
+    if not survey_id or not org_id:
+        return state
+
+    try:
+        from crystalos.lib import ai_triggers as at
+        from crystalos.lib.redis_keys import K
+        from crystalos.lib.workflow_signal_client import emit_workflow_signal
+
+        brand_id = None  # AI triggers are a first-party-org feature for v1; brand_id namespacing is a no-op today
+        delta = state.get("delta_from_prior") or {}
+        topic_signals = state.get("topic_signals") or {}
+        metrics = state.get("metrics") or {}
+        prior_summaries = state.get("prior_checkpoint_summaries") or []
+        detected_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        fired: list[at.TriggerSignal] = []
+
+        # ── sentiment_spike ────────────────────────────────────────────────
+        current_negative_pct = _aggregate_negative_pct(topic_signals)
+        baseline_negative_pct = state.get("ai_trigger_baseline_negative_pct")
+        new_response_count = len(state.get("new_response_ids") or []) or delta.get("response_count_delta", 0)
+        if current_negative_pct is not None:
+            key = K.ai_trigger_armed(brand_id, survey_id, "sentiment_spike")
+            armed_state = await at.get_armed_state(key)
+            was_armed = armed_state is not None
+            signal = at.detect_sentiment_spike(
+                current_negative_pct, baseline_negative_pct, new_response_count, was_armed=was_armed,
+            )
+            if signal and (not was_armed or at.cooldown_elapsed(armed_state, at.SENTIMENT_SPIKE_COOLDOWN_HOURS)):
+                fired.append(signal)
+                await at.set_armed_state(key)
+            elif not signal and was_armed:
+                await at.clear_armed_state(key)
+
+        # ── new_theme_detected ─────────────────────────────────────────────
+        emerged = (delta.get("topic_changes") or {}).get("emerged") or []
+        for signal in at.detect_new_theme(emerged, topic_signals):
+            topic_name = signal.payload.get("topic_name", "_")
+            key = K.ai_trigger_armed(brand_id, survey_id, "new_theme_detected", topic_name)
+            armed_state = await at.get_armed_state(key)
+            if armed_state is None or at.cooldown_elapsed(armed_state, at.NEW_THEME_COOLDOWN_HOURS):
+                fired.append(signal)
+                await at.set_armed_state(key)
+
+        # ── anomaly_detected (NPS today; extend metric_name list as more
+        # tracked metrics grow rolling history worth alarming on) ──────────
+        nps_history = [s["nps"] for s in prior_summaries if s.get("nps") is not None]
+        current_nps = (metrics.get("nps") or {}).get("score")
+        key = K.ai_trigger_armed(brand_id, survey_id, "anomaly_detected", "nps")
+        armed_state = await at.get_armed_state(key)
+        was_armed = armed_state is not None
+        signal = at.detect_metric_anomaly("NPS", current_nps, nps_history, was_armed=was_armed)
+        if signal and (not was_armed or at.cooldown_elapsed(armed_state, at.ANOMALY_COOLDOWN_HOURS)):
+            fired.append(signal)
+            await at.set_armed_state(key)
+        elif not signal and was_armed:
+            await at.clear_armed_state(key)
+
+        for sig in fired:
+            await emit_workflow_signal(
+                org_id=org_id,
+                signal_type=sig.trigger_type,
+                confidence=sig.confidence,
+                survey_id=survey_id,
+                detected_at=detected_at,
+                source_run_id=run_id,
+                payload={**sig.payload, "severity": sig.severity, "summary": sig.summary},
+            )
+
+        if fired:
+            logger.info(
+                "node_ai_triggers_fired",
+                survey_id=survey_id, run_id=run_id,
+                signal_types=[s.trigger_type for s in fired],
+            )
+    except Exception as exc:
+        logger.warning("node_ai_triggers_failed", survey_id=survey_id, run_id=run_id, error=str(exc))
+
+    return state
 
 
 async def node_publish(state: dict) -> dict:
@@ -4718,6 +4979,10 @@ async def node_publish(state: dict) -> dict:
             "topics": [{"name": t.get("name", ""), "volume": t.get("volume", 0)} for t in state.get("topics", [])[:20]],
             "metrics": metrics,
             "delta": prior_delta,
+            # Xperiq Actions Wave 3 (AI triggers) — additive field, read back by
+            # the NEXT run's node_delta_compute as the sentiment_spike rolling
+            # baseline. See lib/ai_triggers.py / WORKFLOW_SIGNAL_CONTRACT.md.
+            "ai_trigger_negative_pct": _aggregate_negative_pct(state.get("topic_signals") or {}),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
@@ -5325,6 +5590,9 @@ def build_insight_graph():
     verify:       Per-insight hallucination check against citation quotes.
     evaluate:     Holistic quality audit (coverage, balance, actionability, redundancy).
     publish:      DB upsert + per-window metric snapshots.
+    ai_triggers:  Xperiq Actions Wave 3 — detects sentiment_spike/new_theme_detected/
+                  anomaly_detected from already-published state and emits `workflow_signal`
+                  events to the backend for any that pass threshold + hysteresis.
     """
     g = StateGraph(InsightState)
     g.add_node("resolve_context",   node_resolve_context)
@@ -5344,6 +5612,7 @@ def build_insight_graph():
     g.add_node("verify",             node_verify)
     g.add_node("evaluate",           node_evaluate)
     g.add_node("publish",            node_publish)
+    g.add_node("ai_triggers",        node_ai_triggers)
 
     g.set_entry_point("resolve_context")
     g.add_edge("resolve_context",    "ingest")
@@ -5363,7 +5632,8 @@ def build_insight_graph():
     g.add_edge("merge_tracks",       "verify")
     g.add_edge("verify",             "evaluate")
     g.add_edge("evaluate",           "publish")
-    g.add_edge("publish",            END)
+    g.add_edge("publish",            "ai_triggers")
+    g.add_edge("ai_triggers",        END)
 
     return g.compile()
 

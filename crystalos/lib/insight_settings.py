@@ -1,13 +1,47 @@
 """Insight Pipeline v2 — settings loader + credit pre-flight.
 
-Two responsibilities:
+Six responsibilities:
 
 1. ``load_insight_settings(survey_id, org_id)`` — resolves the 3-level COALESCE
    merge ``survey_insight_settings`` → ``org_insight_defaults`` → platform constant
    defaults (``lib/constants.py``). Tolerates missing tables/rows: on ANY failure it
    returns the platform defaults so the pipeline never crashes on config load.
 
-2. ``credit_preflight(org_id, run_type, settings)`` — resolves the per-run credit
+2. ``resolve_stream_response_threshold(survey_id, org_id)`` — the same 3-level
+   precedence as above, scoped to just ``stream_response_threshold`` (added
+   2026-07-04), for callers that need ONLY this one setting without loading the
+   full settings dict — specifically ``consumers/response_stream.py``'s
+   standalone streaming consumer, which decides whether to even attempt an
+   automated run at all (as opposed to ``node_resolve_context``'s use of the
+   full ``load_insight_settings()``, which decides whether to skip a run that's
+   already been attempted). Configurable per survey at Experience → Intelligence
+   → Settings (``InsightSettingsPage.tsx``'s "Stream response threshold" field),
+   or per org via ``org_insight_defaults``. When neither is configured, logs the
+   platform-default fallback to the console in dev/dev-paid (previously this
+   silently used a hardcoded value with no visibility into why).
+
+3. ``resolve_response_tagging_batch_size(survey_id, org_id)`` — same shape as #2,
+   scoped to ``response_tagging_batch_size`` (added 2026-07-04). Governs how many
+   new-response stream events accumulate before ``response_stream.py`` runs a
+   lightweight sentiment/emotion/effort/topic tagging sweep
+   (``lib/response_tagging.py::tag_untagged_responses``) — independent of and much
+   more frequent than the full report/checkpoint trigger in #2. Default 1 (tag
+   every response as it arrives); high-frequency surveys can raise it up to 10 to
+   batch several responses per sweep.
+
+4. ``resolve_topic_discovery_candidate_threshold(survey_id, org_id)`` — same shape
+   as #2/#3, scoped to ``topic_discovery_candidate_threshold`` (added 2026-07-04).
+   How many unmatched responses must accumulate before a new topic gets clustered
+   + LLM-named. Platform default is now env-tiered (dev 10 / staging 20 / prod 30)
+   rather than one flat number.
+
+5. ``resolve_topic_discovery_min_cluster_size(survey_id, org_id)`` — same shape,
+   scoped to ``topic_discovery_min_cluster_size`` (added 2026-07-04). Minimum size
+   a candidate cluster must reach before being promoted to a permanent topic —
+   separate from #4, which only gates *when* clustering runs. Applies to
+   incremental (post-bootstrap) discovery only.
+
+6. ``credit_preflight(org_id, run_type, settings)`` — resolves the per-run credit
    cost and checks the org balance. **CrystalOS does NOT debit** — the Node backend
    owns the credit ledger and debits on its ``/runs`` path (see module note below).
    CrystalOS reads the balance only for the automated silent-skip decision. For
@@ -24,6 +58,7 @@ Credit-debit ownership decision (02 §6):
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from crystalos.lib import db
@@ -40,6 +75,9 @@ def _platform_defaults() -> dict[str, Any]:
         "automated_insights_enabled":           True,
         "automated_report_generation_enabled":  True,
         "stream_response_threshold":            C.DEFAULT_STREAM_THRESHOLD,
+        "response_tagging_batch_size":          C.DEFAULT_RESPONSE_TAGGING_BATCH_SIZE,
+        "topic_discovery_candidate_threshold":  C.TOPIC_DISCOVERY_CANDIDATE_THRESHOLD,
+        "topic_discovery_min_cluster_size":     C.DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE,
         "report_regen_threshold":               C.DEFAULT_REPORT_REGEN_THRESHOLD,
         "prior_checkpoint_lookback":            C.DEFAULT_PRIOR_CHECKPOINT_LOOKBACK,
         "prior_checkpoint_max_age_days":        C.DEFAULT_PRIOR_CHECKPOINT_MAX_AGE_DAYS,
@@ -82,7 +120,9 @@ def _platform_defaults() -> dict[str, Any]:
 # Keys carried on org_insight_defaults (subset of survey settings — 03 §13).
 _ORG_DEFAULT_KEYS: frozenset[str] = frozenset({
     "automated_insights_enabled", "automated_report_generation_enabled",
-    "stream_response_threshold", "prior_checkpoint_lookback",
+    "stream_response_threshold", "response_tagging_batch_size",
+    "topic_discovery_candidate_threshold", "topic_discovery_min_cluster_size",
+    "prior_checkpoint_lookback",
     "refresh_lookback_days", "refresh_min_response_count", "refresh_daily_limit",
     "manual_daily_run_limit", "manual_expert_checkpoint_lookback",
     "manual_expert_full_corpus_cap", "manual_expert_max_corpus",
@@ -144,6 +184,246 @@ async def load_insight_settings(survey_id: str, org_id: str) -> dict[str, Any]:
                 merged[k] = v
 
     return merged
+
+
+# ── Stream response threshold (standalone resolver) ────────────────────────────
+
+def _log_stream_threshold_fallback(survey_id: str, org_id: str) -> None:
+    """Console-print (dev/dev-paid only) when stream_response_threshold falls
+    through to the platform default — i.e. neither this survey nor its org has
+    ever configured it. Fixed 2026-07-04: previously a silent hardcoded value
+    with zero visibility into why an automated run wasn't triggering as
+    expected during local testing. Uses plain print() (not the structured
+    logger) specifically because the ask is console readability with real
+    newlines, not a one-line structured log entry — production environments
+    don't get this (see AGENTS_ENV check below), where the structured
+    `stream_response_threshold_defaulted` log line is the source of truth."""
+    agents_env = os.getenv("AGENTS_ENV", "dev")
+    if agents_env not in ("dev", "dev-paid"):
+        return
+    print(
+        "\n"
+        "──────────────────────────────────────────────────────────────\n"
+        "  stream_response_threshold is not configured for this survey\n"
+        "  or its org — falling back to the platform default.\n"
+        f"    survey_id = {survey_id}\n"
+        f"    org_id    = {org_id}\n"
+        f"    default   = {C.DEFAULT_STREAM_THRESHOLD} new responses\n"
+        "  Configure it at Experience → Intelligence → Settings (per survey)\n"
+        "  or via org_insight_defaults (per org) to change this.\n"
+        "──────────────────────────────────────────────────────────────\n"
+    )
+
+
+async def resolve_stream_response_threshold(survey_id: str, org_id: str) -> int:
+    """Resolve stream_response_threshold with the same survey → org → platform
+    precedence as load_insight_settings(), but scoped to just this one setting
+    and without loading the rest of the settings dict — for callers (currently
+    only the standalone response_stream.py consumer) that need just this value
+    on every incoming event and shouldn't pay for the full settings load each
+    time.
+
+    An explicit INSIGHT_NEW_RESPONSE_THRESHOLD env var, if set, is an ops
+    escape hatch that wins outright (no console log — it's an intentional
+    override, not an absent one).
+
+    Note on "configured" for the survey level: survey_insight_settings.
+    stream_response_threshold is a NOT NULL DEFAULT 10 column (any row that
+    exists always has *some* value), so "configured" here means "a
+    survey_insight_settings row exists at all" — it cannot distinguish a
+    customer who explicitly set this exact field from one who saved some
+    other field on the same settings form and never touched this one. The
+    org-level column is nullable and does support a true "not set" signal.
+    """
+    env_override = os.getenv("INSIGHT_NEW_RESPONSE_THRESHOLD")
+    if env_override:
+        try:
+            return int(env_override)
+        except ValueError:
+            logger.warning("insight_new_response_threshold_env_invalid", value=env_override)
+
+    survey_row = await _fetch_row("survey_insight_settings", "survey_id", survey_id)
+    if survey_row and survey_row.get("stream_response_threshold") is not None:
+        return int(survey_row["stream_response_threshold"])
+
+    org_row = await _fetch_row("org_insight_defaults", "org_id", org_id)
+    if org_row and org_row.get("stream_response_threshold") is not None:
+        return int(org_row["stream_response_threshold"])
+
+    logger.info("stream_response_threshold_defaulted", survey_id=survey_id, org_id=org_id,
+                default=C.DEFAULT_STREAM_THRESHOLD)
+    _log_stream_threshold_fallback(survey_id, org_id)
+    return C.DEFAULT_STREAM_THRESHOLD
+
+
+# ── Response tagging batch size (standalone resolver) ──────────────────────────
+# Added 2026-07-04 alongside lib/response_tagging.py. Governs how many new-response
+# stream events accumulate before consumers/response_stream.py runs a lightweight
+# sentiment/emotion/effort/topic tagging sweep — separate from and much more frequent
+# than stream_response_threshold, which still gates full report+checkpoint generation.
+# Default 1 (tag every response immediately); callers should clamp to [1, 10] since
+# that's the DB CHECK constraint range (high-frequency surveys can batch up to 10).
+
+def _log_tagging_batch_size_fallback(survey_id: str, org_id: str) -> None:
+    """Console-print (dev/dev-paid only) when response_tagging_batch_size falls
+    through to the platform default — same rationale as
+    _log_stream_threshold_fallback."""
+    agents_env = os.getenv("AGENTS_ENV", "dev")
+    if agents_env not in ("dev", "dev-paid"):
+        return
+    print(
+        "\n"
+        "──────────────────────────────────────────────────────────────\n"
+        "  response_tagging_batch_size is not configured for this survey\n"
+        "  or its org — falling back to the platform default.\n"
+        f"    survey_id = {survey_id}\n"
+        f"    org_id    = {org_id}\n"
+        f"    default   = {C.DEFAULT_RESPONSE_TAGGING_BATCH_SIZE} new response(s)\n"
+        "  Configure it at Experience → Intelligence → Settings (per survey)\n"
+        "  or via org_insight_defaults (per org) to change this.\n"
+        "──────────────────────────────────────────────────────────────\n"
+    )
+
+
+async def resolve_response_tagging_batch_size(survey_id: str, org_id: str) -> int:
+    """Resolve response_tagging_batch_size with the same survey → org → platform
+    precedence as resolve_stream_response_threshold(). Controls the trigger cadence
+    for the lightweight per-response tagging sweep, not the full report threshold.
+
+    An explicit INSIGHT_RESPONSE_TAGGING_BATCH_SIZE env var, if set, wins outright
+    (ops escape hatch, no console log).
+    """
+    env_override = os.getenv("INSIGHT_RESPONSE_TAGGING_BATCH_SIZE")
+    if env_override:
+        try:
+            return int(env_override)
+        except ValueError:
+            logger.warning("insight_response_tagging_batch_size_env_invalid", value=env_override)
+
+    survey_row = await _fetch_row("survey_insight_settings", "survey_id", survey_id)
+    if survey_row and survey_row.get("response_tagging_batch_size") is not None:
+        return int(survey_row["response_tagging_batch_size"])
+
+    org_row = await _fetch_row("org_insight_defaults", "org_id", org_id)
+    if org_row and org_row.get("response_tagging_batch_size") is not None:
+        return int(org_row["response_tagging_batch_size"])
+
+    logger.info("response_tagging_batch_size_defaulted", survey_id=survey_id, org_id=org_id,
+                default=C.DEFAULT_RESPONSE_TAGGING_BATCH_SIZE)
+    _log_tagging_batch_size_fallback(survey_id, org_id)
+    return C.DEFAULT_RESPONSE_TAGGING_BATCH_SIZE
+
+
+# ── Topic discovery candidate threshold (standalone resolver) ──────────────────
+# Added 2026-07-04. Governs how many unmatched/unassigned responses must
+# accumulate in the topic_candidates buffer before node_cluster (full pipeline)
+# or lib/response_tagging.py's lightweight sweep spends an LLM call clustering
+# + naming a new topic. Was a flat platform constant (25, same in every
+# environment); now env-tiered as a platform-default floor (dev 10 / dev-paid 15
+# / staging 20 / prod 30 — see lib/constants.py) AND resolvable per survey/org
+# like every other pipeline cadence knob, since how eager Crystal should be to
+# propose brand-new topics is a real cost/quality trade-off a customer might
+# reasonably want to tune.
+
+def _log_candidate_threshold_fallback(survey_id: str, org_id: str) -> None:
+    agents_env = os.getenv("AGENTS_ENV", "dev")
+    if agents_env not in ("dev", "dev-paid"):
+        return
+    print(
+        "\n"
+        "──────────────────────────────────────────────────────────────\n"
+        "  topic_discovery_candidate_threshold is not configured for this\n"
+        "  survey or its org — falling back to the platform default.\n"
+        f"    survey_id = {survey_id}\n"
+        f"    org_id    = {org_id}\n"
+        f"    default   = {C.TOPIC_DISCOVERY_CANDIDATE_THRESHOLD} unmatched response(s)\n"
+        "  Configure it at Experience → Intelligence → Settings (per survey)\n"
+        "  or via org_insight_defaults (per org) to change this.\n"
+        "──────────────────────────────────────────────────────────────\n"
+    )
+
+
+async def resolve_topic_discovery_candidate_threshold(survey_id: str, org_id: str) -> int:
+    """Resolve topic_discovery_candidate_threshold with the same survey → org →
+    platform precedence as resolve_response_tagging_batch_size().
+
+    An explicit INSIGHT_TOPIC_DISCOVERY_CANDIDATE_THRESHOLD env var, if set,
+    wins outright (ops escape hatch, no console log).
+    """
+    env_override = os.getenv("INSIGHT_TOPIC_DISCOVERY_CANDIDATE_THRESHOLD")
+    if env_override:
+        try:
+            return int(env_override)
+        except ValueError:
+            logger.warning("insight_topic_discovery_candidate_threshold_env_invalid", value=env_override)
+
+    survey_row = await _fetch_row("survey_insight_settings", "survey_id", survey_id)
+    if survey_row and survey_row.get("topic_discovery_candidate_threshold") is not None:
+        return int(survey_row["topic_discovery_candidate_threshold"])
+
+    org_row = await _fetch_row("org_insight_defaults", "org_id", org_id)
+    if org_row and org_row.get("topic_discovery_candidate_threshold") is not None:
+        return int(org_row["topic_discovery_candidate_threshold"])
+
+    logger.info("topic_discovery_candidate_threshold_defaulted", survey_id=survey_id, org_id=org_id,
+                default=C.TOPIC_DISCOVERY_CANDIDATE_THRESHOLD)
+    _log_candidate_threshold_fallback(survey_id, org_id)
+    return C.TOPIC_DISCOVERY_CANDIDATE_THRESHOLD
+
+
+# ── Topic discovery minimum cluster size (standalone resolver) ─────────────────
+# Added 2026-07-04. Minimum size a candidate cluster must reach before it's
+# promoted to a real, permanently-stored, LLM-named topic — separate from the
+# candidate-threshold resolver above, which only gates WHEN clustering runs, not
+# how big the resulting cluster has to be. Applies ONLY to incremental
+# (post-bootstrap) discovery; bootstrap's exploratory first pass always uses
+# cluster_texts's own default of 2 — there's no established topic set to
+# protect yet on a survey's very first run.
+
+def _log_min_cluster_size_fallback(survey_id: str, org_id: str) -> None:
+    agents_env = os.getenv("AGENTS_ENV", "dev")
+    if agents_env not in ("dev", "dev-paid"):
+        return
+    print(
+        "\n"
+        "──────────────────────────────────────────────────────────────\n"
+        "  topic_discovery_min_cluster_size is not configured for this\n"
+        "  survey or its org — falling back to the platform default.\n"
+        f"    survey_id = {survey_id}\n"
+        f"    org_id    = {org_id}\n"
+        f"    default   = {C.DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE} response(s)\n"
+        "  Configure it at Experience → Intelligence → Settings (per survey)\n"
+        "  or via org_insight_defaults (per org) to change this.\n"
+        "──────────────────────────────────────────────────────────────\n"
+    )
+
+
+async def resolve_topic_discovery_min_cluster_size(survey_id: str, org_id: str) -> int:
+    """Resolve topic_discovery_min_cluster_size with the same survey → org →
+    platform precedence as the resolvers above.
+
+    An explicit INSIGHT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE env var, if set, wins
+    outright (ops escape hatch, no console log).
+    """
+    env_override = os.getenv("INSIGHT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE")
+    if env_override:
+        try:
+            return int(env_override)
+        except ValueError:
+            logger.warning("insight_topic_discovery_min_cluster_size_env_invalid", value=env_override)
+
+    survey_row = await _fetch_row("survey_insight_settings", "survey_id", survey_id)
+    if survey_row and survey_row.get("topic_discovery_min_cluster_size") is not None:
+        return int(survey_row["topic_discovery_min_cluster_size"])
+
+    org_row = await _fetch_row("org_insight_defaults", "org_id", org_id)
+    if org_row and org_row.get("topic_discovery_min_cluster_size") is not None:
+        return int(org_row["topic_discovery_min_cluster_size"])
+
+    logger.info("topic_discovery_min_cluster_size_defaulted", survey_id=survey_id, org_id=org_id,
+                default=C.DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE)
+    _log_min_cluster_size_fallback(survey_id, org_id)
+    return C.DEFAULT_TOPIC_DISCOVERY_MIN_CLUSTER_SIZE
 
 
 # ── Credit pre-flight ─────────────────────────────────────────────────────────

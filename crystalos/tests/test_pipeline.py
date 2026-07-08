@@ -271,6 +271,138 @@ class TestNoTextGuards:
         assert result.get("topics") == []
 
 
+# ── TestNodeClusterIncrementalDiscoverySettings ───────────────────────────────
+# Fixed 2026-07-06: node_cluster's incremental new-topic-discovery path used to
+# read a flat TOPIC_DISCOVERY_CANDIDATE_THRESHOLD constant and hardcode
+# min_cluster_size=2 / threshold=TOPIC_ASSIGNMENT_THRESHOLD (0.72) — same as
+# nearest-centroid assignment. Both are now resolved per survey/org (shared
+# resolvers with lib/response_tagging.py) and discovery uses a stricter,
+# dedicated similarity threshold + a higher minimum cluster size.
+
+class _StubCursor:
+    """Minimal async cursor — no real rows needed since every topic_registry
+    call in these tests is mocked directly; this only backs the raw
+    conn.cursor() fetch for centroid_counts (returns nothing) and the implicit
+    conn.commit() node_cluster calls directly (not through topic_registry)."""
+
+    async def execute(self, *a, **kw):
+        return None
+
+    async def fetchall(self):
+        return []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _StubConn:
+    def cursor(self):
+        return _StubCursor()
+
+    async def commit(self):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _stub_pool():
+    conn = _StubConn()
+    pool = MagicMock()
+    pool.connection = MagicMock(return_value=conn)
+    return pool
+
+
+class TestNodeClusterIncrementalDiscoverySettings:
+    def _incremental_state(self, **overrides):
+        emb = [0.9, 0.1]
+        state = _make_state(
+            is_bootstrap=False,
+            new_response_ids={"r1"},
+            open_texts=[{"text": "Delivery was late", "response_id": "r1", "question_id": "q1"}],
+            embedded_texts=[{"response_id": "r1", "question_id": "q1", "text": "Delivery was late", "embedding": emb}],
+            absa_results=[{"response_id": "r1", "question_id": "q1", "text": "Delivery was late",
+                            "aspect": "shipping", "sentiment": "negative", "score": -0.6, "emotion": "frustration"}],
+        )
+        state.update(overrides)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_resolves_candidate_threshold_per_survey_org_not_flat_constant(self):
+        state = self._incremental_state()
+
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.graphs.insights._emit_event", new=AsyncMock()),
+            patch("crystalos.graphs.insights.db._pool_conn", return_value=_stub_pool()),
+            patch("crystalos.graphs.insights.topic_registry.assign_batch_to_nearest",
+                  new=AsyncMock(return_value=({}, ["r1::q1"]))),
+            patch("crystalos.graphs.insights.topic_registry.update_centroids_welford_batch", new=AsyncMock()),
+            patch("crystalos.graphs.insights.topic_registry.add_candidates_batch", new=AsyncMock()),
+            patch("crystalos.graphs.insights.topic_registry.get_candidate_count", new=AsyncMock(return_value=3)),
+            patch(
+                "crystalos.lib.insight_settings.resolve_topic_discovery_candidate_threshold",
+                new=AsyncMock(return_value=25),
+            ) as threshold_mock,
+            patch("crystalos.graphs.insights.topic_registry.flush_candidates", new=AsyncMock()) as flush_mock,
+        ):
+            await node_cluster(state)
+
+        threshold_mock.assert_awaited_once_with("s1", "org-1")
+        flush_mock.assert_not_called()  # candidate_count=3 < resolved threshold=25
+
+    @pytest.mark.asyncio
+    async def test_flush_uses_discovery_similarity_threshold_and_resolved_min_cluster_size(self):
+        # Imported from graphs.insights itself, NOT crystalos.lib.constants directly
+        # (fixed 2026-07-07): insights.py binds this name ONCE at ITS OWN import
+        # time (a plain `from constants import NAME`, frozen thereafter regardless
+        # of any later os.environ/AGENTS_ENV change elsewhere in the suite — e.g.
+        # crystalos.main's dotenv.load_dotenv() applying the repo's real .env
+        # AGENTS_ENV value the first time ANY test happens to import it). Comparing
+        # against a FRESH re-import from constants would race against whatever tier
+        # is ambient at THIS test's run time, which can legitimately differ from
+        # the tier that was ambient when insights.py itself was first imported.
+        from crystalos.graphs.insights import TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
+
+        state = self._incremental_state()
+
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.graphs.insights._emit_event", new=AsyncMock()),
+            patch("crystalos.graphs.insights.db._pool_conn", return_value=_stub_pool()),
+            patch("crystalos.graphs.insights.topic_registry.assign_batch_to_nearest",
+                  new=AsyncMock(return_value=({}, ["r1::q1"]))),
+            patch("crystalos.graphs.insights.topic_registry.update_centroids_welford_batch", new=AsyncMock()),
+            patch("crystalos.graphs.insights.topic_registry.add_candidates_batch", new=AsyncMock()),
+            patch("crystalos.graphs.insights.topic_registry.get_candidate_count", new=AsyncMock(return_value=25)),
+            patch(
+                "crystalos.lib.insight_settings.resolve_topic_discovery_candidate_threshold",
+                new=AsyncMock(return_value=25),
+            ),
+            patch(
+                "crystalos.lib.insight_settings.resolve_topic_discovery_min_cluster_size",
+                new=AsyncMock(return_value=7),
+            ) as min_cluster_mock,
+            patch("crystalos.graphs.insights.topic_registry.flush_candidates", new=AsyncMock(return_value=[
+                {"response_id": "r1", "embedding": [0.9, 0.1]},
+            ])),
+            patch("crystalos.graphs.insights.cluster_texts", MagicMock(return_value=[])) as cluster_mock,
+        ):
+            await node_cluster(state)
+
+        min_cluster_mock.assert_awaited_once_with("s1", "org-1")
+        cluster_mock.assert_called_once()
+        _, kwargs = cluster_mock.call_args
+        assert kwargs["threshold"] == TOPIC_DISCOVERY_SIMILARITY_THRESHOLD
+        assert kwargs["min_cluster_size"] == 7
+
+
 # ── TestHeartbeat ─────────────────────────────────────────────────────────────
 
 class TestHeartbeat:
@@ -564,37 +696,39 @@ class TestSelectiveSupersede:
 # ── TestNodeDeltaCompute (Insight Pipeline v2 — Phase 0.5) ────────────────────
 
 class TestNodeDeltaCompute:
-    """Tests for node_delta_compute — bootstrap path + non-bootstrap delta path."""
+    """Tests for node_delta_compute — bootstrap path + non-bootstrap delta path.
 
-    def _make_cursor_pool(self, fetchall_return=None):
-        """Pool mock whose cursor returns the given rows for fetchall(), with a
-        matching cur.description for the node_delta_compute SELECT."""
-        mock_cur = AsyncMock()
-        mock_cur.execute = AsyncMock()
-        mock_cur.fetchall = AsyncMock(return_value=fetchall_return or [])
-        mock_cur.description = [
-            ("checkpoint_number",), ("report_url",), ("created_at",),
-            ("nps_at_checkpoint",), ("topic_fingerprint",),
-        ]
-        mock_cur.__aenter__ = AsyncMock(return_value=mock_cur)
-        mock_cur.__aexit__ = AsyncMock(return_value=False)
+    Fixed 2026-07-04: this node used to run its OWN independent DB query
+    against ONLY the legacy survey_insight_checkpoints table — never
+    insight_checkpoints_v2 — found during a deep audit of the
+    parent_checkpoint_id/is_bootstrap/lineage bugs fixed the same day. It now
+    reuses resolve_context's own already-walked, schema-aware chain
+    (state["prior_checkpoints"]) instead, via _checkpoint_blob_ref (v2 rows:
+    report_blob_ref; legacy rows: report_url — same concept, different column
+    name across the two schemas). These tests were rewritten from DB-pool
+    mocking to passing prior_checkpoints directly, and now explicitly cover
+    BOTH row shapes — the exact "old data meets new code" coverage gap that
+    let the original bug ship unnoticed."""
 
-        mock_conn = AsyncMock()
-        mock_conn.cursor = MagicMock(return_value=mock_cur)
-        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn.__aexit__ = AsyncMock(return_value=False)
+    @staticmethod
+    def _v2_row(checkpoint_number, blob_ref, created_at, nps, topic_fingerprint):
+        return {
+            "checkpoint_number": checkpoint_number, "report_blob_ref": blob_ref,
+            "created_at": created_at, "nps_at_checkpoint": nps,
+            "topic_fingerprint": topic_fingerprint, "schema_version": 2,
+        }
 
-        pool_ctx = MagicMock()
-        pool_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
-        pool_ctx.__aexit__ = AsyncMock(return_value=False)
-
-        mock_pool = MagicMock()
-        mock_pool.connection = MagicMock(return_value=pool_ctx)
-        return mock_pool
+    @staticmethod
+    def _legacy_row(checkpoint_number, report_url, created_at, nps, topic_fingerprint):
+        return {
+            "checkpoint_number": checkpoint_number, "report_url": report_url,
+            "created_at": created_at, "nps_at_checkpoint": nps,
+            "topic_fingerprint": topic_fingerprint, "schema_version": 1,
+        }
 
     @pytest.mark.asyncio
     async def test_bootstrap_returns_meaningful_true_none_delta(self):
-        """Bootstrap run: delta None, meaningful_delta True, no DB read."""
+        """Bootstrap run: delta None, meaningful_delta True, no lookup at all."""
         state = _make_state(is_bootstrap=True, metrics={"nps": {"score": 40.0}})
         with patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()):
             result = await node_delta_compute(state)
@@ -603,28 +737,23 @@ class TestNodeDeltaCompute:
         assert result["prior_checkpoint_summaries"] == []
 
     @pytest.mark.asyncio
-    async def test_no_prior_blob_falls_back_to_bootstrap_path(self):
-        """Non-bootstrap but no prior checkpoint rows → bootstrap-like fallback."""
-        pool = self._make_cursor_pool(fetchall_return=[])
-        state = _make_state(is_bootstrap=False, metrics={"nps": {"score": 40.0}})
-        with (
-            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
-            patch("crystalos.graphs.insights.db._pool_conn", return_value=pool),
-        ):
+    async def test_no_prior_checkpoints_falls_back_to_bootstrap_path(self):
+        """Non-bootstrap but resolve_context found no prior chain → bootstrap-like fallback."""
+        state = _make_state(is_bootstrap=False, metrics={"nps": {"score": 40.0}}, prior_checkpoints=[])
+        with patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()):
             result = await node_delta_compute(state)
         assert result["delta_from_prior"] is None
         assert result["meaningful_delta"] is True
         assert result["prior_checkpoint_summaries"] == []
 
     @pytest.mark.asyncio
-    async def test_non_bootstrap_computes_delta_and_summaries(self):
-        """Non-bootstrap with a prior blob → computes delta + scalar summaries."""
+    async def test_non_bootstrap_computes_delta_and_summaries_from_v2_rows(self):
+        """Non-bootstrap with a genuine v2-sourced prior chain → computes delta + summaries."""
         from datetime import datetime, timezone
-        rows = [
-            (3, "ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3"),
-            (2, "ref-2", datetime(2026, 5, 1, tzinfo=timezone.utc), 44.0, "fp2"),
+        prior_checkpoints = [
+            self._v2_row(3, "ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3"),
+            self._v2_row(2, "ref-2", datetime(2026, 5, 1, tzinfo=timezone.utc), 44.0, "fp2"),
         ]
-        pool = self._make_cursor_pool(fetchall_return=rows)
         prior_blob = {
             "nps_at_checkpoint": 45.0,
             "csat_at_checkpoint": 4.0,
@@ -635,10 +764,10 @@ class TestNodeDeltaCompute:
             is_bootstrap=False,
             metrics={"nps": {"score": 40.0}, "csat": {"score": 4.0}, "total_responses": 60},
             topic_signals={"Billing": {}, "AI features": {}},
+            prior_checkpoints=prior_checkpoints,
         )
         with (
             patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
-            patch("crystalos.graphs.insights.db._pool_conn", return_value=pool),
             patch(
                 "crystalos.lib.checkpoint_store.read_checkpoint_blob",
                 new=AsyncMock(return_value=prior_blob),
@@ -658,15 +787,140 @@ class TestNodeDeltaCompute:
         assert summaries[1]["nps"] == 45.0
 
     @pytest.mark.asyncio
-    async def test_db_failure_falls_back_to_bootstrap_path(self):
-        """A DB error during prior-checkpoint load must not crash the pipeline."""
-        mock_pool = MagicMock()
-        mock_pool.connection = MagicMock(side_effect=Exception("DB down"))
-        state = _make_state(is_bootstrap=False, metrics={"nps": {"score": 40.0}})
+    async def test_non_bootstrap_computes_delta_from_legacy_rows(self):
+        """Backward compatibility: a survey whose prior chain is legacy-sourced
+        (walk_parent_chain's fallback, before this survey ever had a v2
+        checkpoint) must still compute a real delta, reading report_url
+        instead of report_blob_ref — this is the exact scenario the original
+        bug broke silently (it happened to work by accident since the old
+        code queried legacy only; this proves the NEW code still handles it,
+        not just the new v2 case)."""
+        from datetime import datetime, timezone
+        prior_checkpoints = [
+            self._legacy_row(3, "legacy-ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3"),
+        ]
+        prior_blob = {"nps_at_checkpoint": 45.0, "response_count_at_checkpoint": 50, "topics": []}
+        state = _make_state(
+            is_bootstrap=False, metrics={"nps": {"score": 40.0}}, prior_checkpoints=prior_checkpoints,
+        )
         with (
             patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
-            patch("crystalos.graphs.insights.db._pool_conn", return_value=mock_pool),
+            patch(
+                "crystalos.lib.checkpoint_store.read_checkpoint_blob",
+                new=AsyncMock(return_value=prior_blob),
+            ) as mock_read,
+        ):
+            result = await node_delta_compute(state)
+        mock_read.assert_awaited_once_with("legacy-ref-3")
+        assert result["delta_from_prior"]["nps_delta"] == -5.0
+
+    @pytest.mark.asyncio
+    async def test_rows_with_no_blob_ref_at_all_are_skipped(self):
+        """A prior_checkpoints entry with neither report_blob_ref nor report_url
+        (schema_version present but blob genuinely missing/never written) must
+        be skipped rather than passed to read_checkpoint_blob as None —
+        falls through to the next usable row, or to the bootstrap-like
+        fallback if none exist."""
+        from datetime import datetime, timezone
+        prior_checkpoints = [
+            {"checkpoint_number": 4, "schema_version": 2, "created_at": datetime(2026, 6, 2, tzinfo=timezone.utc),
+             "nps_at_checkpoint": 46.0, "topic_fingerprint": "fp4"},  # no report_blob_ref
+            self._v2_row(3, "ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3"),
+        ]
+        prior_blob = {"nps_at_checkpoint": 45.0, "response_count_at_checkpoint": 50, "topics": []}
+        state = _make_state(
+            is_bootstrap=False, metrics={"nps": {"score": 40.0}}, prior_checkpoints=prior_checkpoints,
+        )
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch(
+                "crystalos.lib.checkpoint_store.read_checkpoint_blob",
+                new=AsyncMock(return_value=prior_blob),
+            ) as mock_read,
+        ):
+            result = await node_delta_compute(state)
+        mock_read.assert_awaited_once_with("ref-3")
+        assert result["delta_from_prior"] is not None
+
+    @pytest.mark.asyncio
+    async def test_blob_read_failure_falls_back_to_bootstrap_path(self):
+        """A storage-layer error reading the prior blob must not crash the
+        pipeline (the equivalent, post-fix failure mode of the old "DB down"
+        test — there's no DB query left in this node to fail)."""
+        from datetime import datetime, timezone
+        prior_checkpoints = [self._v2_row(3, "ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3")]
+        state = _make_state(
+            is_bootstrap=False, metrics={"nps": {"score": 40.0}}, prior_checkpoints=prior_checkpoints,
+        )
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch(
+                "crystalos.lib.checkpoint_store.read_checkpoint_blob",
+                new=AsyncMock(side_effect=Exception("blob storage down")),
+            ),
         ):
             result = await node_delta_compute(state)
         assert result["delta_from_prior"] is None
         assert result["meaningful_delta"] is True
+
+    # ── Xperiq Actions Wave 3 — ai_trigger_baseline_negative_pct propagation ────
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_sets_ai_trigger_baseline_none(self):
+        state = _make_state(is_bootstrap=True, metrics={"nps": {"score": 40.0}})
+        with patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()):
+            result = await node_delta_compute(state)
+        assert result["ai_trigger_baseline_negative_pct"] is None
+
+    @pytest.mark.asyncio
+    async def test_no_prior_checkpoints_sets_ai_trigger_baseline_none(self):
+        state = _make_state(is_bootstrap=False, metrics={"nps": {"score": 40.0}}, prior_checkpoints=[])
+        with patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()):
+            result = await node_delta_compute(state)
+        assert result["ai_trigger_baseline_negative_pct"] is None
+
+    @pytest.mark.asyncio
+    async def test_prior_blob_with_ai_trigger_field_is_read_forward(self):
+        """A prior blob written post-Wave-3 carries ai_trigger_negative_pct —
+        node_delta_compute must surface it as this run's sentiment_spike baseline."""
+        from datetime import datetime, timezone
+        prior_checkpoints = [self._v2_row(3, "ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3")]
+        prior_blob = {
+            "nps_at_checkpoint": 45.0,
+            "csat_at_checkpoint": 4.0,
+            "response_count_at_checkpoint": 50,
+            "topics": [{"name": "Billing"}],
+            "ai_trigger_negative_pct": 22.5,
+        }
+        state = _make_state(
+            is_bootstrap=False, metrics={"nps": {"score": 40.0}}, topic_signals={"Billing": {}},
+            prior_checkpoints=prior_checkpoints,
+        )
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.lib.checkpoint_store.read_checkpoint_blob", new=AsyncMock(return_value=prior_blob)),
+        ):
+            result = await node_delta_compute(state)
+        assert result["ai_trigger_baseline_negative_pct"] == pytest.approx(22.5)
+
+    @pytest.mark.asyncio
+    async def test_prior_blob_without_ai_trigger_field_degrades_to_none(self):
+        """A prior blob from BEFORE Wave 3 has no ai_trigger_negative_pct key —
+        must not KeyError, just report no baseline (sentiment_spike won't fire
+        yet for this survey until one post-wave checkpoint exists)."""
+        from datetime import datetime, timezone
+        prior_checkpoints = [self._v2_row(3, "ref-3", datetime(2026, 6, 1, tzinfo=timezone.utc), 45.0, "fp3")]
+        prior_blob = {
+            "nps_at_checkpoint": 45.0,
+            "response_count_at_checkpoint": 50,
+            "topics": [],
+        }
+        state = _make_state(
+            is_bootstrap=False, metrics={"nps": {"score": 40.0}}, prior_checkpoints=prior_checkpoints,
+        )
+        with (
+            patch("crystalos.graphs.insights._update_heartbeat", new=AsyncMock()),
+            patch("crystalos.lib.checkpoint_store.read_checkpoint_blob", new=AsyncMock(return_value=prior_blob)),
+        ):
+            result = await node_delta_compute(state)
+        assert result["ai_trigger_baseline_negative_pct"] is None

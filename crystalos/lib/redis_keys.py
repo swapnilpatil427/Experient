@@ -48,3 +48,15 @@ class K:
     def thread_lock(cls, brand_id: str | None, survey_id: str, org_id: str) -> str:
         """Redis key for Crystal thread mutation lock."""
         return f"{cls._ns(brand_id)}:thread_lock:{org_id}:{survey_id}"
+
+    @classmethod
+    def ai_trigger_armed(cls, brand_id: str | None, survey_id: str, trigger_type: str, signal_key: str = "_") -> str:
+        """Redis key for AI-trigger hysteresis 'armed' state (Xperiq Actions Wave 3).
+
+        `signal_key` disambiguates multiple concurrent signals of the same
+        trigger_type on one survey (e.g. one `anomaly_detected` armed-key per
+        metric name, one `new_theme_detected` armed-key per topic name) —
+        defaults to '_' for triggers that are inherently survey-scoped singular
+        (sentiment_spike). See lib/ai_triggers.py for read/write helpers.
+        """
+        return f"{cls._ns(brand_id)}:ai_trigger_armed:{survey_id}:{trigger_type}:{signal_key}"

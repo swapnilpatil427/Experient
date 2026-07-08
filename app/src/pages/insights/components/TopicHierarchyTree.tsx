@@ -123,7 +123,7 @@ function ThemeSection({
         {/* Volume badge */}
         <span
           className="text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
-          style={{ background: 'rgba(42,75,217,0.08)', color: '#2a4bd9' }}
+          style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}
         >
           {theme.volume.toLocaleString()}
         </span>
@@ -166,7 +166,7 @@ function ThemeSection({
                     // Selected topic: gradient left border
                     ...(selectedTopicId === topic.id
                       ? {
-                          outline: '2px solid #2a4bd9',
+                          outline: '2px solid var(--color-primary)',
                           outlineOffset: '2px',
                           borderRadius: '1rem',
                         }
@@ -239,7 +239,7 @@ export function TopicHierarchyTree({
         <Icon
           name="hub"
           size={48}
-          style={{ color: '#2a4bd9', marginBottom: 16, display: 'block', margin: '0 auto 16px' }}
+          style={{ color: 'var(--color-primary)', marginBottom: 16, display: 'block', margin: '0 auto 16px' }}
         />
         <h3 className="text-lg font-bold text-on-surface mb-2">
           {t('topicsAnalysis.noThemesTitle')}
@@ -281,9 +281,9 @@ export function TopicHierarchyTree({
               style={
                 sortKey === key
                   ? {
-                      background: '#2a4bd9',
+                      background: 'var(--color-primary)',
                       color: '#fff',
-                      boxShadow: '0 1px 6px rgba(42,75,217,0.3)',
+                      boxShadow: '0 1px 6px color-mix(in srgb, var(--color-primary) 30%, transparent)',
                     }
                   : { color: 'var(--color-on-surface-variant, #6b7280)' }
               }

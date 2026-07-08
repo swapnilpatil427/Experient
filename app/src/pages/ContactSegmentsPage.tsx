@@ -34,7 +34,7 @@ const glassCard: React.CSSProperties = {
 };
 
 const gradientTextStyle: React.CSSProperties = {
-  background: 'linear-gradient(135deg, var(--color-primary), #8329c8)',
+  background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))',
   WebkitBackgroundClip: 'text',
   WebkitTextFillColor: 'transparent',
   backgroundClip: 'text',
@@ -199,7 +199,7 @@ function SegmentBuilder({ open, segment, onClose, onSaved }: SegmentBuilderProps
               onChange={(e) => setName(e.target.value)}
               placeholder={t('contactSegments.form.namePlaceholder')}
               className="rounded-xl"
-              style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }}
+              style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
             />
           </div>
 
@@ -212,7 +212,7 @@ function SegmentBuilder({ open, segment, onClose, onSaved }: SegmentBuilderProps
               onChange={(e) => setDescription(e.target.value)}
               placeholder={t('contactSegments.form.descriptionPlaceholder')}
               className="rounded-xl resize-none"
-              style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.15)' }}
+              style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
               rows={2}
             />
           </div>
@@ -247,14 +247,14 @@ function SegmentBuilder({ open, segment, onClose, onSaved }: SegmentBuilderProps
 
           <div
             className="rounded-xl p-4 space-y-3"
-            style={{ background: 'rgba(42,75,217,0.04)', border: '1px solid rgba(42,75,217,0.12)' }}
+            style={{ background: 'color-mix(in srgb, var(--color-primary) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 12%, transparent)' }}
           >
             <div className="flex items-center justify-between">
               <p className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
                 {t('contactSegments.filter.heading')}
               </p>
               {conditions.length > 1 && (
-                <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: 'rgba(42,75,217,0.2)' }}>
+                <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 20%, transparent)' }}>
                   {(['AND', 'OR'] as const).map((opt) => (
                     <button
                       key={opt}
@@ -275,7 +275,7 @@ function SegmentBuilder({ open, segment, onClose, onSaved }: SegmentBuilderProps
             {conditions.map((cond, idx) => (
               <div key={idx} className="flex gap-2 items-center">
                 <Select value={cond.field} onValueChange={(v) => updateCondition(idx, { field: v })}>
-                  <SelectTrigger className="flex-1 text-xs rounded-lg h-8" style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid rgba(42,75,217,0.15)' }}>
+                  <SelectTrigger className="flex-1 text-xs rounded-lg h-8" style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -286,7 +286,7 @@ function SegmentBuilder({ open, segment, onClose, onSaved }: SegmentBuilderProps
                 </Select>
 
                 <Select value={cond.operator} onValueChange={(v) => updateCondition(idx, { operator: v as FilterCondition['operator'] })}>
-                  <SelectTrigger className="flex-1 text-xs rounded-lg h-8" style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid rgba(42,75,217,0.15)' }}>
+                  <SelectTrigger className="flex-1 text-xs rounded-lg h-8" style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -301,7 +301,7 @@ function SegmentBuilder({ open, segment, onClose, onSaved }: SegmentBuilderProps
                   onChange={(e) => updateCondition(idx, { value: e.target.value })}
                   placeholder={t('contactSegments.filter.value')}
                   className="flex-1 text-xs rounded-lg h-8"
-                  style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid rgba(42,75,217,0.15)' }}
+                  style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)' }}
                 />
 
                 <button
@@ -318,7 +318,7 @@ function SegmentBuilder({ open, segment, onClose, onSaved }: SegmentBuilderProps
               size="sm"
               onClick={addCondition}
               className="text-xs w-full rounded-lg"
-              style={{ border: '1px dashed rgba(42,75,217,0.3)', color: 'var(--color-primary)' }}
+              style={{ border: '1px dashed color-mix(in srgb, var(--color-primary) 30%, transparent)', color: 'var(--color-primary)' }}
             >
               <Icon name="add" size={14} className="mr-1" />
               {t('contactSegments.filter.addCondition')}
@@ -343,7 +343,7 @@ function SegmentBuilder({ open, segment, onClose, onSaved }: SegmentBuilderProps
               disabled={!name.trim() || saving}
               onClick={handleSave}
               className="flex-1 rounded-xl font-bold text-white flex items-center justify-center gap-2"
-              style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+              style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
             >
               {saving ? (
                 <div className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin border-white" />
@@ -404,7 +404,7 @@ function SegmentCard({ segment, onEdit, onDelete, onRefresh }: SegmentCardProps)
                 </Badge>
                 <Badge
                   className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
-                  style={{ background: 'rgba(42,75,217,0.08)', color: 'var(--color-primary)' }}
+                  style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}
                 >
                   {t('contactSegments.contactCount', { count: String(segment.contact_count) })}
                 </Badge>
@@ -437,7 +437,7 @@ function SegmentCard({ segment, onEdit, onDelete, onRefresh }: SegmentCardProps)
                 disabled={refreshing}
               >
                 {refreshing ? (
-                  <div className="w-3 h-3 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'rgba(42,75,217,0.3)', borderTopColor: 'var(--color-primary)' }} />
+                  <div className="w-3 h-3 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: 'color-mix(in srgb, var(--color-primary) 30%, transparent)', borderTopColor: 'var(--color-primary)' }} />
                 ) : (
                   <Icon name="refresh" size={12} />
                 )}
@@ -542,7 +542,7 @@ export function ContactSegmentsPage() {
           <Button
             onClick={handleNew}
             className="font-bold text-sm text-white rounded-xl px-5 py-2.5 active:scale-95"
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <Icon name="add" size={16} className="mr-1.5" />
             {t('contactSegments.newSegment')}
@@ -565,7 +565,7 @@ export function ContactSegmentsPage() {
             <div className="flex items-center gap-3">
               <div
                 className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                style={{ background: 'rgba(42,75,217,0.1)' }}
+                style={{ background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)' }}
               >
                 <Icon name={stat.icon} size={18} style={{ color: 'var(--color-primary)' }} />
               </div>
@@ -622,8 +622,8 @@ export function ContactSegmentsPage() {
           <div
             className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-5"
             style={{
-              background: 'linear-gradient(135deg, rgba(42,75,217,0.12), rgba(131,41,200,0.1))',
-              border: '1px solid rgba(42,75,217,0.15)',
+              background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), color-mix(in srgb, var(--color-tertiary) 10%, transparent))',
+              border: '1px solid color-mix(in srgb, var(--color-primary) 15%, transparent)',
             }}
           >
             <Icon name="workspaces" size={36} style={{ color: 'var(--color-primary)' }} />
@@ -637,7 +637,7 @@ export function ContactSegmentsPage() {
           <Button
             onClick={handleNew}
             className="px-6 py-3 font-bold text-sm text-white rounded-xl active:scale-95 font-headline"
-            style={{ background: 'linear-gradient(135deg, var(--color-primary), #8329c8)' }}
+            style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}
           >
             <Icon name="add" size={16} className="mr-1.5" />
             {t('contactSegments.createFirstCta')}

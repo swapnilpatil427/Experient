@@ -14,6 +14,7 @@ Endpoints:
   POST /prism/map                                      — Prism schema-mapper (field mapping proposals)
   POST /prism/taxonomy                                 — Prism taxonomy-mapper (topic-label reconciliation)
   POST /prism/parity                                   — Prism metric-parity (metric-gap explainer)
+  POST /workflows/parse-nl                             — NL description → workflow graph (Xperiq Actions)
   GET  /agents/registry                                — List all agent manifests
   GET  /health
   GET  /metrics
@@ -33,7 +34,7 @@ from typing import Any
 import dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST
 from prometheus_client.exposition import generate_latest
 
@@ -1090,6 +1091,126 @@ async def start_insight_run(
     return resp
 
 
+@app.post("/topics/backfill", summary="Start a manual topic-tagging backfill job for a survey")
+async def start_topic_backfill(
+    request: Request,
+    _: None = Depends(require_internal_key),
+) -> dict:
+    """Drain a survey's entire untagged-response backlog on demand (Experience →
+    Topics page "Backfill Tagging" button).
+
+    The Node backend POSTs here with the internal key after inserting the
+    agent_runs row (run_type='topic_backfill') and debiting credits on its own
+    route — same division of responsibility as /insights/runs above: Node owns
+    the row, this endpoint only starts the background task that updates it.
+    Body: { survey_id, org_id, run_id }. Returns {status, run_id} immediately;
+    lib/topic_backfill.py::run_topic_backfill reports progress into the SAME
+    agent_runs row via stream_events, pollable at GET /api/runs/:runId.
+    """
+    body      = await request.json()
+    survey_id = body.get("survey_id")
+    org_id    = body.get("org_id")
+    run_id    = body.get("run_id")
+    if not all([survey_id, org_id, run_id]):
+        raise HTTPException(status_code=422, detail="survey_id, org_id, run_id required")
+
+    from crystalos.lib.topic_backfill import run_topic_backfill
+    task = asyncio.create_task(run_topic_backfill(run_id, survey_id, org_id))
+    task.add_done_callback(
+        lambda t: logger.warning("topic_backfill_unhandled_error", run_id=run_id, error=str(t.exception()))
+        if t.exception() else None
+    )
+    return {"status": "started", "run_id": run_id}
+
+
+# ── Workflow NL parsing (Xperiq Actions Wave 3) ───────────────────────────────
+
+@app.post("/workflows/parse-nl", summary="Parse a natural-language description into a workflow graph")
+async def parse_workflow_nl_endpoint(
+    request: Request,
+    _: None = Depends(require_internal_key),
+) -> dict:
+    """Turn a plain-English workflow description into an engine-ready graph.
+
+    The Node backend's `POST /api/workflows/parse-nl` proxy calls this with the
+    internal key, forwarding its own `workflowRegistry.ts` catalog as `registry`
+    so there is exactly one source of truth for valid triggers/condition-fields/
+    actions (this service never hand-maintains a duplicate copy). Body:
+      { description: str, org_id: str, registry: { triggers, conditionFields,
+        conditionOperators, actions, surveys?, tags? } }
+
+    `registry.surveys`/`registry.tags` (Wave 12 — BUILDER_REDESIGN_V2_SCOPE.md,
+    optional): [{id, name}] — the org's real surveys/tags, used to resolve the
+    LLM draft's free-text scope mention onto a real id. Absent on older callers
+    (or the legacy chat-tool's FALLBACK_REGISTRY) — scope simply always
+    resolves to org in that case, same as before this list existed.
+
+    Returns 200 with { name, description, triggerType, nodes, edges, confidence,
+    warnings, scopeType, scopeSurveyId, scopeTagId } on a usable parse
+    (including low-confidence — the frontend decides how to render below its
+    own threshold), or 422 with a FLAT (non-nested) { error: 'unparseable',
+    message, suggestions } body.
+
+    scopeType/scopeSurveyId/scopeTagId default to 'org'/null/null whenever the
+    description doesn't name a real survey/tag — IDENTICAL to this endpoint's
+    pre-Wave-12 behavior (every NL workflow was implicitly org-wide). Scope
+    inference is purely additive; see `workflow_nl._resolve_scope_hint` for the
+    conservative matching rule (exact match, or unambiguous substring match
+    only — never a guess when a hint could plausibly mean more than one thing).
+
+    NOTE on the 422 shape: this deliberately returns `JSONResponse` directly
+    rather than `raise HTTPException(422, detail={...})`. FastAPI always wraps
+    `HTTPException.detail` under a top-level `"detail"` key on the wire
+    (`{"detail": {...}}`), but the Node proxy (`agentsClient.parseWorkflowNL`,
+    per docs/automation-hub/WORKFLOW_SIGNAL_CONTRACT.md §1.3.2) re-parses the
+    raw response body text expecting `message`/`suggestions` at the TOP level.
+    A `detail`-wrapped body would silently degrade every unparseable/low-
+    confidence response to a generic fallback message with an empty
+    `suggestions` array — exactly the highest-risk mismatch that doc flags.
+    """
+    body = await request.json()
+    description = (body.get("description") or "").strip()
+    registry = body.get("registry") or {}
+    org_id = body.get("org_id") or ""
+
+    if not description or len(description) > 1000:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "unparseable",
+                "message": "Description must be between 1 and 1000 characters.",
+                "suggestions": [],
+            },
+        )
+
+    logger.info("workflow_nl_parse_requested", org_id=org_id, description_length=len(description))
+    from crystalos.crystal.workflow_nl import parse_workflow_nl
+    result = await parse_workflow_nl(description, registry)
+
+    if not result.ok:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "unparseable",
+                "message": result.message,
+                "suggestions": result.suggestions,
+            },
+        )
+
+    return {
+        "name": result.name,
+        "description": result.description,
+        "triggerType": result.trigger_type,
+        "nodes": result.nodes,
+        "edges": result.edges,
+        "confidence": result.confidence,
+        "warnings": result.warnings,
+        "scopeType": result.scope_type,
+        "scopeSurveyId": result.scope_survey_id,
+        "scopeTagId": result.scope_tag_id,
+    }
+
+
 # ── Custom Analysis (Insight Pipeline v2 — Phase 6, fully isolated) ───────────────
 
 @app.post("/reports/custom/run", summary="Run an isolated Custom Analysis for a survey")
@@ -1211,6 +1332,87 @@ async def generate_group_insights(
 
     logger.info("group_insight_generation_started", run_id=run_id, org_id=org_id,
                 tag_count=len(tag_ids))
+    return {"run_id": run_id, "status": "running"}
+
+
+@app.post("/tag-reports/generate", summary="Kick off a Tag Report cross-survey checkpoint rollup")
+async def generate_tag_report(
+    request: Request,
+    _: None = Depends(require_internal_key),
+) -> dict:
+    """Start Tag Report generation for a tag (Manual / Automated / Custom Range).
+
+    Tag Report NEVER generates fresh per-survey AI insight — it only rolls up
+    EXISTING insight_checkpoints_v2 checkpoints across every survey sharing a
+    tag (see docs/tag-report/DESIGN.md §2). The backend resolves
+    ``effective_max_surveys`` (the 3-tier max-surveys-per-tag-report COALESCE)
+    and hands off; this graph owns all checkpoint-level work — candidate
+    fetching, checkpoint resolution, backfill looping, gating, merge, narrate,
+    publish (docs/tag-report/TRACKER.md §2, reconciliation item 7).
+
+    Body:
+      run_id                 — UUID of the group_insight_runs row (created by backend before calling this)
+      org_id                 — organisation UUID
+      tag_id                 — UUID of the tag being rolled up
+      run_mode                — 'manual' | 'automated' | 'custom_range'
+      window_start/window_end — ISO8601, only meaningful for run_mode='custom_range'
+      effective_max_surveys   — backend-resolved survey ceiling; used as target_n
+
+    Returns:
+      { run_id, status: "running" }
+    """
+    body = await request.json()
+    run_id = body.get("run_id")
+    org_id = body.get("org_id")
+    tag_id = body.get("tag_id")
+    run_mode = body.get("run_mode") or "manual"
+    window_start = body.get("window_start")
+    window_end = body.get("window_end")
+    effective_max_surveys = body.get("effective_max_surveys")
+
+    if not all([run_id, org_id, tag_id]):
+        raise HTTPException(status_code=422, detail="run_id, org_id, and tag_id required")
+
+    # Mark the run as running in DB
+    try:
+        async with db._pool_conn().connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """UPDATE group_insight_runs
+                       SET status = 'running', heartbeat_at = NOW()
+                       WHERE id = %s AND org_id = %s""",
+                    (run_id, org_id),
+                )
+            await conn.commit()
+    except Exception as exc:
+        logger.warning("tag_report_run_status_update_failed", run_id=run_id, error=str(exc))
+
+    from crystalos.graphs.tag_report import run_tag_report_generation
+
+    # Fixed 2026-07-02 (integration reconciliation): this previously imported
+    # TAG_REPORT_DEFAULT_TARGET_N from crystalos.lib.constants, which does not
+    # exist there — Tag Report's tunables live as module-level constants inside
+    # graphs/tag_report.py itself (kept out of the shared constants module by
+    # design, see that file's own header). That import would have raised
+    # AttributeError on the very first request with a falsy effective_max_surveys.
+    # run_tag_report_generation already has its own correct fallback to
+    # TAG_REPORT_DEFAULT_TARGET_N when target_n is None — just defer to it instead
+    # of duplicating (and having gotten wrong) that fallback here.
+    target_n = int(effective_max_surveys) if effective_max_surveys else None
+    task = asyncio.create_task(
+        run_tag_report_generation(
+            run_id=run_id, org_id=org_id, tag_id=tag_id, report_mode=run_mode,
+            window_start=window_start, window_end=window_end, target_n=target_n,
+        )
+    )
+    task.add_done_callback(
+        lambda t: logger.warning("tag_report_task_unhandled_error", run_id=run_id,
+                                 error=str(t.exception()))
+        if not t.cancelled() and t.exception() else None
+    )
+
+    logger.info("tag_report_generation_started", run_id=run_id, org_id=org_id,
+                tag_id=tag_id, run_mode=run_mode)
     return {"run_id": run_id, "status": "running"}
 
 
@@ -1562,8 +1764,18 @@ async def crystal_stream_endpoint(
         user_id=body.get("user_id", ""),
         scope=body.get("scope", "survey"),
         has_open_text=body.get("has_open_text", True),
+        tag_ids=body.get("tag_ids"),
+        tag_id=body.get("tag_id"),
         user_role=user_role,
         brand_id=body.get("brand_id"),
+        # Wave 15 — Automation Hub workflow-builder context (all optional;
+        # absent for every existing caller -> CrystalInput defaults apply,
+        # byte-identical to pre-Wave-15 behavior). `surface` forces routing to
+        # workflow-analyst in _run_skill_stream when the frontend signals it
+        # opened Crystal from the builder page (see docs/automation-hub/TRACKER.md).
+        surface=body.get("surface", "insights"),
+        builder_draft=body.get("builder_draft"),
+        workflow_registry=body.get("workflow_registry"),
     )
 
     # Choose execution path

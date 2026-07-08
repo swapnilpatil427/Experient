@@ -104,16 +104,16 @@ export function InsightsMetricsPage() {
             sub={`±${isAll ? 3 : 5} · n=${isAll ? totalResponses.toLocaleString() : '312'}`}
             delta="+2"
             positive
-            color="#2a4bd9"
+            color="var(--color-primary)"
           />
-          <HeroTile label="CSAT" value="4.2" sub="/ 5 · ±0.2" delta="stable" color="#00647c" />
+          <HeroTile label="CSAT" value="4.2" sub="/ 5 · ±0.2" delta="stable" color="var(--color-secondary)" />
           <HeroTile
             label="Response velocity"
             value="2.3×"
             sub="vs. baseline (7d avg)"
             delta="+0.4×"
             positive
-            color="#8329c8"
+            color="var(--color-tertiary)"
           />
           <HeroTile
             label="Responses today"
@@ -178,7 +178,7 @@ export function InsightsMetricsPage() {
                         style={{
                           background:
                             row.stars >= 4
-                              ? 'linear-gradient(to right, #059669, #2a4bd9)'
+                              ? 'linear-gradient(to right, #059669, var(--color-primary))'
                               : row.stars === 3
                                 ? '#d97706'
                                 : '#b91c1c',
@@ -216,8 +216,8 @@ export function InsightsMetricsPage() {
                       height: `${(h / 35) * 100}%`,
                       background:
                         i >= 37
-                          ? 'linear-gradient(to top, #2a4bd9, #8329c8)'
-                          : `rgba(42,75,217,${0.25 + (h / 35) * 0.4})`,
+                          ? 'linear-gradient(to top, var(--color-primary), var(--color-tertiary))'
+                          : `color-mix(in srgb, var(--color-primary) ${(0.25 + (h / 35) * 0.4) * 100}%, transparent)`,
                     }}
                   />
                 ))}
@@ -253,7 +253,7 @@ export function InsightsMetricsPage() {
                 { label: 'Support time', x: 78, y: 28, size: 44, color: '#b91c1c', primary: true },
                 { label: 'Email loop', x: 65, y: 35, size: 36, color: '#d97706' },
                 { label: 'Onboarding', x: 55, y: 40, size: 28, color: '#d97706' },
-                { label: 'Mobile', x: 38, y: 55, size: 20, color: '#2a4bd9' },
+                { label: 'Mobile', x: 38, y: 55, size: 20, color: 'var(--color-primary)' },
                 { label: 'Pricing', x: 62, y: 62, size: 22, color: '#059669' },
                 { label: 'Speed', x: 25, y: 70, size: 16, color: '#059669' },
               ].map((d) => (
@@ -348,19 +348,19 @@ function NPS90DChart({ data }: { data: number[] }) {
     <svg viewBox="0 0 600 80" className="w-full" style={{ height: 120 }}>
       <defs>
         <linearGradient id="npsFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#2a4bd9" stopOpacity="0.15" />
-          <stop offset="1" stopColor="#2a4bd9" stopOpacity="0" />
+          <stop offset="0" stopColor="var(--color-primary)" stopOpacity="0.15" />
+          <stop offset="1" stopColor="var(--color-primary)" stopOpacity="0" />
         </linearGradient>
       </defs>
       {/* Prediction band */}
       <path
         d={`M0,${toY(44)} L600,${toY(44)} L600,${toY(52)} L0,${toY(52)} Z`}
-        fill="rgba(42,75,217,0.07)"
+        fill="color-mix(in srgb, var(--color-primary) 7%, transparent)"
       />
       {/* Area fill */}
       <polyline points={`0,${h} ${pts} 600,${h}`} fill="url(#npsFill)" />
       {/* Line */}
-      <polyline points={pts} fill="none" stroke="#2a4bd9" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <polyline points={pts} fill="none" stroke="var(--color-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       {/* Anomaly dot */}
       <circle cx={(anomalyIdx / (data.length - 1)) * 600} cy={toY(data[anomalyIdx])} r={5} fill="#d97706" />
       <circle cx={(anomalyIdx / (data.length - 1)) * 600} cy={toY(data[anomalyIdx])} r={9} fill="none" stroke="#d97706" strokeWidth="1.5" strokeDasharray="3 2" />

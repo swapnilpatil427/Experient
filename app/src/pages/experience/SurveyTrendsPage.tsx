@@ -234,7 +234,7 @@ export function SurveyTrendsPage() {
             <Link key={item.label} to={item.path}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-bold transition-all"
               style={'active' in item && item.active
-                ? { background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color:'white', boxShadow:'0 2px 8px rgba(42,75,217,0.25)' }
+                ? { background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', color:'white', boxShadow:'0 2px 8px color-mix(in srgb, var(--color-primary) 25%, transparent)' }
                 : { background:'var(--color-surface-container)', color:'var(--color-on-surface-variant)' }
               }>
               <Icon name={item.icon} size={12} />{item.label}
@@ -262,7 +262,7 @@ export function SurveyTrendsPage() {
         <Button size="sm"
           onClick={() => openCrystal(t('trends.crystalQuery'))}
           className="text-xs font-bold text-white border-0 flex-shrink-0"
-          style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+          style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
           <Icon name="psychology" size={13} /> {t('trends.askCrystal')}
         </Button>
       </motion.div>
@@ -279,14 +279,14 @@ export function SurveyTrendsPage() {
       {!loading && snapshots.length === 0 && (
         <GlassCard className="p-14 text-center">
           <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5"
-            style={{ background:'linear-gradient(135deg, rgba(42,75,217,0.12), rgba(131,41,200,0.12))' }}>
-            <Icon name="timeline" size={32} style={{ color:'#2a4bd9' }} />
+            style={{ background:'linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent), color-mix(in srgb, var(--color-tertiary) 12%, transparent))' }}>
+            <Icon name="timeline" size={32} style={{ color:'var(--color-primary)' }} />
           </div>
           <h3 className="text-xl font-black font-headline mb-2">{t('trends.noData')}</h3>
           <p className="text-sm text-on-surface-variant mb-6 max-w-sm mx-auto">{t('trends.noDataHint')}</p>
           <Link to={toPath(ROUTES.EXPERIENCE_SURVEY, { surveyId })}>
             <Button className="font-bold text-white border-0"
-              style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+              style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
               <Icon name="auto_awesome" size={15} /> {t('trends.runPipeline')}
             </Button>
           </Link>
@@ -318,7 +318,7 @@ export function SurveyTrendsPage() {
               value:     latest?.csat != null ? latest.csat.toFixed(2) : '—',
               delta:     csatDelta,
               icon:      'star',
-              iconColor: '#00647c',
+              iconColor: 'var(--color-secondary)',
               sub:       t('trends.csatScale'),
             },
             {
@@ -327,7 +327,7 @@ export function SurveyTrendsPage() {
               delta:     cesDelta != null ? -cesDelta : null, // lower effort = better
               deltaInverted: true,
               icon:      'speed',
-              iconColor: '#8329c8',
+              iconColor: 'var(--color-tertiary)',
               sub:       t('trends.cesScale'),
             },
             {
@@ -405,12 +405,12 @@ export function SurveyTrendsPage() {
               <ComposedChart data={chartData} margin={chartMargin}>
                 <defs>
                   <linearGradient id="npsGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#2a4bd9" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#2a4bd9" stopOpacity={0} />
+                    <stop offset="5%"  stopColor="var(--color-primary)" stopOpacity={0.15} />
+                    <stop offset="95%" stopColor="var(--color-primary)" stopOpacity={0} />
                   </linearGradient>
                   <linearGradient id="ciGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"  stopColor="#879aff" stopOpacity={0.15} />
-                    <stop offset="100%" stopColor="#879aff" stopOpacity={0.03} />
+                    <stop offset="0%"  stopColor="var(--color-primary-container)" stopOpacity={0.15} />
+                    <stop offset="100%" stopColor="var(--color-primary-container)" stopOpacity={0.03} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid {...gridStyle} />
@@ -426,8 +426,8 @@ export function SurveyTrendsPage() {
                 <Area type="monotone" dataKey="nps_ci_high" stroke="none" fill="url(#ciGrad)" fillOpacity={1} name="CI High" legendType="none" />
                 <Area type="monotone" dataKey="nps_ci_low"  stroke="none" fill="white" fillOpacity={1}    name="CI Low"  legendType="none" />
                 {/* NPS line */}
-                <Area type="monotone" dataKey="nps" stroke="#2a4bd9" strokeWidth={2.5}
-                  fill="url(#npsGrad)" dot={false} activeDot={{ r: 4, strokeWidth: 0, fill: '#2a4bd9' }}
+                <Area type="monotone" dataKey="nps" stroke="var(--color-primary)" strokeWidth={2.5}
+                  fill="url(#npsGrad)" dot={false} activeDot={{ r: 4, strokeWidth: 0, fill: 'var(--color-primary)' }}
                   name={t('trends.metrics.npsShort')} />
                 {/* Anomaly markers */}
                 {anomalyDates.map((d, i) => (
@@ -501,9 +501,9 @@ export function SurveyTrendsPage() {
                 <CartesianGrid {...gridStyle} />
                 <XAxis dataKey="date" tick={axisStyle} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                 <YAxis tick={axisStyle} axisLine={false} tickLine={false} width={32} />
-                <Line type="monotone" dataKey="csat" stroke="#00647c" strokeWidth={2.5}
+                <Line type="monotone" dataKey="csat" stroke="var(--color-secondary)" strokeWidth={2.5}
                   dot={false} activeDot={{ r: 4 }} name={t('trends.metrics.csatShort')} />
-                <Line type="monotone" dataKey="ces"  stroke="#8329c8" strokeWidth={2}
+                <Line type="monotone" dataKey="ces"  stroke="var(--color-tertiary)" strokeWidth={2}
                   dot={false} activeDot={{ r: 4 }} name={t('trends.metrics.cesShort')}
                   strokeDasharray="5 3" />
                 <Legend iconType="line" wrapperStyle={{ fontSize: 11 }} />
@@ -538,7 +538,7 @@ export function SurveyTrendsPage() {
                 <YAxis yAxisId="right" orientation="right" tick={axisStyle} axisLine={false} tickLine={false} width={36} unit="%" />
                 <Area yAxisId="left" type="monotone" dataKey="velocity" stroke="#059669" strokeWidth={2}
                   fill="url(#velGrad)" dot={false} name={t('trends.metrics.velocityShort')} />
-                <Line yAxisId="right" type="monotone" dataKey="completion" stroke="#2a4bd9" strokeWidth={2}
+                <Line yAxisId="right" type="monotone" dataKey="completion" stroke="var(--color-primary)" strokeWidth={2}
                   dot={false} strokeDasharray="4 3" name={t('trends.metrics.completionShort')} />
                 <Legend iconType="line" wrapperStyle={{ fontSize: 11 }} />
                 <RechartsTip content={<ChartTooltip formatValue={(v: number | null, key: string) =>
@@ -715,7 +715,7 @@ export function SurveyTrendsPage() {
                     <XAxis dataKey="week" tick={axisStyle} axisLine={false} tickLine={false} />
                     <YAxis yAxisId="left"  tick={axisStyle} axisLine={false} tickLine={false} width={28} />
                     <YAxis yAxisId="right" orientation="right" tick={axisStyle} axisLine={false} tickLine={false} width={32} />
-                    <Bar    yAxisId="left" dataKey="mentions"  fill="rgba(42,75,217,0.15)" name={t('trends.topics.volume')} radius={[3,3,0,0]} />
+                    <Bar    yAxisId="left" dataKey="mentions"  fill="color-mix(in srgb, var(--color-primary) 15%, transparent)" name={t('trends.topics.volume')} radius={[3,3,0,0]} />
                     <Line  yAxisId="right" type="monotone" dataKey="npsImpact" stroke="#d97706"
                       strokeWidth={2} dot={false} name={t('trends.npsImpactLabel')} />
                     <ReferenceLine yAxisId="right" y={0} stroke="rgba(0,0,0,0.15)" strokeDasharray="3 3" />
@@ -739,7 +739,7 @@ export function SurveyTrendsPage() {
           <GlassCard className="p-4 holographic">
             <div className="flex items-center gap-3 relative z-10">
               <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-                style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                 <Icon name="psychology" size={18} style={{ color:'white' }} />
               </div>
               <div className="flex-1 min-w-0">
@@ -755,7 +755,7 @@ export function SurveyTrendsPage() {
               <Button size="sm"
                 onClick={() => openCrystal(t('trends.crystalQuery'))}
                 className="text-xs font-bold text-white border-0 flex-shrink-0"
-                style={{ background:'linear-gradient(135deg, #2a4bd9, #8329c8)' }}>
+                style={{ background:'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))' }}>
                 {t('trends.askCrystal')}
               </Button>
             </div>

@@ -199,7 +199,17 @@ Return ONLY valid JSON — no markdown, no explanation:
 
 # ── LLM call + batch loop ─────────────────────────────────────────────────────
 
-_BATCH_SIZE = 5   # responses per LLM call — keeps output tokens manageable on free tier
+
+# Responses per LLM call. Fixed 2026-07-06: was 5, which for surveys with many
+# questions or verbose types (ranking/matrix/checkbox produce arrays/objects,
+# not a single scalar) could push the JSON output past response_gen's
+# max_tokens budget, truncating mid-string ("EOF while parsing a string") —
+# call_agent's retry loop resends the same prompt at the same token budget, so
+# a truncation caused by output size doesn't self-heal by retrying; it just
+# fails the same way up to 3 times and the batch silently generates 0
+# responses. Lowered to 3 to leave real headroom; max_tokens for response_gen
+# was also raised in lib/models.py as defense in depth.
+_BATCH_SIZE = 3   # responses per LLM call — keeps output tokens manageable
 
 
 def _strip_think(raw: str) -> str:

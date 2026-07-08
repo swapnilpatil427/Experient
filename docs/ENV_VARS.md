@@ -21,6 +21,7 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `OPENROUTER_API_KEY` | [req] | — | LLM gateway |
 | `AGENTS_INTERNAL_KEY` | [req] | `dev-internal-key-change-in-prod` | Shared secret: backend ↔ CrystalOS ↔ internal metering API. **Change in prod.** |
 | `AGENTS_URL` | [def] | `http://localhost:8001` | Where the backend reaches CrystalOS |
+| `BACKEND_INTERNAL_URL` | [def] | `http://localhost:3001` | Where CrystalOS reaches the Node backend (reverse direction of `AGENTS_URL`) — used by `lib/workflow_signal_client.py` to POST `workflow_signal` events to `/api/internal/workflows/signal` after an automated insight run detects an AI trigger. Auth reuses `AGENTS_INTERNAL_KEY` (same shared secret, both directions). |
 | `AGENTS_ENV` | [def] | `dev` | `dev` \| `dev-paid` \| `production` |
 | `NODE_ENV` | [def] | — | `production` gates startup validation + `/api/metrics` IP allow |
 | `PORT` | [def] | `3001` | Backend port |
@@ -56,6 +57,7 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `CREDIT_COST_{AUTOMATED_CHECKPOINT,AUTOMATED_REPORT}` | 5/15 | Insight Pipeline v2 automated run costs — checkpoint-only vs +tiered report (CrystalOS `credit_preflight`; survey/org settings may override) |
 | `REFRESH_DAILY_LIMIT` | 5 | Max "Refresh" button presses per survey per day (backend; evaluated at startup) |
 | `MANUAL_DAILY_RUN_LIMIT` | 10 | Max Expert + Quick manual insight runs per survey per day (backend; evaluated at startup) |
+| `TAG_REPORT_MANUAL_DAILY_LIMIT` | 10 | Max Tag Report Manual + Custom Range trigger requests per (org, tag) per day (`routes/survey-groups.ts`'s `tag-report/manual`/`tag-report/custom-range`) |
 | `CREDIT_PRICE_{STARTER,GROWTH,ENTERPRISE,PLATFORM}` | 49/299/1499/0 | Plan list price (USD) |
 | `CREDIT_FREE_LIFETIME_GRANT` | 225 | One-time free-tier grant |
 | `CREDIT_PERIOD_DAYS` | 30 | Allowance period length |
@@ -67,6 +69,13 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | Var | Default | Purpose |
 |---|---|---|
 | `ENABLE_EVENT_ENGINE` | `false` (true in dev script) | Backend event/cron/notification processor |
+| `WORKFLOW_TRIGGER_STREAM` | `workflow:triggers` | Redis Streams key for the async workflow-trigger queue (`lib/workflowQueue.ts`); started alongside the notification processor under `ENABLE_EVENT_ENGINE` |
+| `WORKFLOW_RETRY_BASE_MS` | `30000` | Base backoff delay before the first workflow-execution retry |
+| `WORKFLOW_RETRY_FACTOR` | `2` | Exponential backoff multiplier per retry attempt |
+| `WORKFLOW_MAX_ATTEMPTS` | `5` | Attempts (incl. first) before a failed workflow execution is dead-lettered (`workflow_executions.dead_letter`) |
+| `WORKFLOW_CONNECTOR_TIMEOUT_MS` | `10000` | `AbortSignal.timeout()` applied to every outbound connector fetch (Jira/Salesforce/ServiceNow/Zendesk in `lib/connectors.ts` + `notify.webhook` in `lib/workflowEngine.ts`) so a hung TCP connection fails bounded instead of stalling the retry/backoff path |
+| `WORKFLOW_EXECUTING_TIMEOUT_MIN` | `5` | Minutes a `workflow_executions` row may sit in `status = 'executing'` before the stuck-row reaper (`lib/workflowQueue.ts::sweepDueRetries`) force-fails it into the normal retry/DLQ path |
+| `TAG_REPORT_JITTER_WINDOW_MS` | `300000` (5 min) | Deterministic per-(org,tag) jitter window applied at trigger time by the Tag Report Automated-mode due-tags sweep (`lib/tagReportScheduler.ts`) before enqueueing onto the shared workflow-trigger queue — avoids a thundering herd when many tags become due in the same sweep tick |
 | `ENABLE_SCHEDULER` | `false` | CrystalOS in-process scheduler |
 | `ENABLE_STREAM_CONSUMER` | on when `REDIS_URL` set | CrystalOS progressive-tier consumer |
 | `SCHEDULER_PORT` | 8090 | Scheduler service HTTP (`/health`,`/metrics`) |
@@ -75,8 +84,10 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `SCHEDULER_LOCK_KEY` | 728190421 | Advisory-lock key |
 | `SCHEDULER_POLL_SEC` | 300 dev / 3600 prod | CrystalOS scheduler poll |
 | `INSIGHT_INTERVAL_FREE_MIN` / `INSIGHT_INTERVAL_PAID_MIN` | 120 / 15 | Auto insight cadence |
-| `JOB_{EXPIRE_BROADCASTS,RECONCILIATION,COST_DOWN_DIVIDEND,CREDIT_LEDGER_MAINTENANCE,CREDENTIAL_HEALTH}` (+ `_SEC`) | enabled / per-job | Scheduler job toggles + intervals (`JOB_CREDENTIAL_HEALTH_SEC` default 21600 = 6h) |
+| `JOB_{EXPIRE_BROADCASTS,RECONCILIATION,COST_DOWN_DIVIDEND,CREDIT_LEDGER_MAINTENANCE,CREDENTIAL_HEALTH,RENOTIFY_STALE_APPROVALS,RESUME_DELAYED_EXECUTIONS}` (+ `_SEC`) | enabled / per-job | Scheduler job toggles + intervals (`JOB_CREDENTIAL_HEALTH_SEC` default 21600 = 6h; `JOB_RENOTIFY_STALE_APPROVALS_SEC` default 3600 = 1h tick; `JOB_RESUME_DELAYED_EXECUTIONS_SEC` default 60 = 1min tick) |
 | `CREDENTIAL_EXPIRY_WARN_DAYS` | 14 | `credential-health` warns + alerts when a key's days-to-expiry drops below this |
+| `WORKFLOW_APPROVAL_RENOTIFY_HOURS` | 72 | `renotify-stale-approvals` job: re-notify a `workflow_approvals` row's owner after it's sat `pending` this many hours since request/last notify. Never auto-rejects — simple expiry + re-notify only. |
+| `WORKFLOW_RESUME_DELAYED_BATCH_SIZE` | 200 | `resume-delayed-executions` job: max `flow.delay`-waiting rows resumed per tick (oldest-due-first). Caps one tick's wall-clock time under a large post-outage backlog; leftover rows resume on subsequent ticks, not dropped. |
 
 ## Prism — data ingestion / migration engine (backend)
 
@@ -140,6 +151,19 @@ in `index.ts` and, in **staging/production**, refuses to start on any fatal misc
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | Jira ticket sync |
 | `SERVICENOW_INSTANCE_URL`, `SERVICENOW_USER`, `SERVICENOW_PASSWORD` | ServiceNow connector |
 | `SF_INSTANCE_URL`, `SF_ACCESS_TOKEN` | Salesforce connector |
+| `ZENDESK_SUBDOMAIN`, `ZENDESK_EMAIL`, `ZENDESK_API_TOKEN` | Zendesk ticket connector (`zendesk.create_ticket` workflow action) |
+
+## Workflow Automation — per-org connector credentials vault
+| Var | Status | Purpose |
+|---|---|---|
+| `WORKFLOW_CREDENTIALS_KEY` | [opt; req in prod for the vault] | 32-byte AES-256-GCM key (hex — 64 chars — or base64), used by `backend/src/lib/workflowCredentials.ts` to encrypt/decrypt the `workflow_connector_credentials` table (per-org Jira/Salesforce/ServiceNow/Zendesk/Slack/webhook credentials). Generate with `openssl rand -hex 32`. Absent/dev ⇒ vault disabled and every connector falls back to the shared env vars above (zero breaking change). Malformed (wrong decoded length) throws at read time — validated at startup, fails loud in production, warns in dev. |
+
+Jira/Salesforce/ServiceNow/Zendesk connectors (`backend/src/lib/connectors.ts`) now check
+`getCredentials(orgId, connector)` (per-org, vault-backed) FIRST, then fall back to the
+matching shared env var(s) above. The `notify.webhook` workflow action HMAC-SHA256 signs
+its JSON body (`X-Experient-Signature: sha256=<hex>` header) using `config.secret`
+(per-workflow) or the org's vaulted `webhook` credential's `secret` field, in that order;
+unsigned only when neither is set.
 
 ## Observability — optional
 | Var(s) | Purpose |
@@ -164,13 +188,53 @@ in `index.ts` and, in **staging/production**, refuses to start on any fatal misc
 `DEFAULT_FULL_CHECKPOINT_THRESHOLD`, `DEFAULT_MEANINGFUL_DELTA_NPS_POINTS`, `DEFAULT_MEANINGFUL_DELTA_TOPIC_PCT`,
 `DEFAULT_MANUAL_EXPERT_SNAPSHOTS`, `DEFAULT_MANUAL_QUICK_SAMPLE`, `DEFAULT_MANUAL_QUICK_SNAPSHOTS`,
 `DEFAULT_MANUAL_QUICK_WINDOW_DAYS`, `DEFAULT_MANUAL_EXPERT_CHECKPOINT_LOOKBACK`, `DEFAULT_MANUAL_EXPERT_MAX_CORPUS`,
-`DEFAULT_MANUAL_EXPERT_FULL_CORPUS_CAP`, `DEFAULT_REFRESH_LOOKBACK_DAYS`, `DEFAULT_REFRESH_MIN_RESPONSE_COUNT`
+`DEFAULT_MANUAL_EXPERT_FULL_CORPUS_CAP`, `DEFAULT_REFRESH_LOOKBACK_DAYS`, `DEFAULT_REFRESH_MIN_RESPONSE_COUNT`,
+`DEFAULT_RESPONSE_TAGGING_BATCH_SIZE` (default `1` — how many new-response stream events accumulate before
+`consumers/response_stream.py` runs a lightweight sentiment/emotion/effort/topic tagging sweep,
+`lib/response_tagging.py::tag_untagged_responses`; independent of `DEFAULT_STREAM_THRESHOLD`, which still gates
+full report+checkpoint generation), `RESPONSE_TAGGING_SWEEP_CAP` (safety ceiling on how many untagged responses
+a single tagging sweep call processes, independent of the batch-size trigger cadence above; env-tiered since
+2026-07-13 — dev `50`, dev-paid `75`, staging `100`, prod `200` — larger in prod so a real backlog drains in
+fewer scheduler ticks), `MAX_RESPONSE_TAGGING_ATTEMPTS` (default `3` — circuit breaker added 2026-07-13: a
+response that fails tagging this many times in a row is quarantined, i.e. marked enriched with no scores, instead
+of being retried forever; without this a single permanently-poisoned response would be re-selected by every
+future sweep's oldest-first query and block every response behind it — see
+`lib/response_tagging.py::_record_batch_failure`),
+`TOPIC_DISCOVERY_CANDIDATE_THRESHOLD` (default `25` — flat candidate-buffer floor before a new topic gets
+clustered + LLM-named; shared by `node_cluster` AND `lib/response_tagging.py::tag_untagged_responses` so both
+"enough evidence for a new topic" checks agree)
 (platform-constant fallbacks for the survey/org settings COALESCE merge), and `INSIGHT_CHECKPOINTS_V2_ENABLED`
 (default `true` — dual-write `insight_checkpoints_v2` alongside the legacy `survey_insight_checkpoints` table during migration).
+An explicit `INSIGHT_RESPONSE_TAGGING_BATCH_SIZE` env var (ops escape hatch, mirrors the existing but
+undocumented `INSIGHT_NEW_RESPONSE_THRESHOLD`) overrides `resolve_response_tagging_batch_size`'s survey/org/
+platform resolution outright.
+Manual "Catch Up Tagging" job (Experience → Topics page, added 2026-07-13; renamed from "Backfill Tagging"):
+cost is TIERED by backlog size, not flat (`backend/src/lib/creditPlans.ts::resolveTopicBackfillCost`, pricing
+review) — `CREDIT_COST_TOPIC_BACKFILL` (default `15` — tier 1, ≤500 untagged responses), `CREDIT_COST_TOPIC_
+BACKFILL_TIER2` (default `40` — 501–5,000), `CREDIT_COST_TOPIC_BACKFILL_TIER3` (default `200` — 5,001–50,000),
+`CREDIT_COST_TOPIC_BACKFILL_PER_1K` (default `5` — credits per additional 1,000 responses above 50,000; unlike
+Custom Analysis's bounded/sampled corpus, this job processes every untagged response with no sampling, so cost
+keeps climbing above tier 3 instead of flattening out, up to the same 500-credit platform ceiling `resolveCustomCost`
+uses). CrystalOS's own `POST /topics/backfill` endpoint and `lib/topic_backfill.py` orchestrator have no separate
+env vars — they reuse `RESPONSE_TAGGING_SWEEP_CAP`/`MAX_RESPONSE_TAGGING_ATTEMPTS` above.
 Insight Pipeline v2 (Phase 6/7): `CREDIT_COST_CUSTOM_BASE` (default `25` — base credit cost for a Custom Analysis run),
 `ENABLE_RETENTION_JOB` (default `false` — gate the nightly automated-checkpoint retention/compaction job in `scheduler.py`;
 dev no-op unless set to `true`), `RETENTION_BLOB_DROP_DAYS` (default `30` — grace days before a collapsed low-delta
-automated checkpoint's `report_blob_ref` is dropped).
+automated checkpoint's `report_blob_ref` is dropped), `ENABLE_RESPONSE_TAGGING_BACKLOG_SWEEP` (default `true` —
+gate the 15-min `run_response_tagging_backlog_sweep` job that catches untagged responses on surveys not
+currently receiving live stream traffic, or whose tagging previously failed), `RESPONSE_TAGGING_BACKLOG_MAX_SURVEYS_PER_TICK`
+(default `20` — cap on distinct surveys swept per tick).
+Tag Report (`crystalos/graphs/tag_report.py`, added 2026-07-02): `TAG_REPORT_DEFAULT_TARGET_N` (default `5` —
+survey-selection target before an org/tag override applies), `TAG_REPORT_CEILING_N` (default `20` — hard cap on
+surveys scanned regardless of overrides), `TAG_REPORT_BATCH_SIZE` (default `3` — surveys fetched per
+`fetch_next_batch` loop iteration), `TAG_REPORT_MIN_RESPONSE_COUNT` (default `30` — per-survey response-count floor
+for trend eligibility), `TAG_REPORT_MIN_TRUST_SCORE` (default `40` — per-survey trust-score floor for trend
+eligibility), `TAG_REPORT_AGREEMENT_FLOOR` (default `2` — minimum agreeing trend-eligible surveys before a metric's
+`confidence_tier` can be `"confirmed"` rather than `"insufficient"`, DESIGN.md R-T2), `TAG_REPORT_STALENESS_THRESHOLD_DAYS`
+(default `21` — checkpoint-age divergence across contributing surveys that triggers a staleness warning, DESIGN.md R-A2),
+`TAG_REPORT_CADENCE_MISMATCH_RATIO` (default `2.0` — a survey's checkpoint cadence vs. the tag's median cadence ratio
+that triggers R-T3's `cadence_mismatch` comparability warning), `TAG_REPORT_CITATIONS_PER_SURVEY` (default `3` — max
+real per-response citations resolved per contributing survey when merging the report's citation manifest).
 All have safe defaults — only set to tune; they don't belong in `.env.example`.
 
 ---
@@ -185,6 +249,7 @@ REDIS_URL=redis://localhost:6379
 OPENROUTER_API_KEY=
 AGENTS_INTERNAL_KEY=dev-internal-key-change-in-prod
 AGENTS_URL=http://localhost:8001
+# BACKEND_INTERNAL_URL=http://localhost:3001
 AGENTS_ENV=dev
 # NODE_ENV=production
 # PORT=3001
