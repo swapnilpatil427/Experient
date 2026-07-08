@@ -340,13 +340,24 @@ function matchesCronFields(fields: string[], wall: { minute: number; hour: numbe
 // Reads a Date's wall-clock fields as they appear in `timezone`, using Intl
 // (avoids a date-fns-tz/luxon dependency per spec §3.2/§3.4's "no new npm
 // cron-parsing library" guidance).
+const wallClockFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function wallClockFormatter(timezone: string): Intl.DateTimeFormat {
+  let fmt = wallClockFormatterCache.get(timezone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: false,
+      weekday: 'short',
+    });
+    wallClockFormatterCache.set(timezone, fmt);
+  }
+  return fmt;
+}
+
 function wallClockFields(date: Date, timezone: string): { minute: number; hour: number; date: number; month: number; day: number; year: number } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric', month: 'numeric', day: 'numeric',
-    hour: 'numeric', minute: 'numeric', hour12: false,
-    weekday: 'short',
-  }).formatToParts(date);
+  const parts = wallClockFormatter(timezone).formatToParts(date);
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '0';
   const weekdayShort = get('weekday');
   const weekdayIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(weekdayShort);
