@@ -384,19 +384,56 @@ export async function grantExists(orgId: string, actionRef: string): Promise<boo
   return rows.length > 0;
 }
 
-/** Change the org's plan; resets the allowance to the new plan's monthly amount immediately. */
+/**
+ * Change the org's plan; resets the allowance to the new plan's monthly amount immediately.
+ *
+ * Also writes org_profiles.plan_tier, in the same transaction as the credit_accounts update.
+ * org_profiles.plan_tier — not credit_accounts.plan_tier — is what planGating.ts/seats.ts/
+ * roles.ts actually gate Command Center, workflow triggers, seat limits, and enterprise-only
+ * features on. Before this, org_profiles.plan_tier was only ever seeded once, by
+ * getOrCreateAccount() on an org's first credit touch, and never updated again — so any org
+ * that changed plans after that (i.e. every plan change through this endpoint) would silently
+ * drift the two columns apart: credits/allowance would reflect the new plan while every
+ * plan-tier-gated feature kept checking the stale org_profiles value. See
+ * 20260716000000_org_profiles_plan_tier_widen.sql, which widens org_profiles.plan_tier's
+ * CHECK constraint to accept the full PlanTier set so this write can never fail here.
+ */
 export async function setPlan(orgId: string, plan: PlanTier, userId?: string | null): Promise<CreditBalance> {
   await getOrCreateAccount(orgId);
   const monthly = PLAN_MONTHLY_ALLOWANCE[plan];
-  const { rows } = await query<CreditAccount>(
-    `UPDATE credit_accounts
-        SET plan_tier = $2, monthly_allowance = $3, allowance_remaining = $3,
-            overage_used = 0, period_start = NOW()
-      WHERE org_id = $1
-      RETURNING *`,
-    [orgId, plan, monthly]
-  );
-  const a = rows[0];
+
+  const client = await pool.connect();
+  let a: CreditAccount;
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query<CreditAccount>(
+      `UPDATE credit_accounts
+          SET plan_tier = $2, monthly_allowance = $3, allowance_remaining = $3,
+              overage_used = 0, period_start = NOW()
+        WHERE org_id = $1
+        RETURNING *`,
+      [orgId, plan, monthly]
+    );
+    a = rows[0];
+    // Upsert, not a plain UPDATE: via the HTTP route, requireAuth's ensureProvisioned()
+    // always creates the org_profiles row first, so an UPDATE would be enough there — but
+    // setPlan() is also called directly by scripts/set-org-plan.ts (dev/staging setup,
+    // bypasses the API/auth layer entirely), where no such guarantee holds. A plain UPDATE
+    // against a nonexistent row silently affects 0 rows with no error, so the org_profiles
+    // side would never actually take effect while this call still reports success.
+    await client.query(
+      `INSERT INTO org_profiles (org_id, plan_tier) VALUES ($1, $2)
+         ON CONFLICT (org_id) DO UPDATE SET plan_tier = EXCLUDED.plan_tier`,
+      [orgId, plan]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* already rolled back */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+
   await writeLedger({
     orgId, userId: userId ?? null, actionType: 'plan_change', credits: monthly,
     source: 'allowance', actionRef: null, balanceAfter: a.allowance_remaining + a.pack_balance,

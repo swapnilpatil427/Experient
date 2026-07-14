@@ -40,14 +40,22 @@ function baseAccount(overrides = {}) {
 // Build a fake { query, pool } backed by a single mutable account.
 function makeDb(account) {
   const ledger = [];
+  const orgProfileUpdates = [];  // tracks UPDATE org_profiles SET plan_tier calls (setPlan sync)
   const handle = (sql, params) => {
     const s = String(sql);
     if (/^\s*(BEGIN|COMMIT|ROLLBACK)/i.test(s)) return { rows: [] };
+    // INSERT INTO org_profiles ... ON CONFLICT DO UPDATE SET plan_tier — checked before the
+    // generic credit_accounts 'plan_tier = $2' branch below, since both statements contain
+    // that substring.
+    if (s.includes('INSERT INTO org_profiles') && s.includes('plan_tier')) {
+      orgProfileUpdates.push({ orgId: params[0], planTier: params[1] });
+      return { rows: [] };
+    }
     if (s.includes('FROM org_profiles')) return { rows: [] };
     if (s.includes('SELECT') && s.includes('FROM credit_accounts')) return { rows: [{ ...account }] };
     if (s.includes('INSERT INTO credit_accounts')) return { rows: [{ ...account }] };
     if (s.includes('NOW() - period_start')) return { rows: [] };                  // reset-if-elapsed → not elapsed
-    if (s.includes('plan_tier = $2')) {                                            // setPlan
+    if (s.includes('UPDATE credit_accounts') && s.includes('plan_tier = $2')) {     // setPlan
       account.plan_tier = params[1];
       account.monthly_allowance = Number(params[2]);
       account.allowance_remaining = Number(params[2]);
@@ -76,7 +84,7 @@ function makeDb(account) {
   const query  = vi.fn(async (sql, params) => handle(sql, params));
   const client = { query: vi.fn(async (sql, params) => handle(sql, params)), release: vi.fn() };
   const pool   = { connect: vi.fn(async () => client) };
-  return { query, pool, ledger, client };
+  return { query, pool, ledger, client, orgProfileUpdates };
 }
 
 function loadLedger(account) {
@@ -179,6 +187,18 @@ describe('creditLedger — grants & plan changes', () => {
     const balance = await mod.setPlan('o1', 'growth');
     expect(balance.plan_tier).toBe('growth');
     expect(balance.allowance_remaining).toBe(12000);
+  });
+
+  it('setPlan also syncs org_profiles.plan_tier, not just credit_accounts', async () => {
+    // Regression test: org_profiles.plan_tier (not credit_accounts.plan_tier) is what
+    // planGating.ts/seats.ts/roles.ts gate Command Center, workflow triggers, seat limits,
+    // and enterprise-only features on. Before this fix, setPlan() only updated
+    // credit_accounts — an org could "upgrade" (correct credit allowance) and still get
+    // 403'd out of plan-gated features because org_profiles never moved off its default.
+    const account = baseAccount({ plan_tier: 'starter', monthly_allowance: 1500, allowance_remaining: 200 });
+    const { mod, db } = loadLedger(account);
+    await mod.setPlan('o1', 'growth');
+    expect(db.orgProfileUpdates).toEqual([{ orgId: 'o1', planTier: 'growth' }]);
   });
 
   it('setOverage toggles the spend cap', async () => {

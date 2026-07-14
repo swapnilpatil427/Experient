@@ -23,12 +23,45 @@ from crystalos.lib.logger import logger
 
 # ── Output schemas ────────────────────────────────────────────────────────────
 
+_NARRATIVE_MAX_LEN = 900
+
+def _truncate_narrative(text: str, limit: int = _NARRATIVE_MAX_LEN) -> str:
+    """Trim an overlong narrative to `limit` chars instead of failing schema validation.
+
+    call_agent()'s retry loop feeds the exact pydantic error (including the char limit)
+    back to the model on retry, but LLMs are unreliable at self-enforcing a precise
+    character budget even when told the number twice — narrate_prescriptive_insight in
+    particular (driver_context + ICE framing packed into the prompt) has been observed
+    burning all 3 attempts and still exceeding 900 chars, which previously discarded the
+    model's entire grounded analysis for a generic canned fallback (see
+    prescriptive_expert_failed in graphs/insights.py). Trimming here keeps the real
+    analysis instead.
+    """
+    if len(text) <= limit:
+        return text
+    truncated = text[:limit]
+    # Prefer cutting at the last sentence boundary so the result still reads cleanly.
+    last_sentence_end = max(truncated.rfind(". "), truncated.rfind("! "), truncated.rfind("? "))
+    if last_sentence_end > limit * 0.5:  # don't cut so early it discards most of the content
+        return truncated[:last_sentence_end + 1].rstrip()
+    # No good sentence boundary within range — fall back to the last word boundary.
+    last_space = truncated.rfind(" ")
+    if last_space > limit * 0.5:
+        return truncated[:last_space].rstrip(",;: ") + "…"
+    return truncated.rstrip() + "…"
+
+
 class NpsExpertOutput(BaseModel):
     headline: str = Field(max_length=160, description="Plain-English insight headline ≤160 chars")
     narrative: str = Field(max_length=900, description="2-3 analytical sentences with [rXXXX] citation markers")
     benchmark_context: str = Field(default="", description="e.g. 'Above SaaS industry median of 32'")
     risk_flag: bool = Field(default=False, description="True if score indicates high churn risk")
     key_driver_hypothesis: str = Field(default="", description="Primary suspected driver in ≤1 sentence")
+
+    @field_validator("narrative", mode="before")
+    @classmethod
+    def _clip_narrative(cls, v: str) -> str:
+        return _truncate_narrative(str(v)) if v else v
 
 
 class CsatExpertOutput(BaseModel):
@@ -37,6 +70,11 @@ class CsatExpertOutput(BaseModel):
     top_box_pct: float = Field(default=0.0, description="Estimated % scoring 4-5 out of 5")
     benchmark_context: str = Field(default="")
     key_driver_hypothesis: str = Field(default="")
+
+    @field_validator("narrative", mode="before")
+    @classmethod
+    def _clip_narrative(cls, v: str) -> str:
+        return _truncate_narrative(str(v)) if v else v
 
 
 class TopicExpertOutput(BaseModel):
@@ -47,6 +85,11 @@ class TopicExpertOutput(BaseModel):
     business_impact: str = Field(default="", description="Impact on retention/revenue/satisfaction")
     five_why_depth: str = Field(default="", description="First 'why' answer if determinable from data")
 
+    @field_validator("narrative", mode="before")
+    @classmethod
+    def _clip_narrative(cls, v: str) -> str:
+        return _truncate_narrative(str(v)) if v else v
+
 
 class TrendExpertOutput(BaseModel):
     headline: str = Field(max_length=160)
@@ -55,6 +98,11 @@ class TrendExpertOutput(BaseModel):
     causal_hypothesis: str = Field(default="")
     early_warning_signal: bool = Field(default=False, description="True if pattern is a leading churn indicator")
     recommended_monitoring: str = Field(default="", description="What metric to watch next")
+
+    @field_validator("narrative", mode="before")
+    @classmethod
+    def _clip_narrative(cls, v: str) -> str:
+        return _truncate_narrative(str(v)) if v else v
 
 
 class PrescriptiveExpertOutput(BaseModel):
@@ -66,6 +114,11 @@ class PrescriptiveExpertOutput(BaseModel):
     ice_impact: int = Field(default=5, ge=1, le=10, description="ICE: business impact (1-10)")
     ice_confidence: int = Field(default=5, ge=1, le=10, description="ICE: confidence data supports this (1-10)")
     ice_ease: int = Field(default=5, ge=1, le=10, description="ICE: ease of implementation (1-10)")
+
+    @field_validator("narrative", mode="before")
+    @classmethod
+    def _clip_narrative(cls, v: str) -> str:
+        return _truncate_narrative(str(v)) if v else v
 
 
 class InsightSetEvaluatorOutput(BaseModel):

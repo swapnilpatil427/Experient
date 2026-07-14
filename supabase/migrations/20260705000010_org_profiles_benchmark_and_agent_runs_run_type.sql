@@ -9,12 +9,18 @@ ALTER TABLE org_profiles
   ADD COLUMN IF NOT EXISTS benchmark_nps INTEGER
     CHECK (benchmark_nps IS NULL OR benchmark_nps BETWEEN -100 AND 100);
 
--- Widen agent_runs.run_type to allow org brief/summary generation runs. Constraint name and
--- the exact current set of allowed values were confirmed by grepping every migration that
--- touches agent_runs.run_type (supabase/migrations/20240514000000_agents.sql created it as
--- 'survey_creation' only; supabase/migrations/20240516000000_insights.sql dropped and
--- recreated it as agent_runs_run_type_check with ('survey_creation','insight_generation') —
--- no later migration has touched it) — do not guess the constraint name or value set.
+-- Widen agent_runs.run_type to allow org brief/summary generation runs. Constraint name was
+-- confirmed by grepping every migration that touches agent_runs.run_type
+-- (supabase/migrations/20240514000000_agents.sql created it as 'survey_creation' only;
+-- 20240516000000_insights.sql dropped and recreated it as agent_runs_run_type_check with
+-- ('survey_creation','insight_generation')) — do not guess the constraint name.
+-- Also includes 'topic_backfill': the manual "Backfill Tagging" job
+-- (lib/topic_backfill.py / routes/insights.ts) already writes agent_runs rows with that
+-- run_type ahead of its own migration for this same constraint
+-- (20260713090000_response_tagging_resilience.sql, merged into main after this migration
+-- was written on the org-dashboard branch) — that migration re-derives the constraint from
+-- scratch too and must in turn keep 'org_brief_generation' once both land on main, or each
+-- migration undoes the other's value depending on which runs last.
 -- NOT VALID + a separate VALIDATE CONSTRAINT (Decision 16 item 9's own stated convention
 -- for exactly this situation): agent_runs is a hot table written on every survey-creation/
 -- insight-generation run platform-wide and may already hold production rows. A plain
@@ -25,7 +31,7 @@ ALTER TABLE org_profiles
 -- block concurrent reads or writes.
 ALTER TABLE agent_runs DROP CONSTRAINT IF EXISTS agent_runs_run_type_check;
 ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_run_type_check
-  CHECK (run_type IN ('survey_creation', 'insight_generation', 'org_brief_generation')) NOT VALID;
+  CHECK (run_type IN ('survey_creation', 'insight_generation', 'org_brief_generation', 'topic_backfill')) NOT VALID;
 ALTER TABLE agent_runs VALIDATE CONSTRAINT agent_runs_run_type_check;
 
 -- ROLLBACK:
