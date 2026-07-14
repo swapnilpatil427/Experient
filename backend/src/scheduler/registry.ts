@@ -10,6 +10,12 @@ import { creditLedgerMaintenance } from './jobs/creditLedgerMaintenance';
 import { credentialHealth } from './jobs/credentialHealth';
 import { reNotifyStaleApprovals } from './jobs/reNotifyStaleApprovals';
 import { resumeDelayedExecutions } from './jobs/resumeDelayedExecutions';
+import { orgMetricsDaily } from './jobs/orgMetricsDaily.job';
+import { surveyHealthSummary } from './jobs/surveyHealthSummary.job';
+import { orgMetricsWeekly } from './jobs/orgMetricsWeekly.job';
+import { orgTopicTrends } from './jobs/orgTopicTrends.job';
+import { orgHealthScore } from './jobs/orgHealthScore.job';
+import { orgCrystalBrief } from './jobs/orgCrystalBrief.job';
 
 export interface JobResult { affected?: number; note?: string }
 
@@ -89,5 +95,59 @@ export const JOBS: Job[] = [
     intervalSec: intSec('JOB_RESUME_DELAYED_EXECUTIONS_SEC', 60), // every minute
     enabled: flag('JOB_RESUME_DELAYED_EXECUTIONS', true),
     handler: resumeDelayedExecutions,
+  },
+  {
+    name: 'org-metrics-daily',
+    description: 'Refresh org_metrics_daily + tag_metrics materialized views (org-dashboard).',
+    intervalSec: intSec('JOB_ORG_METRICS_DAILY_SEC', 900), // 15 min
+    enabled: flag('JOB_ORG_METRICS_DAILY', true),
+    handler: orgMetricsDaily,
+  },
+  {
+    name: 'survey-health-summary',
+    description: 'Refresh survey_health_summary materialized view (org-dashboard).',
+    intervalSec: intSec('JOB_SURVEY_HEALTH_SUMMARY_SEC', 3_600), // hourly
+    enabled: flag('JOB_SURVEY_HEALTH_SUMMARY', true),
+    handler: surveyHealthSummary,
+  },
+  {
+    name: 'org-metrics-weekly',
+    description: 'Refresh org_metrics_weekly materialized view (org-dashboard).',
+    intervalSec: intSec('JOB_ORG_METRICS_WEEKLY_SEC', 86_400), // daily
+    enabled: flag('JOB_ORG_METRICS_WEEKLY', true),
+    handler: orgMetricsWeekly,
+  },
+  {
+    // Weekly (Monday) — the registry has no day-of-week primitive, so this ticks hourly and
+    // self-gates to Monday UTC inside the handler (org-dashboard). Hourly, not daily: a daily
+    // interval is a relative check (`now - lastRun >= 24h`) anchored to whenever the process
+    // last restarted (in-memory `lastRun`, reset to 0 on restart) — on a stable, long-running
+    // deployment that can permanently lock the "is it Monday" check onto the wrong day-of-week
+    // forever. Hourly gives ~24 chances to land inside any Monday's 24h window regardless of
+    // restart timing. compute_org_topic_trends() is idempotent within a calendar week
+    // (deletes+reinserts that week's rows), so the extra non-Monday ticks are cheap no-ops.
+    name: 'org-topic-trends',
+    description: 'CALL compute_org_topic_trends() — self-gates to Monday UTC inside the handler.',
+    intervalSec: intSec('JOB_ORG_TOPIC_TRENDS_SEC', 3_600), // hourly tick, Monday-gated handler (was daily — see Decision N in DECISIONS.md)
+    enabled: flag('JOB_ORG_TOPIC_TRENDS', true),
+    handler: orgTopicTrends,
+  },
+  {
+    name: 'org-health-score',
+    description: 'CALL compute_all_org_health_scores() (org-dashboard).',
+    intervalSec: intSec('JOB_ORG_HEALTH_SCORE_SEC', 86_400), // daily
+    enabled: flag('JOB_ORG_HEALTH_SCORE', true),
+    handler: orgHealthScore,
+  },
+  {
+    // Weekly (Monday) in production/staging; every tick in dev (org-dashboard's own
+    // deliberate dev-only faster refresh cadence — see orgCrystalBrief.job.ts's header).
+    // Ticks hourly (see org-topic-trends's comment above for why daily is unsafe); the
+    // handler self-gates on environment tier.
+    name: 'org-crystal-brief',
+    description: 'Auto-generate the weekly org Crystal Brief for eligible orgs (>=3 surveys, >=14 days of data). Weekly (Monday UTC) in prod/staging; every tick in dev.',
+    intervalSec: intSec('JOB_ORG_CRYSTAL_BRIEF_SEC', 3_600), // hourly tick, env-tier-gated handler (was daily — see Decision N)
+    enabled: flag('JOB_ORG_CRYSTAL_BRIEF', true),
+    handler: orgCrystalBrief,
   },
 ];

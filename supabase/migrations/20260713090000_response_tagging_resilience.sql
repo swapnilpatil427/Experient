@@ -22,9 +22,14 @@ COMMENT ON COLUMN responses.ai_tagging_last_error IS
 -- Manual "Backfill Tagging" job (Experience → Topics page). Follows the same
 -- agent_runs convention as insight_generation: Node inserts the row, CrystalOS
 -- only updates it (stream_events progress, status, heartbeat).
+-- Also keeps 'org_brief_generation' (added by
+-- 20260705000010_org_profiles_benchmark_and_agent_runs_run_type.sql, which this
+-- migration's DROP/ADD would otherwise silently undo on databases where both run) —
+-- both migrations rebuild agent_runs_run_type_check from scratch, so each must carry
+-- the other's value forward.
 ALTER TABLE agent_runs DROP CONSTRAINT IF EXISTS agent_runs_run_type_check;
 ALTER TABLE agent_runs ADD CONSTRAINT agent_runs_run_type_check
-  CHECK (run_type IN ('survey_creation', 'insight_generation', 'topic_backfill'));
+  CHECK (run_type IN ('survey_creation', 'insight_generation', 'org_brief_generation', 'topic_backfill'));
 
 -- Prevent duplicate concurrent topic_backfill jobs for the same survey
 -- (mirrors uq_gir_tag_inflight's pattern for group_insight_runs, see

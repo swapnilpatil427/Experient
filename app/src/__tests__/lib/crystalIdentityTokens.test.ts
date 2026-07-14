@@ -40,7 +40,7 @@ const LITERAL_RGBA_PATTERN = /rgba\(\s*42,\s*75,\s*217|rgba\(\s*131,\s*41,\s*200
 // as a range (not content-matched) to stay consistent with how this test was
 // originally authored, just re-pointed at the block's real current position.
 const EXCLUDED_LINE_RANGES: Record<string, Array<[number, number]>> = {
-  'src/components/CrystalPanel.tsx': [[1727, 1732]],
+  'src/components/CrystalPanel.tsx': [[1733, 1738]],
 };
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');

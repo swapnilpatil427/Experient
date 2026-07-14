@@ -58,6 +58,8 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `REFRESH_DAILY_LIMIT` | 5 | Max "Refresh" button presses per survey per day (backend; evaluated at startup) |
 | `MANUAL_DAILY_RUN_LIMIT` | 10 | Max Expert + Quick manual insight runs per survey per day (backend; evaluated at startup) |
 | `TAG_REPORT_MANUAL_DAILY_LIMIT` | 10 | Max Tag Report Manual + Custom Range trigger requests per (org, tag) per day (`routes/survey-groups.ts`'s `tag-report/manual`/`tag-report/custom-range`) |
+| `CREDIT_COST_{ORG_SUMMARY_BASE,ORG_SUMMARY_MAX}` | 75/1500 | Org Intelligence Dashboard Custom Summary cost curve (`lib/orgSummaryCost.ts`'s `resolveOrgSummaryCost()`) — a separate, org-wide-scaled curve from `CUSTOM_BASE`'s survey-level tiers (Decision 12, `docs/org-dashboard/DECISIONS.md`); `BASE` defaults to 3× `CUSTOM_BASE`, tiered ≤2000/≤10000/>10000 org-wide responses = base/base+step/base+2×step, capped at `MAX` |
+| `ORG_SUMMARY_DAILY_LIMIT` | 3 | Max Org Intelligence Dashboard Custom Summary requests per org per day (`routes/org-dashboard.ts`'s `POST /dashboard/summaries`; scoped by `org_id` only, not per-survey) |
 | `CREDIT_PRICE_{STARTER,GROWTH,ENTERPRISE,PLATFORM}` | 49/299/1499/0 | Plan list price (USD) |
 | `CREDIT_FREE_LIFETIME_GRANT` | 225 | One-time free-tier grant |
 | `CREDIT_PERIOD_DAYS` | 30 | Allowance period length |
@@ -85,6 +87,7 @@ Legend: **[req]** required to run · **[opt]** optional (feature/integration) ·
 | `SCHEDULER_POLL_SEC` | 300 dev / 3600 prod | CrystalOS scheduler poll |
 | `INSIGHT_INTERVAL_FREE_MIN` / `INSIGHT_INTERVAL_PAID_MIN` | 120 / 15 | Auto insight cadence |
 | `JOB_{EXPIRE_BROADCASTS,RECONCILIATION,COST_DOWN_DIVIDEND,CREDIT_LEDGER_MAINTENANCE,CREDENTIAL_HEALTH,RENOTIFY_STALE_APPROVALS,RESUME_DELAYED_EXECUTIONS}` (+ `_SEC`) | enabled / per-job | Scheduler job toggles + intervals (`JOB_CREDENTIAL_HEALTH_SEC` default 21600 = 6h; `JOB_RENOTIFY_STALE_APPROVALS_SEC` default 3600 = 1h tick; `JOB_RESUME_DELAYED_EXECUTIONS_SEC` default 60 = 1min tick) |
+| `JOB_{ORG_METRICS_DAILY,SURVEY_HEALTH_SUMMARY,ORG_METRICS_WEEKLY,ORG_TOPIC_TRENDS,ORG_HEALTH_SCORE,ORG_CRYSTAL_BRIEF}` (+ `_SEC`) | enabled / per-job | Org Dashboard (Command Center) scheduler job toggles + intervals — replace pg_cron (not installed in this stack; custom `pgvector/pgvector:pg16` image). Defaults: `JOB_ORG_METRICS_DAILY_SEC` 900 (15 min, also refreshes `tag_metrics`); `JOB_SURVEY_HEALTH_SUMMARY_SEC` 3600 (hourly); `JOB_ORG_METRICS_WEEKLY_SEC` 86400 (daily); `JOB_ORG_TOPIC_TRENDS_SEC` 3600 (hourly tick, handler self-gates to Monday UTC since the registry has no day-of-week primitive — hourly, not daily, so the gate can't permanently lock onto the wrong day-of-week on a long-running deployment whose `lastRun` state is in-memory and resets on restart); `JOB_ORG_HEALTH_SCORE_SEC` 86400 (daily); `JOB_ORG_CRYSTAL_BRIEF_SEC` 3600 (hourly tick — auto-generates the weekly org Crystal Brief for eligible orgs (≥3 surveys, ≥14 days of data); handler self-gates to Monday UTC in production/staging, but proceeds every tick in dev by design so local testing doesn't require waiting a week — see `backend/src/scheduler/jobs/orgCrystalBrief.job.ts`). See `docs/org-dashboard/IMPLEMENTATION_SPEC.md` and `backend/src/scheduler/jobs/ORG_JOBS_REGISTRATION_TODO.md`. `ORG_CRYSTAL_BRIEF_INTER_ORG_DELAY_MS` (default `2000` — pause between each sequential per-org `triggerOrgBrief` call in that job, avoiding a thundering herd against CrystalOS). |
 | `CREDENTIAL_EXPIRY_WARN_DAYS` | 14 | `credential-health` warns + alerts when a key's days-to-expiry drops below this |
 | `WORKFLOW_APPROVAL_RENOTIFY_HOURS` | 72 | `renotify-stale-approvals` job: re-notify a `workflow_approvals` row's owner after it's sat `pending` this many hours since request/last notify. Never auto-rejects — simple expiry + re-notify only. |
 | `WORKFLOW_RESUME_DELAYED_BATCH_SIZE` | 200 | `resume-delayed-executions` job: max `flow.delay`-waiting rows resumed per tick (oldest-due-first). Caps one tick's wall-clock time under a large post-outage backlog; leftover rows resume on subsequent ticks, not dropped. |
@@ -235,7 +238,27 @@ eligibility), `TAG_REPORT_AGREEMENT_FLOOR` (default `2` — minimum agreeing tre
 `TAG_REPORT_CADENCE_MISMATCH_RATIO` (default `2.0` — a survey's checkpoint cadence vs. the tag's median cadence ratio
 that triggers R-T3's `cadence_mismatch` comparability warning), `TAG_REPORT_CITATIONS_PER_SURVEY` (default `3` — max
 real per-response citations resolved per contributing survey when merging the report's citation manifest).
+Org Intelligence Dashboard / Command Center (`routes/org-dashboard.ts`, `services/org-metrics.service.ts`, added
+2026-07-04, `docs/org-dashboard/`): `ORG_DASHBOARD_MAX_RANGE_DAYS` (default `90` — the single reconciled cap on
+`POST /dashboard/summaries`/`summaries/preview` date ranges, satisfying both the `org_metrics_daily`-servability
+constraint and the signal-logic-validity constraint per Decision 16 item 3), `ORG_SUMMARY_MIN_N` (default `100` —
+response-count floor below which a Custom Summary preview reports `low_confidence: true`; an org-wide-scaled
+analogue of Custom Analysis's `custom_analysis_min_n_for_nps`), `ORG_BRIEF_REGENERATE_ESTIMATED_SECONDS` (default
+`45` — `estimatedSeconds` returned by `POST /dashboard/crystal-brief/regenerate`, sized for Decision 16 item 4's
+"1 guaranteed + 1 conditional LLM call per brief" cost model). See `CREDIT_COST_{ORG_SUMMARY_BASE,ORG_SUMMARY_MAX}`
+and `ORG_SUMMARY_DAILY_LIMIT` in the Credit system table above for the summary cost/rate-limit knobs.
 All have safe defaults — only set to tune; they don't belong in `.env.example`.
+`ORG_BRIEF_ENABLE_INSIGHT_CITATIONS` (CrystalOS-only, `os.getenv` in `crystalos/graphs/org_brief_graph.py`; default
+`"false"`) — gates the org Crystal Brief's insight-retrieval/citation pipeline (headline-only grounding,
+`source_insight_ids`) on vs. the numbers-only narrative. **Non-negotiable compliance release gate (Decision 16 item
+1 / Decision 24, `docs/org-dashboard/DECISIONS.md`): must stay `false` in every environment until Tag Report's
+citation-erasure redaction hook (Tag Report `DESIGN.md` §4.5 AC-3) is both approved AND actually wired into
+Command Center's tables (`org_crystal_briefs`/`org_custom_summaries`) as a consumer — not merely "named" as a
+future consumer.** Flipping it on prematurely ships citation-bearing briefs (real respondent verbatims surfaced
+via `source_insight_ids`) with no redaction path. No Node-side equivalent exists (confirmed by grep — this flag is
+read only in CrystalOS); there is currently no startup assertion anywhere blocking it from being flipped on
+without the redaction hook wired in — recommend the CrystalOS track add one (e.g. fail fast at process start if
+`ORG_BRIEF_ENABLE_INSIGHT_CITATIONS=true` and the redaction hook isn't registered).
 
 ---
 

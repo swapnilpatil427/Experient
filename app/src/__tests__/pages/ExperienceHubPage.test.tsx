@@ -24,6 +24,8 @@ vi.mock('framer-motion', () => ({
 vi.mock('../../hooks/useApi', () => ({ useApi: vi.fn(), default: vi.fn() }));
 vi.mock('../../hooks/useSurveys', () => ({ useSurveys: vi.fn() }));
 vi.mock('../../hooks/useExperience', () => ({ useOrgOverview: vi.fn() }));
+vi.mock('../../hooks/useOrgDashboard', () => ({ useOrgDashboard: vi.fn() }));
+vi.mock('../../hooks/useTagMetrics', () => ({ useTagMetrics: vi.fn() }));
 
 const mockOpenCrystal = vi.fn();
 const mockSetScope = vi.fn();
@@ -53,6 +55,8 @@ vi.mock('../../pages/insights/shared', () => ({
 import { useApi } from '../../hooks/useApi';
 import { useSurveys } from '../../hooks/useSurveys';
 import { useOrgOverview } from '../../hooks/useExperience';
+import { useOrgDashboard } from '../../hooks/useOrgDashboard';
+import { useTagMetrics } from '../../hooks/useTagMetrics';
 import { ExperienceHubPage } from '../../pages/experience/ExperienceHubPage';
 
 const mockSurveys = [
@@ -132,6 +136,23 @@ beforeEach(() => {
     error: null,
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useOrgOverview>);
+  vi.mocked(useOrgDashboard).mockReturnValue({
+    data: {
+      healthScore: { total: 72, components: { nps: 0.8, sentiment: 0.7, velocity: 0.6, anomalyFree: 0.9 }, computedAt: '2026-07-01T00:00:00Z' },
+      org: { name: 'Test Org' },
+      crystalBrief: null,
+      briefMinDataMet: true,
+    },
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useOrgDashboard>);
+  vi.mocked(useTagMetrics).mockReturnValue({
+    data: { tags: [] },
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useTagMetrics>);
 });
 
 afterEach(() => {

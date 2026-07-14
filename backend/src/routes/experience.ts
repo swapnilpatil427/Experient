@@ -19,6 +19,7 @@ import { serverError, clientError } from '../lib/httpError';
 import { checkCredits, debitCredits } from '../lib/creditLedger';
 import { CREDIT_COSTS } from '../lib/creditPlans';
 import { registry } from '../lib/workflowRegistry';
+import { mapRecommendation } from '../services/org-metrics.service';
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8001';
 const AGENTS_INTERNAL_KEY = process.env.AGENTS_INTERNAL_KEY
@@ -88,9 +89,94 @@ interface CrystalContext {
   tag_id?: string;
   tag_name?: string;
   tag_survey_ids?: string[];
+  // Set by attachBriefGrounding alongside prepending onto `insights` (below) — tracked
+  // separately so the /:scope/crystal/stream handler's pre-existing "client-supplied
+  // insights win when non-empty" merge (added long before brief grounding existed) can
+  // still guarantee this specific insight survives, instead of being silently dropped
+  // whenever the client also sends its own non-empty insights array (e.g. stale
+  // agenticInsights context state left over from a previous page/survey).
+  briefGroundingInsight?: Record<string, unknown>;
 }
 
-async function loadCrystalContext(surveyId: string, orgId: string, tagId?: string): Promise<CrystalContext> {
+/**
+ * Grounds `ctx.insights` in a specific `org_crystal_briefs` row so Crystal's org-scope
+ * chat can answer using — and agree with — the exact brief the user is looking at,
+ * rather than independently re-deriving its own view of the org's insights from scratch.
+ *
+ * Injection point: CrystalOS's `_build_insights_context` (crystalos/agents/crystal.py)
+ * renders full narrative text for ANY dict in `insights` whose `layer` matches a real
+ * layer value (descriptive/diagnostic/predictive/prescriptive) — reading `id`/`layer`/
+ * `headline`/`narrative`/`trust_score` generically. Synthesizing the brief as one such
+ * dict and prepending it here means the existing pipeline surfaces it automatically,
+ * with zero changes to any Python file. `narrative` is truncated at 200 chars by that
+ * renderer — kept reasonably concise, but not hard-capped here (the truncation is an
+ * accepted, pre-existing behavior of that renderer, not something this call site works
+ * around).
+ *
+ * Always org-scoped (`WHERE id = $1 AND org_id = $2`) — never trusts a bare id from the
+ * client. No-op (including on any query failure) if the brief doesn't exist or belongs
+ * to a different org — falls through to whatever `ctx.insights` already contains.
+ */
+async function attachBriefGrounding(ctx: CrystalContext, orgId: string, briefId: string): Promise<void> {
+  try {
+    const { rows } = await query(
+      `SELECT id, brief_text, recommendations, generated_at, date_range_start, date_range_end, hallucination_score
+         FROM org_crystal_briefs WHERE id = $1 AND org_id = $2`,
+      [briefId, orgId],
+    );
+    const brief = rows[0] as Record<string, unknown> | undefined;
+    if (!brief) return;
+
+    // Reuses org-metrics.service.ts's mapRecommendation — the single place that resolves
+    // the recommendations JSONB's snake_case (survey_id/action_type/...) vs. camelCase
+    // ambiguity (Decision 27) — rather than re-deriving that fallback chain here.
+    const recommendations = Array.isArray(brief.recommendations)
+      ? (brief.recommendations as unknown[]).map(mapRecommendation)
+      : [];
+
+    const surveyIds = Array.from(new Set(
+      recommendations.map((r) => r.surveyId).filter((id): id is string => !!id),
+    ));
+    let titleById = new Map<string, string>();
+    if (surveyIds.length) {
+      const { rows: surveyRows } = await query<{ id: string; title: string }>(
+        `SELECT id, title FROM surveys WHERE id = ANY($1)`,
+        [surveyIds],
+      ).catch(() => ({ rows: [] }));
+      titleById = new Map(surveyRows.map((s) => [s.id, s.title]));
+    }
+
+    const recLines = recommendations.map((r) => {
+      const title = r.surveyId ? titleById.get(r.surveyId) : undefined;
+      const suffix = title ? ` (survey: ${title})` : '';
+      return `${r.rank}. ${r.action} — ${r.rationale}${suffix}`;
+    });
+
+    const dateRangeLabel = `${brief.date_range_start as string} – ${brief.date_range_end as string}`;
+    const narrative = recLines.length
+      ? `${brief.brief_text as string}\n\nRecommendations:\n${recLines.join('\n')}`
+      : (brief.brief_text as string);
+
+    const hallucinationScore = brief.hallucination_score != null ? Number(brief.hallucination_score) : null;
+
+    const syntheticInsight: Record<string, unknown> = {
+      id: brief.id,
+      layer: 'prescriptive',
+      headline: `Crystal's Weekly Org Brief (${dateRangeLabel})`,
+      narrative,
+      trust_score: hallucinationScore != null ? Math.round(hallucinationScore * 100) : undefined,
+    };
+
+    // Prepend, not replace — additive to whatever org-scope insight-gathering already
+    // populated, and priority-ordered first so this grounds the answer before anything else.
+    ctx.insights = [syntheticInsight, ...ctx.insights];
+    ctx.briefGroundingInsight = syntheticInsight;
+  } catch (err: unknown) {
+    logger.warn({ err: (err as Error).message, orgId, briefId }, 'loadCrystalContext:brief_grounding_failed');
+  }
+}
+
+async function loadCrystalContext(surveyId: string, orgId: string, tagId?: string, briefId?: string): Promise<CrystalContext> {
   // citationMap: insight_id → { headline, survey_title, survey_id, layer, category }
   // Returned alongside context so the frontend can render rich source cards
   // without additional round-trips.
@@ -129,6 +215,9 @@ async function loadCrystalContext(surveyId: string, orgId: string, tagId?: strin
       // job; the get_tag_report/get_tag_report_trail tools do the trust-weighted
       // aggregation from group_insight_runs/group_insights themselves, so no
       // insights/topics/metrics are loaded here for tag scope.
+      // briefId grounding only ever happens in practice for org scope, but this call is
+      // not hard-restricted to it — it's a no-op whenever the brief lookup finds nothing.
+      if (briefId) await attachBriefGrounding(ctx, orgId, briefId);
       return ctx;
     }
     // Invalid/cross-org tag — fall through to surveyId (empty for tag calls) and
@@ -310,6 +399,10 @@ async function loadCrystalContext(surveyId: string, orgId: string, tagId?: strin
     };
   }
 
+  // Covers both the survey-scope and org-scope branches above (this only ever happens in
+  // practice for org scope, but isn't hard-restricted to it — see attachBriefGrounding's
+  // own doc comment for the no-op guarantee).
+  if (briefId) await attachBriefGrounding(ctx, orgId, briefId);
   return ctx;
 }
 
@@ -320,7 +413,7 @@ async function loadCrystalContext(surveyId: string, orgId: string, tagId?: strin
 async function crystalHandler(req: Request, res: Response): Promise<void> {
   const orgId = req.orgId;
   const userId = req.userId;
-  const { message, conversation_history = [], survey_id, tag_id, focused_topic } = req.body as Record<string, unknown>;
+  const { message, conversation_history = [], survey_id, tag_id, focused_topic, brief_id } = req.body as Record<string, unknown>;
 
   if (!message || typeof message !== 'string' || (message as string).trim().length < 2) {
     res.status(400).json({ error: 'message is required' });
@@ -355,8 +448,11 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
   try {
     // If both survey_id and tag_id are present, loadCrystalContext checks tagId
     // first (returns early once a valid tag context is built) — scope stays
-    // auto-detected from the body, no route param needed here.
-    const ctx = await loadCrystalContext((survey_id as string) || '', orgId, (tag_id as string) || undefined);
+    // auto-detected from the body, no route param needed here. brief_id is a new,
+    // optional field (additive — existing callers that don't send it get undefined,
+    // so ctx.insights is built exactly as before for them) that grounds org-scope
+    // Crystal chat in a specific org_crystal_briefs row (see attachBriefGrounding).
+    const ctx = await loadCrystalContext((survey_id as string) || '', orgId, (tag_id as string) || undefined, (brief_id as string) || undefined);
 
     // Build a rich fallback message that embeds all loaded context so the LLM
     // can answer meaningfully even without tool calls.
@@ -406,6 +502,11 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
       survey_title:          ctx.survey_title || '',
     };
     if (focused_topic) agentBody.focused_topic = focused_topic;
+    // Additive — CrystalOS's CrystalInput model has no brief_id field, so this is inert
+    // there; the actual grounding already happened above via ctx.insights (see
+    // attachBriefGrounding). Forwarded anyway so agentBody's shape stays self-describing
+    // for logging/debugging, matching this handler's existing focused_topic convention.
+    if (brief_id) agentBody.brief_id = brief_id;
     if (ctx.scope === 'tag') {
       agentBody.tag_id = ctx.tag_id || (tag_id as string) || '';
       agentBody.tag_name = ctx.tag_name;
@@ -605,13 +706,30 @@ router.post('/:scope/crystal/stream', requireAuth, async (req: Request, res: Res
   let agentBody: Record<string, unknown> = { ...body, org_id: orgId, user_id: userId, scope: effectiveScope };
 
   try {
-    const ctx = await loadCrystalContext(surveyIdForCtx, orgId!, tagIdForCtx);
+    // `agentBody` already spreads the raw `body` above, so a client-sent `brief_id`
+    // reaches CrystalOS untouched regardless — but that pass-through alone grounds
+    // nothing (CrystalOS's CrystalInput model has no brief_id field). Passing it into
+    // loadCrystalContext here is what actually builds the grounding ctx.insights
+    // server-side (see attachBriefGrounding).
+    const ctx = await loadCrystalContext(surveyIdForCtx, orgId!, tagIdForCtx, typeof body.brief_id === 'string' ? body.brief_id : undefined);
     citationMap = ctx.citationMap as unknown as Record<string, Record<string, unknown>>;
     if (scope === 'tag' && ctx.scope === 'tag' && ctx.tag_id) {
       effectiveScope = 'tag';
       effectiveTagId = ctx.tag_id;
     }
     const bodyInsights = Array.isArray(body.insights) ? (body.insights as Record<string, unknown>[]) : [];
+    // Client-supplied insights normally win when non-empty (e.g. SurveyIntelligencePage's
+    // richer, already-loaded insight set via setCrystalData). But that context is global
+    // app state that outlives page navigation — a user who last visited a survey page,
+    // then opens "Ask a follow-up" on an org brief elsewhere, can still have a stale
+    // non-empty `agenticInsights` array in scope. Without this guard, attachBriefGrounding's
+    // synthetic brief insight (which IS present in ctx.insights) would be silently dropped
+    // by the branch below, and Crystal would answer ungrounded despite the caller
+    // explicitly requesting brief_id grounding. Always keep it, regardless of which side wins.
+    const resolvedInsights = bodyInsights.length > 0 ? bodyInsights : ctx.insights;
+    const insights = ctx.briefGroundingInsight && !resolvedInsights.includes(ctx.briefGroundingInsight)
+      ? [ctx.briefGroundingInsight, ...resolvedInsights]
+      : resolvedInsights;
     agentBody = {
       ...body,
       org_id: orgId,
@@ -620,7 +738,7 @@ router.post('/:scope/crystal/stream', requireAuth, async (req: Request, res: Res
       tag_id: effectiveTagId,
       tag_name: effectiveTagId ? ctx.tag_name : undefined,
       tag_survey_ids: effectiveTagId ? ctx.tag_survey_ids : undefined,
-      insights: bodyInsights.length > 0 ? bodyInsights : ctx.insights,
+      insights,
       topics: Array.isArray(body.topics) && (body.topics as unknown[]).length > 0
         ? body.topics
         : ctx.topics,

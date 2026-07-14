@@ -30,6 +30,14 @@ import type {
   TagReportRunResponse, TagReportTrailResponse, TagReportsIndexResponse,
   TagReportGenerateRequest, TagReportGenerateResponse, TagReportTrailEntry,
 } from '../types/tagReport';
+import type {
+  OrgDashboardPayload, OrgTrendsResponse, ProgramsResponse, ProgramsQuery,
+  OrgTopicsResponse, OrgTopicBreakdown, OrgAlertsResponse, OrgHealthScoreDetail,
+  BriefsResponse, CheckpointComparisonResult, TagMetricsResponse,
+  SummaryPreviewRequest, SummaryPreviewResponse, CreateSummaryRequest,
+  CreateSummaryResponse, OrgSummary, CrystalBriefResponse, TrendRange, TrendGranularity,
+  OrgBriefDetail,
+} from '../types/orgDashboard';
 
 // ── Prism response-shape guards ──────────────────────────────────────────────
 // Small defensive helpers so a FE↔BE response-shape mismatch throws ONE clear,
@@ -2414,6 +2422,138 @@ export function createApiClient(getToken: GetToken) {
       const res = await http.get<{ history: OrgMetricSnapshot[]; days: number; org_id: string }>(
         `/api/insights/org/metric-history?days=${days}`,
       );
+      return res.data;
+    },
+
+    // ── Org Dashboard (Command Center) ──────────────────────────────────────────
+    // Endpoints owned by the Backend Engineer agent working in parallel on this
+    // branch (docs/org-dashboard/IMPLEMENTATION_SPEC.md, "File ownership").
+    // Response shapes follow ARCHITECTURE.md's "API Design" section, reconciled
+    // per that spec: `programs[].tags` is an array (0-5 `survey_tags` rows per
+    // survey), not the singular `tagGroupId`/`tagGroupName` in the original doc.
+
+    getOrgDashboard: async (): Promise<OrgDashboardPayload> => {
+      const res = await http.get<OrgDashboardPayload>('/api/org/dashboard');
+      return res.data;
+    },
+
+    getOrgDashboardTrends: async (
+      range: TrendRange = '30d',
+      granularity?: TrendGranularity,
+    ): Promise<OrgTrendsResponse> => {
+      const qs = new URLSearchParams({ range });
+      if (granularity) qs.set('granularity', granularity);
+      const res = await http.get<OrgTrendsResponse>(`/api/org/dashboard/trends?${qs}`);
+      return res.data;
+    },
+
+    getOrgDashboardPrograms: async (query: ProgramsQuery = {}): Promise<ProgramsResponse> => {
+      const qs = new URLSearchParams();
+      if (query.page)     qs.set('page',     String(query.page));
+      if (query.pageSize) qs.set('pageSize', String(query.pageSize));
+      if (query.sort)     qs.set('sort',     query.sort);
+      if (query.order)    qs.set('order',    query.order);
+      if (query.tagId)    qs.set('tagGroupId', query.tagId);
+      if (query.status)   qs.set('status',   query.status);
+      const q = qs.toString();
+      const res = await http.get<ProgramsResponse>(`/api/org/dashboard/programs${q ? `?${q}` : ''}`);
+      return res.data;
+    },
+
+    getOrgDashboardTopics: async (): Promise<OrgTopicsResponse> => {
+      const res = await http.get<OrgTopicsResponse>('/api/org/dashboard/topics');
+      return res.data;
+    },
+
+    getOrgTopicBreakdown: async (topicLabel: string): Promise<OrgTopicBreakdown> => {
+      const res = await http.get<OrgTopicBreakdown>(`/api/org/dashboard/topics/${encodeURIComponent(topicLabel)}`);
+      return res.data;
+    },
+
+    getOrgDashboardAlerts: async (limit = 20): Promise<OrgAlertsResponse> => {
+      const res = await http.get<OrgAlertsResponse>(`/api/org/dashboard/alerts?limit=${limit}`);
+      return res.data;
+    },
+
+    acknowledgeOrgAlert: async (alertId: string): Promise<{ alertId: string; acknowledgedAt: string }> => {
+      const res = await http.patch<{ alertId: string; acknowledgedAt: string }>(
+        `/api/org/dashboard/alerts/${alertId}/acknowledge`,
+        {},
+      );
+      return res.data;
+    },
+
+    // Always `{ brief, minDataMet }` — never a bare brief, never bare `null`
+    // (see docs/org-dashboard/PRODUCTION_READINESS_AUDIT.md, "GET
+    // /dashboard/crystal-brief" fix).
+    getOrgCrystalBrief: async (): Promise<CrystalBriefResponse> => {
+      const res = await http.get<CrystalBriefResponse>('/api/org/dashboard/crystal-brief');
+      return res.data;
+    },
+
+    regenerateOrgCrystalBrief: async (): Promise<{ jobId: string; estimatedSeconds: number }> => {
+      const res = await http.post<{ jobId: string; estimatedSeconds: number }>('/api/org/dashboard/crystal-brief/regenerate', {});
+      return res.data;
+    },
+
+    getOrgHealthScoreDetail: async (): Promise<OrgHealthScoreDetail> => {
+      const res = await http.get<OrgHealthScoreDetail>('/api/org/health-score');
+      return res.data;
+    },
+
+    getOrgDashboardBriefs: async (page = 1, pageSize = 25): Promise<BriefsResponse> => {
+      const res = await http.get<BriefsResponse>(`/api/org/dashboard/briefs?page=${page}&pageSize=${pageSize}`);
+      return res.data;
+    },
+
+    compareOrgBriefs: async (id: string, otherId: string): Promise<CheckpointComparisonResult> => {
+      const res = await http.get<CheckpointComparisonResult>(`/api/org/dashboard/briefs/${id}/compare/${otherId}`);
+      return res.data;
+    },
+
+    // Full provenance/trail data for one brief — powers `BriefProvenancePanel`
+    // ("How was this generated?", nested inside a `BriefArchive` entry).
+    getOrgBriefDetail: async (briefId: string): Promise<OrgBriefDetail> => {
+      const res = await http.get<OrgBriefDetail>(`/api/org/dashboard/briefs/${briefId}`);
+      return res.data;
+    },
+
+    getOrgTagMetrics: async (): Promise<TagMetricsResponse> => {
+      const res = await http.get<TagMetricsResponse>('/api/org/dashboard/tags');
+      return res.data;
+    },
+
+    // Manual Summary Generator — mirrors CustomAnalysisPage's/ManualRun's
+    // preview/create pattern exactly: `rawHttp` + `toManualRunError` so
+    // `ManualSummaryGenerator.tsx` can branch on `err instanceof
+    // ManualRunError` and `.code` (402 → INSUFFICIENT_CREDITS, 429 →
+    // RATE_LIMITED) instead of parsing message strings or reinventing a
+    // second error-normalization path.
+    previewOrgSummary: async (req: SummaryPreviewRequest): Promise<SummaryPreviewResponse> => {
+      try {
+        const res = await rawHttp.post<SummaryPreviewResponse>('/api/org/dashboard/summaries/preview', req);
+        return res.data;
+      } catch (error) {
+        throw toManualRunError(error);
+      }
+    },
+
+    createOrgSummary: async (req: CreateSummaryRequest): Promise<CreateSummaryResponse> => {
+      try {
+        const res = await rawHttp.post<CreateSummaryResponse>('/api/org/dashboard/summaries', req);
+        return res.data;
+      } catch (error) {
+        throw toManualRunError(error);
+      }
+    },
+
+    listOrgSummaries: async (): Promise<{ summaries: OrgSummary[] }> => {
+      const res = await http.get<{ summaries: OrgSummary[] }>('/api/org/dashboard/summaries');
+      return res.data;
+    },
+
+    getOrgSummary: async (id: string): Promise<{ summary: OrgSummary }> => {
+      const res = await http.get<{ summary: OrgSummary }>(`/api/org/dashboard/summaries/${id}`);
       return res.data;
     },
 

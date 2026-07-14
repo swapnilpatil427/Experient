@@ -4,6 +4,118 @@ Append-only. See `TEAM.md` for the entry format and escalation rules.
 
 ---
 
+## Decision 31: Full 7-persona production-readiness audit — 24 confirmed bugs fixed, 8 deferred with reasoning
+
+**Date:** 2026-07-06
+**Decision-maker:** Engineering, in response to a direct product request to review the feature "very carefully" for production readiness before real customers touch it.
+**Context:** A 7-persona expert panel (enterprise customer, mid-market/SMB customer, AI/ML engineer, professional services, marketing, sales, UX designer, product/platform engineer) each independently read the actual shipped code — not the design docs — and traced real behavior at realistic scale. This surfaced 24 confirmed, independently-verified bugs spanning AI correctness (raw survey UUIDs in customer-facing text, a failed narrative silently scoring as maximum trust, manual summaries never being verified due to a missing schema column), operational risk (a scheduler bug that could permanently prevent the weekly brief from ever auto-firing in a stable deployment, a confirmed Redis thundering-herd path, zero rollout control despite a proven gating pattern already existing elsewhere in the codebase), and UX correctness (a dead permalink, a null trust state rendering as if verified, broken/missing accessibility labels, unstyled dark-mode components).
+**Decision:** Fixed all 24 confirmed bugs across three parallel tracks (CrystalOS/AI, backend, frontend) plus one additional fix found during integration (a missing safety log for the citation-compliance flag). Full list and reasoning in `docs/org-dashboard/PRODUCTION_READINESS_AUDIT.md`. Explicitly deferred 8 items with written reasoning rather than silently dropping them — most significantly, a full incremental-refresh redesign of the materialized views (confirmed real and serious, but a correct fix requires verifying exactly what date range every downstream KPI needs against a live database, which this environment cannot provide; a rushed fix risks a worse, silent correctness regression than the current, at least honestly-documented, scale limitation).
+**Verification:** Backend suite 1364/1364 passing (1361 baseline + 3 new gate tests), `tsc` clean on both `app/` and `backend/`, CrystalOS graph compiles and imports cleanly, 6/6 new `org_brief_verify.py` tests passing, 3 EVALS.md cases hand-traced against the modified detector code with no change to documented expected outputs.
+**Reversibility:** Mixed. Most fixes are additive (new columns, new indexes, new middleware, new event types) and trivially reversible. The scheduler cadence change (daily→hourly for two jobs) and the plan-tier gate are the two with the broadest behavioral effect — both are env-var-controlled and can be reverted without a code change.
+
+---
+
+## Decision 30: Brief Provenance Panel is the "trail" for org briefs — audit-surface disclosure rules apply, not the live card's suppression rules
+
+**Date:** 2026-07-05
+**Decision-maker:** Engineering (in response to a direct product question: "can the user see what generated the report," "could we utilize trails view for this one")
+**Context:** No shared trail/timeline component exists anywhere in this codebase to reuse (`InsightTrailPage.tsx` and `TagReportTrailPage.tsx` are both fully bespoke). `BriefArchive.tsx` already provides the chronological-list-plus-inline-expand shape the org level needs — building a second, parallel full-page trail view would duplicate that navigation structure for no benefit.
+**Decision:** Add `BriefProvenancePanel.tsx` as a second inline-expand trigger ("How was this generated?") inside each already-expanded `BriefArchive` entry, sibling to the existing "Compare to previous" trigger — not a new page or route. Unlike the live `CrystalBriefCard` (a verdict surface, per Decision 16, where a "pass" trust badge must never render inline), this panel is an explicit, opt-in audit surface and shows the full 3-pass trust breakdown plainly (numeric+LLM grounding verdict, and any `pass_3_grounding_completeness.grounding_failures` clauses) — Decision 16's suppression rule governs the at-rest primary read, not this deeper, deliberately-clicked-into disclosure level.
+**Rationale:** Matches Decision 16's own "same disclosure depth as history itself, not the primary read" principle, applied to a new case (full generation provenance) rather than just checkpoint comparison.
+**Reversibility:** Easy — additive component and endpoint, no schema change.
+
+---
+
+## Decision 29: Crystal's org-chat follow-up is grounded via a synthetic insight, not a new CrystalOS contract field
+
+**Date:** 2026-07-05
+**Decision-maker:** Engineering (in response to a direct product question: "can Crystal ask queries across the org report")
+**Context:** "Ask a follow-up" on the Crystal Brief Card opened the pre-existing general org-portfolio Crystal chat, whose context loader (`loadCrystalContext`) independently re-derives insights/topics/metrics from scratch — it never read the specific `org_crystal_briefs` row on screen, so Crystal's answer wasn't guaranteed to reference, or even agree with, the visible brief. Investigation found `CrystalInput.metrics` (the generic dict field) is parsed by a narrow, fixed formatter (`_build_metrics_context`, reads only `nps`/`csat`) that would silently ignore anything else stuffed into it — but `_build_insights_context` is generic and renders full narrative text for any dict in the `insights` list carrying a real `layer` value.
+**Decision:** Ground the follow-up entirely on the Node backend: `loadCrystalContext` gains an optional `briefId` param; when present, it fetches that brief (org-scoped), resolves each recommendation's `survey_id` to a title, and prepends one synthetic insight-shaped dict (`layer: 'prescriptive'`, narrative = brief text + numbered recommendations with resolved survey names) into `ctx.insights`. Zero CrystalOS/Python changes. The client threads the viewed brief's id through as `CrystalCtx.focused_brief_id` → request body `brief_id`, mirroring the existing `focused_tag_id` pattern exactly.
+**Alternatives considered:** Adding a dedicated `brief_id`/`org_brief` field to CrystalOS's `CrystalInput` model and a matching formatter (rejected — more surface area for the same outcome, and the existing insights-formatter already does exactly what's needed with zero new Python code, which is a stronger "build vs. reuse" fit).
+**Reversibility:** Easy — purely additive on both sides; removing `attachBriefGrounding`'s call site reverts to prior behavior exactly.
+
+---
+
+## Decision 28: Auto-scheduled weekly brief generation — env-tier cadence, not a new "daily period" concept
+
+**Date:** 2026-07-05
+**Decision-maker:** Engineering, per explicit user instruction ("Implement automatically weekly in staging or Production. 1 day in Dev")
+**Context:** The brief only ever generated on-demand (manual "Regenerate" click) — no scheduled trigger existed anywhere, a real gap against the original ARCHITECTURE.md intent ("the graph runs once per org per week, triggered by the backend scheduler") that none of the original parallel build agents actually built.
+**Decision:** New job `orgCrystalBrief.job.ts`, registered on the existing registry's daily tick (mirroring `orgTopicTrends.job.ts`'s own "tick daily, self-gate inside the handler" pattern, since the registry has no day-of-week primitive). The handler self-gates on environment tier (`NODE_ENV === 'production'` → production; `NODE_ENV === 'staging'` or `AGENTS_ENV === 'staging'` → staging; else dev): production/staging only proceed past the gate on Monday UTC (real weekly cadence, one brief per org per ISO week); dev proceeds on every tick. Dev-tier ticks do **not** introduce a new daily-period shape — they regenerate the same current-ISO-week range every time, landing on the same upsert-on-`(org_id, date_range_start)` row the manual regenerate button already targets, just automatically and more often, so a developer isn't stuck waiting a week to see the automation work.
+**Also shipped as part of this decision:** a real eligibility gate (`BRIEF_MIN_SURVEYS = 3`, `BRIEF_MIN_DATA_DAYS = 14`, shared between the per-org and batched-all-orgs eligibility queries) — previously the "Crystal needs at least 2 weeks of data from 3 programs" empty-state copy existed with no actual check wired to it anywhere (`minDataMet` was always `true` in practice). Sequential per-org processing with a small configurable delay (`ORG_CRYSTAL_BRIEF_INTER_ORG_DELAY_MS`, default 2s) and per-org error isolation — one org's CrystalOS failure never aborts the sweep for the rest.
+**Reversibility:** Easy — new job, additive `minDataMet` field, no schema change. Disabling: `JOB_ORG_CRYSTAL_BRIEF=false`.
+
+---
+
+## Decision 27: Recommendation JSONB — resolve snake_case/camelCase and tagId naming during integration
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (integration pass)
+**Context:** Four parallel workstreams built against the same `org_crystal_briefs.recommendations` JSONB shape without a live shared type to compile against. `org_brief_graph.py` wrote raw Python/SQL-native snake_case keys (`survey_id`, `action_type`, `source_insight_ids`, and — per the ambiguity the CrystalOS engineer flagged in their own handoff report — both `tag_group_id` and `tag_id`, always null). The backend passed the JSONB array through as `unknown[]` with no transformation. The frontend's `CrystalBriefRecommendation` TypeScript type declared camelCase fields (`surveyId`, `actionType`, `tagGroupId`) and was missing `sourceInsightIds` entirely. Caught during the integration pass by tracing `CrystalBriefCard.tsx`'s actual render logic (`rec.surveyId ? <Link>... : <span>...`) against what the JSONB would really contain at runtime: every recommendation's `surveyId` and `actionType` would have been `undefined`, silently disabling the survey drill-down link (Decision 17's "shortcut" navigation rule) and always falling back to the default icon, on every brief, in production.
+**Decision:** Added a single `mapRecommendation()` function in `backend/src/services/org-metrics.service.ts` — the one place recommendations are read for client consumption — that maps snake_case → camelCase and resolves the tag-field ambiguity to `tagId` (canonical, since a "tag group" is a `survey_tags` row per Decision 23, not a `tag_group_id`). Updated `CrystalBriefRecommendation` (both the backend service type and `app/src/types/orgDashboard.ts`) to include `sourceInsightIds: string[]`, which existed in the DB shape and CrystalOS's output but had no frontend type field at all. `org_brief_graph.py` itself was left unchanged (it already defensively emits both tag-field names); the mapper's fallback chain (`tag_id ?? tagId ?? tag_group_id ?? tagGroupId`) absorbs the ambiguity at the read boundary instead.
+**Verification:** Full backend test suite re-run after the fix (1353/1353 passing, no regressions), `tsc --noEmit` clean on both sides.
+**Rationale:** Fixing this at the single service-layer read site is lower-risk than editing the CrystalOS write site (which would require re-verifying the graph's own EVALS.md traces) and is the natural boundary for a snake_case (DB/Python) ↔ camelCase (TS/JSON-over-the-wire) translation in this codebase's existing conventions (no other JSONB column read by this service is passed through untransformed).
+**Reversibility:** Easy — additive mapping function, no schema change, no API contract change (the wire shape was always meant to be camelCase; this just makes it actually be that).
+
+---
+
+## Decision 26: No new role-gating system for Hub teaser elements
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** Decision 18 requires the Hub teaser additions to reuse "the exact permission check that already gates Tag Report access today." A direct audit of every Tag Report page/component/hook found no role or permission check anywhere — Tag Report is open to any authenticated org member today.
+**Decision:** The 5th KPI tile, Weekly Brief card, and Tag Groups strip render for all authenticated org members, matching Tag Report's actual current access model. No new permission system is introduced speculatively.
+**Alternatives considered:** Invent a VP/C-suite role check for this feature alone (rejected — would create a permission model Tag Report itself doesn't have, and TEAM.md's Build vs Reuse rule explicitly requires reusing what exists, not inventing new structure to satisfy a doc's assumption that turned out to be false).
+**Reversibility:** Easy — additive; a role check can be layered on later if a real role system is introduced platform-wide.
+
+---
+
+## Decision 25: benchmark_nps lives on org_profiles, not organizations
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** ROADMAP.md Phase 5 specifies `ALTER TABLE organizations ADD COLUMN benchmark_nps`. No `organizations` table exists anywhere in this codebase — org identity is Clerk-owned, represented as a bare `TEXT` org_id with no local table, confirmed by direct migration audit.
+**Decision:** Add `benchmark_nps INTEGER CHECK (benchmark_nps BETWEEN -100 AND 100)` to `org_profiles` (the existing per-org settings table; every existing column there is nullable or defaulted, so this is a safe non-locking addition).
+**Reversibility:** Easy — single nullable column.
+
+---
+
+## Decision 24: Citation-bearing org briefs ship behind a flag, defaulted off
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** Decision 16 item 1 makes shipping citation-bearing briefs (anything containing `source_insight_ids`) to production a hard, non-negotiable release gate until Tag Report's citation-erasure redaction hook (DESIGN.md §4.5 AC-3) is approved and wired in. A direct code audit (grep across `crystalos/` and `backend/src` for redaction/erasure logic near citations) confirms that hook does not exist anywhere — it is described in Tag Report's own docs as pending an unresolved business-stakeholder decision, not yet implemented.
+**Decision:** Build the full insight-consumption pipeline in `org_brief_graph.py` (headline-only grounding, `source_insight_ids` citation, `verify_and_score`) exactly as designed in Addendum 2, but gate it behind an environment flag `ORG_BRIEF_ENABLE_INSIGHT_CITATIONS` defaulting to `false`. With the flag off, `aggregate_org_metrics` skips the insight-retrieval query entirely and `synthesize_narrative` produces the numbers-only narrative. This ships real value now (weekly briefs, health scores, signal detection, brief archive) without violating the compliance gate, and flipping the flag is a one-line change once the redaction hook lands elsewhere.
+**Alternatives considered:** (a) Ship citation-bearing briefs now on the reasoning that we only store `headline` text and pointers, never raw verbatims, so the GDPR risk is lower than the gate implies — rejected, because Decision 16 defines "citation-bearing" as "containing `source_insight_ids`" full stop, not conditioned on whether raw quotes are present, and the instruction is explicit that this is non-negotiable. (b) Skip insight-consumption entirely until the hook ships — rejected, wastes the opportunity to have the code ready to flip on immediately.
+**Reversibility:** Easy — single flag flip once the upstream redaction hook exists.
+
+---
+
+## Decision 23: Anomaly alerts reuse alert_events; no new survey_anomalies table
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** ARCHITECTURE.md assumes a pre-existing `survey_anomalies` table. No such table exists. A direct audit instead found a complete, already-shipped alerting system (`alert_rules`/`alert_events`/`alert_subscriptions`/`alert_history`) with exactly the shape `AnomalyAlerts` needs: nullable `survey_id` (NULL = org-wide), `severity` (critical/warning/info/success), `status` (active/acknowledged/snoozed/resolved), and a `source` column (`'rule'|'crystal'|'system'`) already designed to accommodate AI-detected, rule-less alerts.
+**Decision:** `survey_health_summary.anomaly_count` counts `alert_events` rows with `status = 'active'` per survey. The new `org_signal_detector` skill writes its cross-survey signals into `alert_events` with `source = 'crystal'`, `rule_id = NULL`, and `survey_id` set only when a signal centers on one program (NULL for genuinely org-wide signals). `PATCH /api/org/dashboard/alerts/:id/acknowledge` updates `alert_events.status`. No new anomaly-storage table is created.
+**Rationale:** Per TEAM.md's Build vs Reuse rule — this table already covers the need, including the AI-detected/rule-less case the design explicitly wanted.
+**Reversibility:** Easy — purely additive rows into an existing table; no schema changes to `alert_events` required.
+
+---
+
+## Decision 22: Real-time layer uses SSE, not a new WebSocket stack; scheduled refresh uses the app-level scheduler, not pg_cron
+
+**Date:** 2026-07-04
+**Decision-maker:** Engineering (implementation-time reconciliation)
+**Context:** ARCHITECTURE.md and ROADMAP.md Phase 3 specify a new `ws`-based `WebSocketServer` (`org-realtime.service.ts`) for the KPI live counter and anomaly alerts, and pg_cron for materialized view refresh schedules. A direct audit found: (a) no `ws` npm dependency and no `WebSocketServer` usage exists anywhere in the backend — all existing real-time push in this codebase is Server-Sent Events over Redis pub/sub (`backend/src/routes/notifications.ts`); (b) the local/prod Postgres image is a custom `pgvector/pgvector:pg16` build with no `pg_cron` extension installed, while a mature application-level scheduler already exists (`backend/src/scheduler/`, setInterval-based jobs) with multiple precedents (`docAutoApprove.ts`, `eventEngine/processor.ts`'s `cronTick`/`alertSweep`, a dedicated `scheduler` Docker service).
+**Decision:**
+1. KPI live counter and anomaly-alert real-time delivery (the two cases Decision 21 confirmed still need a live channel) are delivered via a new SSE route (`GET /api/org/dashboard/stream`) backed by a new Redis pub/sub channel (`org:{orgId}:events`), following the exact pattern already proven in `notifications.ts`. `useOrgDashboardLive.ts` wraps `EventSource`, not `WebSocket`.
+2. Materialized view refreshes (`org_metrics_daily` 15-min, `survey_health_summary` hourly, `org_metrics_weekly`/`org_topic_trends`/`org_health_score` daily) run from new jobs under `backend/src/scheduler/jobs/`, using the existing setInterval-based runner, executing `REFRESH MATERIALIZED VIEW CONCURRENTLY` over a plain pg client — not pg_cron.
+**Rationale:** Per TEAM.md's own Build vs Reuse rule and the same logic Decision 21 already applied to the manual-summary/compare/trust-score flows — building a second, parallel real-time transport (WebSocket) and a second, parallel scheduling mechanism (pg_cron) alongside working, proven equivalents that already exist in this codebase is exactly the kind of uncosted infrastructure duplication the team's own decision framework exists to prevent. This is a broader application of Decision 21's reasoning to the two real-time cases Decision 21 explicitly left in place, not a reversal of it.
+**Reversibility:** Easy — additive new route/channel/jobs; no schema impact. If genuine WebSocket bidirectional needs emerge later (none identified today), this can be layered on without touching the SSE path.
+
+---
+
 ## Decision 21: Live-update mechanism — resolved (closes an item open since the first design round)
 
 **Date:** 2026-07-01

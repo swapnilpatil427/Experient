@@ -12,6 +12,7 @@
     "start:event-engine": "tsx src/eventEngine/index.ts",
     "start:scheduler": "tsx src/scheduler/index.ts",
     "sync:clerk": "tsx scripts/sync-clerk.ts",
+    "set:plan": "tsx scripts/set-org-plan.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "deploy": "firebase deploy --only functions",

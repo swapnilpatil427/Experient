@@ -5257,6 +5257,223 @@ const en = {
       viewResponse: 'View response',
     },
   },
+
+  // ── Org Intelligence Dashboard ("Command Center") ───────────────────────────
+  // docs/org-dashboard/DESIGN.md is the authoritative visual/interaction spec.
+  // Per Decision 16's banned/required copy rule: never say "hallucination",
+  // "low confidence", or "unverified" — use "Crystal's best read" / "Early
+  // read" / "How sure is Crystal?" instead.
+  orgDashboard: {
+    health: {
+      healthy:   'Healthy',
+      attention: 'Needs Attention',
+      critical:  'Critical',
+      ariaLabel: 'Health status: {status}',
+    },
+    healthScore: {
+      label:    'Org Health Score',
+      ariaLabel: 'Organization health score: {score} out of 100. Status: {status}. 30-day trend: {trend}.',
+      // No real trend data exists yet (org-metrics.service.ts's health-score
+      // history is always `[]` today — a documented backend gap) — used
+      // whenever there's nothing real to report, instead of interpolating an
+      // empty string into `ariaLabel` above (the confirmed bug: a broken-
+      // sounding "...30-day trend: .").
+      ariaLabelNoTrend: 'Organization health score: {score} out of 100. Status: {status}.',
+      trend: {
+        up:     'Trending up',
+        down:   'Trending down',
+        stable: 'Stable',
+      },
+      breakdown: {
+        nps:              'NPS',
+        sentiment:        'Sentiment',
+        responseVelocity: 'Response Velocity',
+        anomalyFree:      'Anomaly-Free',
+        weight:           'Weight {pct}%',
+      },
+    },
+    kpis: {
+      activeSurveys:    'Active Surveys',
+      totalResponses:   'Total Responses',
+      responsesToday:   '+{count} today',
+      orgNps:           'Org NPS',
+      wowDelta:         '{sign}{value} WoW',
+      avgSentiment:     'Avg Sentiment',
+      sentimentOutOf100: '{value} / 100',
+      sentimentTrend: {
+        improving: 'Improving',
+        stable:    'Stable',
+        declining: 'Declining',
+      },
+      // DESIGN.md's "Screen Reader aria-label Patterns" section, verbatim.
+      // `activeSurveysNoDelta` covers `activeSurveysDelta` being absent
+      // (the backend never populates it today) without interpolating a
+      // missing value into a "Change: ... this month" clause.
+      ariaLabels: {
+        activeSurveys:         'Total active surveys: {count}. Change: {delta} this month.',
+        activeSurveysNoDelta:  'Total active surveys: {count}.',
+        totalResponses:        'Total responses: {count}. Responses today: {today}.',
+        orgNps:                'Organization NPS: {score}. Week over week change: {delta} points.',
+        avgSentiment:          'Average sentiment: {score} out of 100. Trend: {trend}.',
+      },
+    },
+    crystalBrief: {
+      title:                 "Crystal's Weekly Brief",
+      eyebrowForOrg:         "Crystal's Weekly Brief for {org}",
+      askFollowUp:           'Ask a follow-up',
+      followUpQuery:         "Give me more detail on this week's org brief.",
+      viewFullCommandCenter: 'View full Command Center',
+      lastUpdated:           'Updated {time}',
+      notEnoughData:         'Crystal needs at least 2 weeks of data from 3 programs',
+      empty:                 "Crystal hasn't written a brief yet",
+      couldNotLoad:          "Couldn't load this week's brief right now",
+      retry:                 'Retry',
+      readMore:              'Read more',
+      regenerate:            'Regenerate',
+      regenerateFailed:      "Crystal couldn't finish this brief — try again",
+      ariaLabel:             "Crystal's weekly brief for the week of {dateRange}",
+    },
+    trust: {
+      bestRead:       "Crystal's best read",
+      earlyRead:      'Early read — based on limited data so far',
+      earlyReadWhole: "Crystal's early read — some of this week's data is still being verified",
+      howSure:        'How sure is Crystal?',
+      stillVerifying: 'Still verifying…',
+    },
+    alerts: {
+      title:         'Program Alerts',
+      empty:         'No anomalies detected — your programs are healthy',
+      orgWide:       'Org-wide',
+      resolve:       'Resolve',
+      view:          'View',
+      newAriaLabel:  'New {severity} anomaly: {description}. In survey: {surveyName}. Detected {timeAgo}.',
+      severity: {
+        critical: 'Critical',
+        warning:  'Warning',
+        info:     'Info',
+        success:  'Resolved',
+      },
+    },
+    topics: {
+      empty:            'No topics detected yet. Topics appear after 10+ responses.',
+      drawerFrequency:  '{n} mentions across your org this week',
+      sampleQuotes:     'Sample quotes',
+    },
+    trends: {
+      noData:         'No trend data yet',
+      aggregated:     'Aggregated',
+      bySurvey:       'By Survey',
+      showingTop10:   'Showing 10 most active surveys',
+      benchmarkLabel: 'Industry: {value}',
+    },
+    programs: {
+      col: {
+        name:         'Survey Name',
+        responses:    'Responses (7d)',
+        nps:          'NPS',
+        health:       'Health',
+        lastActivity: 'Last Activity',
+      },
+      askCrystal:      'Ask Crystal',
+      askCrystalQuery: 'Give me a quick intelligence summary for {title} — key themes, NPS, and top actions.',
+      pin:             'Pin to top',
+      viewFullSurvey:  'View Full Survey',
+      pageSizeLabel:   'Rows per page:',
+      pageOf:          'Page {page} of {total}',
+    },
+    tagGroups: {
+      stripTitle:    'At-Risk Tag Groups',
+      surveyCount:   '{n} surveys',
+      topTopic:      'Top topic: {topic}',
+      viewTagReport: 'View Tag Report',
+    },
+    tagGrid: {
+      title:         'Tag Intelligence',
+      count:         '{n} tags',
+      sortLabel:     'Sort:',
+      sortHealth:    'By health',
+      sortNps:       'By NPS',
+      sortResponses: 'By responses',
+      sortName:      'By name',
+      empty:         'No tags yet — tag a few surveys to see cross-survey rollups here.',
+    },
+    insightHistory: {
+      title:          'Past Briefs',
+      generateCustom: 'Generate custom summary',
+      empty:          "Crystal will save each weekly brief here as it's generated. Your history starts next Monday.",
+    },
+    briefArchive: {
+      scheduledPill:     'Weekly Brief',
+      manualPill:        'Custom Summary',
+      requestedBy:       'Requested by {name}',
+      compareToPrevious: 'Compare to previous',
+      viewProvenance:    'How was this generated?',
+    },
+    briefProvenance: {
+      whatCrystalLookedAt:    'What Crystal looked at',
+      dateRange:              'Date range',
+      totalResponses:         'Total responses',
+      activeSurveys:          'Active surveys',
+      avgNps:                 'Avg NPS',
+      avgSentiment:           'Avg sentiment',
+      topTopics:              'Top topics',
+      newThisWeek:            'New',
+      noComparablePriorPeriod: 'No comparable prior period for week-over-week deltas.',
+      whatCrystalRecommended: 'What Crystal recommended',
+      noRecommendations:      'No recommendations for this brief.',
+      trustTitle:             'Trust & verification',
+      citedInsights:          '{n} cited insights',
+      flaggedClauses:         'Flagged clauses',
+      lineageNote:            "Builds on a previous checkpoint in this org's brief history.",
+      loadError:              "Couldn't load this brief's details right now.",
+    },
+    checkpointDiff: {
+      previous: 'PREVIOUS',
+      current:  'CURRENT',
+      error:    "Couldn't load this comparison right now.",
+    },
+    generationStatus: {
+      reading:       'Reading your programs…',
+      synthesizing:  'Synthesizing trends…',
+      writing:       'Writing your brief…',
+      reconnecting:  'Reconnecting…',
+      timeout:       'This is taking longer than expected…',
+      failure:       "Crystal couldn't finish this summary — Try again",
+    },
+    manualSummary: {
+      rangeStart:        'From',
+      rangeEnd:          'To',
+      rangeInvalid:      'Choose a range of 1–{max} days.',
+      previewPrograms:   'Programs included',
+      previewResponses:  'Responses in range',
+      previewCost:       'Estimated cost',
+      previewCostValue:  '{cost} credits',
+      lowConfidence:     "This range predates most of your programs' history — Crystal's read may be based on limited data.",
+      generate:          'Generate Summary',
+      generating:        'Generating…',
+      errorCredits:      "You don't have enough credits for this range.",
+      errorRateLimited:  "You've reached today's limit for custom summaries. Try again tomorrow, or view your Brief Archive.",
+      errorGeneric:      'Something went wrong — please try again.',
+      reduceRangeHint:   'Try a shorter date range, or upgrade your plan.',
+    },
+    warRoomMode: {
+      toggle: 'War Room Mode',
+    },
+    live: {
+      reconnecting:   'Live updates paused — reconnecting…',
+      pausedFallback: 'Live updates paused — refreshing periodically',
+    },
+    // Labels for the original 34-line OrgTrendsPage stub's 4-stat grid,
+    // preserved as-is (same `useOrgOverview()` data source, same numbers) —
+    // only the hardcoded-English labels were moved behind t() while this
+    // file was already being rewritten for the rest of the page.
+    stub: {
+      portfolioNps:    'Portfolio NPS',
+      totalResponses:  'Total Responses',
+      activeSurveys:   'Active Surveys',
+      totalSurveys:    'Total Surveys',
+    },
+  },
 };
 
 export default en;
