@@ -9,13 +9,14 @@ afterEach(cleanup);
 // tests can assert on it without needing the real CrystalPanel component.
 function Probe() {
   const {
-    scope, builderContext, builderDraft, builderDraftHydrator,
-    setScope, setBuilderContext, setBuilderDraft, setBuilderDraftHydrator,
+    scope, crystalCtx, builderContext, builderDraft, builderDraftHydrator,
+    setScope, openCrystal, setBuilderContext, setBuilderDraft, setBuilderDraftHydrator,
   } = useCrystalPanel();
 
   return (
     <div>
       <span data-testid="scope">{typeof scope === 'string' ? scope : JSON.stringify(scope)}</span>
+      <span data-testid="crystal-ctx">{JSON.stringify(crystalCtx)}</span>
       <span data-testid="builder-context">{builderContext ? builderContext.kind : 'null'}</span>
       <span data-testid="builder-draft">{builderDraft ? builderDraft.mode : 'null'}</span>
       <span data-testid="hydrator-type">{typeof builderDraftHydrator}</span>
@@ -23,6 +24,8 @@ function Probe() {
         {builderDraftHydrator ? String(builderDraftHydrator({ id: 'p', type: 'create_workflow', priority: 'medium', title: 't', description: 'd', params: {}, requires_confirmation: true })) : 'none'}
       </span>
       <button onClick={() => setScope('survey-1')}>set scope</button>
+      <button onClick={() => openCrystal('q', { focused_brief_id: 'brief-1' })}>open with brief ctx</button>
+      <button onClick={() => openCrystal('generic')}>open without ctx</button>
       <button onClick={() => setBuilderContext({ kind: 'workflow_builder' })}>set builder context</button>
       <button onClick={() => setBuilderContext(null)}>clear builder context</button>
       <button onClick={() => setBuilderDraft({
@@ -75,6 +78,17 @@ describe('CrystalPanelContext — Wave 14 additive fields', () => {
 
     await user.click(screen.getByText('clear builder context'));
     expect(screen.getByTestId('builder-context')).toHaveTextContent('null');
+  });
+
+  it('openCrystal without ctx clears prior crystalCtx grounding fields', async () => {
+    renderProbe();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByText('open with brief ctx'));
+    expect(screen.getByTestId('crystal-ctx')).toHaveTextContent('{"focused_brief_id":"brief-1"}');
+
+    await user.click(screen.getByText('open without ctx'));
+    expect(screen.getByTestId('crystal-ctx')).toHaveTextContent('{}');
   });
 
   it('setBuilderDraftHydrator stores the passed function itself, not the result of invoking it as a state updater', async () => {

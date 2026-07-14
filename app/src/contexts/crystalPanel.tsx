@@ -11,9 +11,8 @@ export interface CrystalCtx {
   focused_tag_name?: string;
   // Org Dashboard's "Ask a follow-up" (CrystalBriefCard / WeeklyBriefTeaserCard)
   // grounds the chat in the specific brief being viewed — threaded through to
-  // the streaming request body as `brief_id`. Additive: every existing caller
-  // that doesn't set this is unaffected, since `openCrystal(query, ctx)`
-  // already treats `ctx` as optional/replacing-wholesale, not merging.
+  // the streaming request body as `brief_id`. `openCrystal(query, ctx)` replaces
+  // `crystalCtx` wholesale; omitting `ctx` clears any prior grounding fields.
   focused_brief_id?: string;
 }
 
@@ -108,7 +107,9 @@ export function CrystalPanelProvider({ children }: { children: ReactNode }) {
 
   const openCrystal = useCallback((query = '', ctx?: CrystalCtx) => {
     setInitialQuery(query);
-    if (ctx) setCrystalCtx(ctx);
+    // Replace wholesale — omitting `ctx` clears any prior focused_brief_id /
+    // focused_topic / tag scoping so a generic open doesn't inherit stale grounding.
+    setCrystalCtx(ctx ?? {});
     setIsOpen(true);
   }, []);
 

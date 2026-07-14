@@ -31,12 +31,20 @@ import type { SummaryPreviewResponse, CreateSummaryResponse } from '../../types/
 
 const MAX_RANGE_DAYS = 90;
 
-function daysBetween(a: string, b: string): number {
-  return Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86_400_000);
+// Match backend `parseRange` — inclusive UTC calendar days.
+function inclusiveRangeDays(a: string, b: string): number {
+  return Math.ceil((new Date(b).getTime() - new Date(a).getTime()) / 86_400_000) + 1;
 }
 
-function todayIso(): string {
+function todayUtcIso(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** Latest selectable end date — backend rejects ranges ending on or after today UTC. */
+function maxEndDateIso(): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 export function ManualSummaryGenerator({
@@ -51,15 +59,15 @@ export function ManualSummaryGenerator({
   const { preview: fetchPreview, create } = useOrgSummaries();
 
   const [start, setStart] = useState('');
-  const [end, setEnd]     = useState(todayIso());
+  const [end, setEnd]     = useState(maxEndDateIso());
   const [preview, setPreview] = useState<SummaryPreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
-  const rangeDays = start && end ? daysBetween(start, end) : 0;
-  const rangeValid = !!start && !!end && rangeDays > 0 && rangeDays <= MAX_RANGE_DAYS;
+  const rangeDays = start && end ? inclusiveRangeDays(start, end) : 0;
+  const rangeValid = !!start && !!end && rangeDays >= 1 && rangeDays <= MAX_RANGE_DAYS;
 
   useEffect(() => {
     if (!open) {
@@ -129,7 +137,7 @@ export function ManualSummaryGenerator({
           <input
             type="date"
             value={start}
-            max={end || todayIso()}
+            max={end || maxEndDateIso()}
             onChange={(e) => setStart(e.target.value)}
             className="w-full border border-outline-variant/40 rounded-lg px-2 py-1.5 text-sm"
           />
@@ -140,7 +148,7 @@ export function ManualSummaryGenerator({
             type="date"
             value={end}
             min={start}
-            max={todayIso()}
+            max={maxEndDateIso()}
             onChange={(e) => setEnd(e.target.value)}
             className="w-full border border-outline-variant/40 rounded-lg px-2 py-1.5 text-sm"
           />

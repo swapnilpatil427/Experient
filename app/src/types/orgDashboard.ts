@@ -417,7 +417,19 @@ export interface OrgLiveResponseReceivedPayload {
   };
 }
 
-export interface OrgLiveAnomalyDetectedPayload extends OrgAlert {}
+export interface OrgLiveAnomalyDetectedPayload {
+  alertId: string;
+  surveyId: string | null;
+  severity: AlertSeverity;
+  title: string;
+  description: string;
+  detectedAt: string;
+  // Present when payload is already a normalized REST `OrgAlert` row.
+  id?: string;
+  surveyTitle?: string | null;
+  resolvedAt?: string | null;
+  isAcknowledged?: boolean;
+}
 
 // Real completion signal for the "Regenerate" button — previously a bare 202
 // with no further feedback (see `useOrgCrystalBrief`'s `regenerate()`).

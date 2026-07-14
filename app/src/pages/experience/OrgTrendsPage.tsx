@@ -18,7 +18,7 @@
 // Design section's own guidance for the Response Detail viewer ("no new
 // pattern required").
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from '../../lib/i18n';
 import { useCrystalPanel } from '../../contexts/crystalPanel';
 import { useOrgOverview } from '../../hooks/useExperience';
@@ -30,6 +30,7 @@ import { useOrgAlerts } from '../../hooks/useOrgAlerts';
 import { useOrgTopics } from '../../hooks/useOrgTopics';
 import { useTagMetrics } from '../../hooks/useTagMetrics';
 import { useOrgDashboardLive } from '../../hooks/useOrgDashboardLive';
+import { useNotifications, ORG_DASHBOARD_NOTIFICATION_TYPES } from '../../hooks/useNotifications';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 import { KpiTile } from '../../components/org-dashboard/KpiTile';
@@ -45,7 +46,7 @@ import { GenerationStatusChip, type GenerationStatusState } from '../../componen
 import { HealthPill, healthStatusColor } from '../../components/org-dashboard/HealthPill';
 import { WarRoomToggle, useWarRoomMode } from '../../components/org-dashboard/WarRoomToggle';
 import { Icon } from '../../components/Icon';
-import type { OrgDashboardLiveEvent } from '../../types/orgDashboard';
+import type { CreateSummaryResponse, OrgDashboardLiveEvent } from '../../types/orgDashboard';
 import './../../components/org-dashboard/war-room.css';
 
 export function OrgTrendsPage() {
@@ -74,7 +75,11 @@ export function OrgTrendsPage() {
   const [healthBreakdownOpen, setHealthBreakdownOpen] = useState(false);
   const [generatorOpen, setGeneratorOpen] = useState(false);
   const [generationState, setGenerationState] = useState<GenerationStatusState | null>(null);
+  const [pendingSummaryId, setPendingSummaryId] = useState<string | null>(null);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
+
+  const { notifications } = useNotifications();
+  const archive = useOrgBriefArchive(10);
 
   // Alerts that arrived via the live SSE channel in the last few seconds —
   // drives `AnomalyAlerts`'s slide-in/pulse "this just happened" treatment.
@@ -86,7 +91,8 @@ export function OrgTrendsPage() {
   const handleLiveEvent = useCallback((evt: OrgDashboardLiveEvent) => {
     if (evt.type === 'anomaly_detected') {
       alerts.prependLive(evt.payload);
-      const id = evt.payload.id;
+      const id = evt.payload.alertId ?? evt.payload.id;
+      if (!id) return;
       setNewAlertIds((prev) => new Set(prev).add(id));
       setTimeout(() => {
         setNewAlertIds((prev) => {
@@ -111,15 +117,31 @@ export function OrgTrendsPage() {
 
   const { connectionStatus } = useOrgDashboardLive(handleLiveEvent);
 
-  const archive = useOrgBriefArchive(10);
+  useEffect(() => {
+    if (!pendingSummaryId) return;
+    const match = notifications.find((n) =>
+      n.type === ORG_DASHBOARD_NOTIFICATION_TYPES.SUMMARY_READY
+      && n.payload?.summaryId === pendingSummaryId,
+    );
+    if (!match) return;
+    const success = match.payload?.success !== false;
+    if (success) {
+      setGenerationState(null);
+      archive.refetch();
+    } else {
+      setGenerationState('failure');
+    }
+    setPendingSummaryId(null);
+  }, [notifications, pendingSummaryId, archive]);
 
   const handleAskFollowUp = () => {
     setScope('all');
     openCrystal(t('orgDashboard.crystalBrief.followUpQuery'), { focused_brief_id: brief?.id });
   };
 
-  const handleGenerated = () => {
+  const handleGenerated = (res: CreateSummaryResponse) => {
     setGenerationState('in-progress');
+    setPendingSummaryId(res.summaryId);
   };
 
   const healthTotal = dashboard?.healthScore?.total ?? healthDetail?.totalScore ?? null;
@@ -256,7 +278,7 @@ export function OrgTrendsPage() {
           loading={briefLoading}
           error={briefError}
           minDataMet={minDataMet}
-          onRetry={refetchDashboard}
+          onRetry={refetchBrief}
           onAskFollowUp={handleAskFollowUp}
         />
       </section>
