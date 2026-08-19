@@ -1475,11 +1475,14 @@ router.post('/:surveyId/crystal', async (req: Request, res: Response): Promise<v
     } catch { /* graceful degradation if crystal_threads table not yet migrated */ }
 
     res.json({
-      answer:       response.answer,
-      suggestions:  response.suggestions  || [],
-      insight_refs: response.insight_refs || [],
-      citations:    response.citations    || [],
-      thread_key:   threadKey,
+      answer:          response.answer,
+      suggestions:     response.suggestions  || [],
+      insight_refs:    response.insight_refs || [],
+      citations:       response.citations    || [],
+      viz:             response.viz ?? null,
+      applied_filters: response.applied_filters ?? null,
+      turn_id:         response.turn_id ?? null,
+      thread_key:      threadKey,
     });
   } catch (err: unknown) {
     logger.error({ err: (err as Error).message, surveyId }, 'insights:crystal:error');
@@ -2280,8 +2283,23 @@ router.post('/:surveyId/actions/:actionId/dismiss', requireAuth, async (req: Req
 
 // ── POST /api/insights/:surveyId/crystal/proposals ────────────────────────────
 // Records the outcome of a Crystal action proposal (emitted/accepted/dismissed/
-// succeeded/failed). UPSERTs on (org_id, proposal_key) so repeated calls for the
-// same proposal update the existing row rather than duplicating it.
+// succeeded/failed). UPSERTs on (org_id, survey_id, proposal_key) — matching the
+// partial unique index in 20260806000001_crystal_action_proposals_survey_scoped_uniq.sql
+// — so repeated calls for the *same* proposal on the *same* survey update the
+// existing row, without colliding with an identically-titled proposal on a
+// different survey in the same org (proposal_key is a client-minted title slug,
+// not a globally-unique id — see crystalos/agents/crystal.py's slug generator).
+//
+// The DO UPDATE guards every mutable column behind a terminal-status check so a
+// late/out-of-order write (e.g. `accepted` racing its own `succeeded`, since the
+// frontend fires both as un-awaited POSTs) can never regress a terminal outcome
+// (succeeded|failed|dismissed) back to a non-terminal one. `emitted_at` is set
+// once at INSERT and is never part of the UPDATE SET list, so it always reflects
+// the first time this proposal was emitted.
+const TERMINAL_PROPOSAL_STATUSES = ['succeeded', 'failed', 'dismissed'] as const;
+// Built once from the constant above (not user input) so the SQL and the JS guard
+// can never drift out of sync with each other.
+const TERMINAL_STATUS_SQL_LIST = TERMINAL_PROPOSAL_STATUSES.map((s) => `'${s}'`).join(', ');
 
 router.post('/:surveyId/crystal/proposals', requireAuth, async (req: Request, res: Response): Promise<void> => {
   const { surveyId } = req.params;
@@ -2306,20 +2324,41 @@ router.post('/:surveyId/crystal/proposals', requireAuth, async (req: Request, re
     clientError(res, 400, 'status is required');
     return;
   }
+  const KNOWN_STATUSES = ['emitted', 'accepted', 'dismissed', 'succeeded', 'failed'];
+  if (!KNOWN_STATUSES.includes(status)) {
+    clientError(res, 400, `status must be one of: ${KNOWN_STATUSES.join(', ')}`);
+    return;
+  }
 
   try {
     const { rows } = await query(
       `INSERT INTO crystal_action_proposals
          (org_id, brand_id, survey_id, proposal_key, type, params, priority,
-          business_rationale, confidence, status, outcome_ref, error_detail)
+          business_rationale, confidence, status, outcome_ref, error_detail, emitted_at)
        VALUES ($1, $2, $3, $4, $5, COALESCE($6, '{}')::jsonb, COALESCE($7, 'medium'),
-               $8, $9, $10, $11, $12)
-       ON CONFLICT (org_id, proposal_key) WHERE proposal_key IS NOT NULL
+               $8, $9, $10, $11, $12, NOW())
+       ON CONFLICT (org_id, survey_id, proposal_key) WHERE proposal_key IS NOT NULL
        DO UPDATE SET
-         status       = EXCLUDED.status,
-         outcome_ref  = COALESCE(EXCLUDED.outcome_ref, crystal_action_proposals.outcome_ref),
-         error_detail = EXCLUDED.error_detail,
-         updated_at   = NOW()
+         status       = CASE
+                           WHEN crystal_action_proposals.status IN (${TERMINAL_STATUS_SQL_LIST})
+                             THEN crystal_action_proposals.status
+                           ELSE EXCLUDED.status
+                         END,
+         outcome_ref  = CASE
+                           WHEN crystal_action_proposals.status IN (${TERMINAL_STATUS_SQL_LIST})
+                             THEN crystal_action_proposals.outcome_ref
+                           ELSE COALESCE(EXCLUDED.outcome_ref, crystal_action_proposals.outcome_ref)
+                         END,
+         error_detail = CASE
+                           WHEN crystal_action_proposals.status IN (${TERMINAL_STATUS_SQL_LIST})
+                             THEN crystal_action_proposals.error_detail
+                           ELSE EXCLUDED.error_detail
+                         END,
+         updated_at   = CASE
+                           WHEN crystal_action_proposals.status IN (${TERMINAL_STATUS_SQL_LIST})
+                             THEN crystal_action_proposals.updated_at
+                           ELSE NOW()
+                         END
        RETURNING *`,
       [
         req.orgId,

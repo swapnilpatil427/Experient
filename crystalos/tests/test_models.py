@@ -68,6 +68,10 @@ REQUIRED_SKILLS: list[str] = [
 # so the cross-vendor rule applies only to the main 'qc' reviewer.
 QC_PAIRS = [
     ("creator", "qc"),  # pipeline: survey creator vs primary QC reviewer
+    # crystal/crystal_eval: crystal moved to DeepSeek 2026-08 (product request for
+    # citation/action_proposal headroom); crystal_eval (the hallucination judge)
+    # deliberately stayed on Gemini so this pairing keeps holding automatically.
+    ("crystal", "crystal_eval"),
 ]
 SKILL_QC_PAIRS = [
     ("survey-creator", "survey-qc"),          # skill: creator vs QC
@@ -80,7 +84,10 @@ MIN_TOKENS = {
     "insight_narrate": 800,    # narrative per insight (batched)
     "insight_topics":  4000,   # topic cluster discovery
     "insight_expert":  800,    # per-specialist narration
-    "crystal":         600,    # Q&A response
+    # Q&A response — 2026-08: roughly doubled (was 600 floor / 1500 actual) for
+    # citations/suggestions/action_proposals headroom on the DeepSeek migration;
+    # the answer text itself is still 2-5 sentences, this budget isn't for prose length.
+    "crystal":         2400,
     "report_full":     10000,  # full narrative report
     # Regression floor for the 2026-07-06 fix: 8000 was too tight for
     # agents/response_generator.py's batch of responses (each with full
@@ -94,17 +101,28 @@ SKILL_MIN_TOKENS = {
     "action-recommender": 800,  # 5 de-duplicated actions + summary
     "survey-creator":    3000,  # 8-12 questions with full schemas
     "copilot-analyst":   1500,  # full questions array + explanation
-    "crystal-analyst":    800,  # answer + citations + suggestions
+    # answer + citations + suggestions + action_proposals — 2026-08: roughly doubled
+    # (was 800 floor / 1200 actual) on the DeepSeek migration, same rationale as
+    # pipeline "crystal" above.
+    "crystal-analyst":   2000,
 }
 
 # Minimum context windows by role
 MIN_CONTEXT = {
     "creator":        32_000,
     "insight_topics": 64_000,
-    "crystal":        64_000,
+    # 2026-08: raised from 64_000 to match the DeepSeek ceiling this role now actually
+    # uses (down from Gemini's 1M) — see lib/models.py module docstring for the tradeoff.
+    "crystal":        128_000,
 }
 SKILL_MIN_CONTEXT = {
-    "crystal-analyst":  256_000,  # multi-turn conversation + full survey context
+    # 2026-08: crystal-analyst moved from google/gemini-2.5-flash (1M ctx) to DeepSeek
+    # (deepseek-v4-flash/-pro, 128K ctx) for citation/action_proposal output headroom —
+    # a deliberate product-requested tradeoff of raw context ceiling for more reasoning/
+    # output budget (see lib/models.py module docstring). Floor lowered from 256_000 to
+    # 128_000 to match; Crystal's actual per-turn input (a handful of insights/topics/
+    # tool results) sits far below either ceiling in practice.
+    "crystal-analyst":  128_000,
     "survey-creator":    64_000,  # complex intent + org context
     "copilot-analyst":  256_000,  # full questions array + history
 }

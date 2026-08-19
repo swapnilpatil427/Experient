@@ -34,6 +34,7 @@ def _make_ctx(brand: BrandContext | None = None) -> CrystalContext:
 
 def _make_event(**kwargs) -> TurnEvent:
     defaults = dict(
+        id="11111111-1111-4111-8111-111111111111",
         org_id="org-123",
         brand_id=None,
         user_id="user-456",
@@ -154,8 +155,93 @@ async def test_write_turn_event_writes_to_db():
     assert "crystal_turn_events" in call_args[0]
     # Second arg is the params tuple
     params = call_args[1]
-    assert params[0] == "org-123"  # org_id
-    assert params[2] == "user-456"  # user_id
+    assert params[0] == "11111111-1111-4111-8111-111111111111"  # id (explicit, not DB default)
+    assert params[1] == "org-123"  # org_id
+    assert params[3] == "user-456"  # user_id
+
+
+@pytest.mark.asyncio
+async def test_write_turn_event_persists_the_exact_id_the_client_saw():
+    """The id column value is the same UUID the caller minted and already put on
+    the wire (SSE `answer` frame / REST payload) — not the table's own
+    DEFAULT gen_random_uuid(). This is the G1 fix: the client-visible turn_id
+    and this row's real primary key must be identical."""
+    turn_id = "22222222-2222-4222-8222-222222222222"
+    event = _make_event(id=turn_id)
+    ctx = _make_ctx()
+
+    mock_conn = AsyncMock()
+    mock_conn_cm = MagicMock()
+    mock_conn_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_conn_cm.__aexit__ = AsyncMock(return_value=False)
+
+    mock_pool = MagicMock()
+    mock_pool.connection = MagicMock(return_value=mock_conn_cm)
+
+    with patch("crystalos.lib.turn_publisher._pool_conn", return_value=mock_pool):
+        await _write_turn_event(event, ctx)
+
+    call_args = mock_conn.execute.call_args[0]
+    sql, params = call_args[0], call_args[1]
+    # The INSERT explicitly supplies id (skipping the column default).
+    assert sql.split("INSERT INTO crystal_turn_events")[1].split("VALUES")[0].strip().startswith("(id,")
+    assert params[0] == turn_id
+
+
+def test_turn_event_crystalos_version_defaults_to_none():
+    """A TurnEvent constructed without crystalos_version still works (backward compatible)."""
+    event = _make_event()
+    assert event.crystalos_version is None
+
+
+@pytest.mark.asyncio
+async def test_write_turn_event_includes_crystalos_version_in_insert():
+    """crystalos_version is threaded into the crystal_turn_events INSERT column list
+    and round-trips correctly into the params tuple, in step with the constant at
+    crystalos.lib.constants.CRYSTALOS_VERSION."""
+    from crystalos.lib.constants import CRYSTALOS_VERSION
+
+    event = _make_event(crystalos_version=CRYSTALOS_VERSION)
+    ctx = _make_ctx()
+
+    mock_conn = AsyncMock()
+    mock_conn_cm = MagicMock()
+    mock_conn_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_conn_cm.__aexit__ = AsyncMock(return_value=False)
+
+    mock_pool = MagicMock()
+    mock_pool.connection = MagicMock(return_value=mock_conn_cm)
+
+    with patch("crystalos.lib.turn_publisher._pool_conn", return_value=mock_pool):
+        await _write_turn_event(event, ctx)
+
+    call_args = mock_conn.execute.call_args[0]
+    sql, params = call_args[0], call_args[1]
+    assert "crystalos_version" in sql
+    assert params[-1] == CRYSTALOS_VERSION
+
+
+@pytest.mark.asyncio
+async def test_write_turn_event_crystalos_version_defaults_none_in_insert():
+    """A TurnEvent that doesn't set crystalos_version still inserts cleanly with
+    None in that column's slot — existing callers keep working unchanged."""
+    event = _make_event()
+    ctx = _make_ctx()
+
+    mock_conn = AsyncMock()
+    mock_conn_cm = MagicMock()
+    mock_conn_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_conn_cm.__aexit__ = AsyncMock(return_value=False)
+
+    mock_pool = MagicMock()
+    mock_pool.connection = MagicMock(return_value=mock_conn_cm)
+
+    with patch("crystalos.lib.turn_publisher._pool_conn", return_value=mock_pool):
+        await _write_turn_event(event, ctx)
+
+    call_args = mock_conn.execute.call_args[0]
+    params = call_args[1]
+    assert params[-1] is None
 
 
 @pytest.mark.asyncio
@@ -197,3 +283,37 @@ async def test_log_capability_gap_handles_embed_failure():
         await log_capability_gap(ctx, "some query")
         # Task still fires with embedding=None
         mock_asyncio.create_task.assert_called_once()
+
+
+# ── Regression: 2026-08-04 ────────────────────────────────────────────────────
+
+def test_publish_turn_event_is_not_a_coroutine_function():
+    """publish_turn_event must stay synchronous.
+
+    agents/crystal.py's telemetry path calls it directly (NOT wrapped in
+    asyncio.create_task). It previously WAS wrapped, which passed None to
+    create_task() and raised `TypeError: a coroutine was expected, got None` on
+    every Crystal turn — silently swallowed by a bare `except Exception: pass`.
+
+    If this function is ever converted to `async def`, that call site must be
+    updated to await it (or re-wrap it) in the same change. This test exists to
+    force that review rather than let the mismatch return.
+    """
+    import inspect
+
+    assert not inspect.iscoroutinefunction(publish_turn_event), (
+        "publish_turn_event became async — update the call site in "
+        "agents/crystal.py (_fire_telemetry) in the same change."
+    )
+
+
+def test_crystal_telemetry_call_site_does_not_wrap_publish_in_create_task():
+    """Static guard on the call site itself, so the bug cannot silently return."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "agents" / "crystal.py"
+    text = src.read_text()
+    assert "create_task(publish_turn_event" not in text, (
+        "publish_turn_event is synchronous; wrapping it in asyncio.create_task() "
+        "passes None to create_task() and raises TypeError on every turn."
+    )

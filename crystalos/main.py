@@ -1603,10 +1603,13 @@ async def crystal_chat(request: Request, _: None = Depends(require_internal_key)
 
     output, _ = await crystal_agent.run(inp)
     return {
-        "answer":       output.answer,
-        "suggestions":  output.suggestions,
-        "insight_refs": output.insight_refs,
-        "citations":    output.citations,
+        "answer":          output.answer,
+        "suggestions":     output.suggestions,
+        "insight_refs":    output.insight_refs,
+        "citations":       output.citations,
+        "viz":             output.viz.model_dump() if output.viz else None,
+        "applied_filters": [f.model_dump() for f in (output.applied_filters or [])],
+        "turn_id":         output.turn_id,
     }
 
 
@@ -1797,11 +1800,22 @@ async def crystal_stream_endpoint(
                 yield f"data: {event_json}\n\n"
         except Exception as exc:
             if not answered:
-                from crystalos.agents.crystal import _run_crystal
+                import uuid as _uuid
+                from crystalos.agents.crystal import _run_crystal, _build_ctx, _fire_telemetry
                 try:
                     yield f"data: {_json.dumps({'type': 'synthesizing'})}\n\n"
+                    # Outermost double-fallback (both the primary path AND its own
+                    # internal fallback threw before yielding anything) — still mint
+                    # a turn_id so this answer isn't the one exception to the G1
+                    # contract, and best-effort persist it the same way _fire_telemetry
+                    # does everywhere else.
+                    turn_id = str(_uuid.uuid4())
                     final = await _run_crystal(inp)
-                    yield f"data: {_json.dumps({'type': 'answer', 'answer': final.answer, 'citations': final.citations, 'suggestions': final.suggestions})}\n\n"
+                    try:
+                        _fire_telemetry(inp, _build_ctx(inp), None, final, [], 0, turn_id)
+                    except Exception:
+                        pass
+                    yield f"data: {_json.dumps({'type': 'answer', 'answer': final.answer, 'citations': final.citations, 'suggestions': final.suggestions, 'viz': None, 'applied_filters': [], 'turn_id': turn_id})}\n\n"
                 except Exception:
                     yield f"data: {_json.dumps({'type': 'error', 'message': 'Crystal is unavailable right now. Please try again.'})}\n\n"
         yield "data: [DONE]\n\n"

@@ -14,6 +14,11 @@ from crystalos.agents.crystal import (
     _build_metrics_context,
     _build_system_prompt,
     ActionProposal,
+    VizSpec,
+    AppliedFilter,
+    build_applied_filters,
+    _build_viz_for_citations,
+    _normalize_proposal,
     _normalize_skill_output,
     _resolve_crystal_skill_match,
     _skill_synthesis,
@@ -22,6 +27,7 @@ from crystalos.agents.crystal import (
     _fetch_skill_context,
     _is_workflow_taxonomy_question,
     _resolve_forced_skill,
+    _fire_telemetry,
 )
 from crystalos.lib.skill_runtime import SkillResult
 from tests.conftest import make_credit
@@ -787,6 +793,55 @@ class TestReactLoopStreaming:
         assert len(events) >= 1
         assert events[0]["type"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_skill_path_answer_event_includes_viz(self):
+        """Legacy ReAct stream is a genuinely separate code path from
+        _run_skill_stream (main.py's ?legacy=true) — it must get the same viz
+        wiring on its skill-path emission, not just the default path."""
+        viz = VizSpec(kind="nps_bar_chart", title="NPS is 42", data=[{"segment": "A", "score": 1.0}])
+        skill_out = CrystalOutput(answer="NPS is 42 this quarter.", citations=["ins-001"], viz=viz)
+
+        events = await self._collect_events(
+            self._make_input(),
+            extra_patches={"crystalos.agents.crystal._skill_synthesis": AsyncMock(return_value=skill_out)},
+        )
+        answer_events = [e for e in events if e["type"] == "answer"]
+        assert len(answer_events) == 1
+        assert answer_events[0]["viz"] == viz.model_dump()
+
+    @pytest.mark.asyncio
+    async def test_fallback_path_answer_event_includes_computed_viz(self):
+        """Fallback branch (_skill_synthesis -> None -> _run_crystal): viz is
+        recomputed out here from inp.insights + tool_results, mirroring the
+        default _run_skill_stream fallback wiring."""
+        fallback = CrystalOutput(answer="NPS is 42 this quarter.", citations=["ins-001"])
+        computed_viz = VizSpec(kind="nps_bar_chart", title="NPS is 42", data=[{"segment": "A", "score": 1.0}])
+
+        events = await self._collect_events(
+            self._make_input(),
+            extra_patches={
+                "crystalos.agents.crystal._skill_synthesis": AsyncMock(return_value=None),
+                "crystalos.agents.crystal._run_crystal": AsyncMock(return_value=fallback),
+                "crystalos.agents.crystal._build_viz_for_citations": MagicMock(return_value=computed_viz),
+            },
+        )
+        answer_events = [e for e in events if e["type"] == "answer"]
+        assert len(answer_events) == 1
+        assert answer_events[0]["viz"] == computed_viz.model_dump()
+
+    @pytest.mark.asyncio
+    async def test_answer_event_viz_is_null_on_chart_free_turn(self):
+        """The common case — no viz ingredients — must yield an explicit null,
+        never an omitted key or an exception."""
+        events = await self._collect_events(
+            self._make_input(),
+            extra_patches={"crystalos.agents.crystal._skill_synthesis": AsyncMock(return_value=None)},
+        )
+        answer_events = [e for e in events if e["type"] == "answer"]
+        assert len(answer_events) == 1
+        assert "viz" in answer_events[0]
+        assert answer_events[0]["viz"] is None
+
 
 # ── TestBuildSystemPromptAgentic ──────────────────────────────────────────────────
 
@@ -1013,6 +1068,423 @@ class TestNormalizeSkillOutput:
         # The valid proposal is kept; the invalid one is skipped
         assert len(result.action_proposals) == 1
         assert result.action_proposals[0].id == "a1"
+
+
+class TestBuildVizForCitations:
+    """Tests for _build_viz_for_citations — the Tier-0 deterministic chart selector
+    (TRACKER.md decision #2: server-side, never model-chosen). Pure function over
+    already-fetched data: citations/insight_refs, the insights list, and this
+    turn's tool_results."""
+
+    NPS_INSIGHT = {
+        "id": "ins-nps-1",
+        "category": "metric.nps",
+        "headline": "NPS is 42 this quarter",
+        "metric_json": {"name": "NPS", "value": 42},
+    }
+    OTHER_INSIGHT = {
+        "id": "ins-driver-1",
+        "category": "driver.negative",
+        "headline": "Shipping delays drive detractors",
+        "metric_json": {"pct": 38},
+    }
+    SEGMENT_BREAKDOWN_RESULT = {
+        "tool": "get_segment_breakdown",
+        "args": {"segment_question_id": "q1"},
+        "result": {
+            "segments": [
+                {"segment": "Enterprise", "count": 80, "avg_sentiment_score": 0.4, "nps_avg": 55.0},
+                {"segment": "SMB", "count": 40, "avg_sentiment_score": -0.1, "nps_avg": 12.0},
+                {"segment": "No NPS respondents", "count": 5, "avg_sentiment_score": 0.0, "nps_avg": None},
+            ],
+            "segment_count": 3,
+        },
+    }
+
+    def test_returns_vizspec_for_nps_insight_with_segment_breakdown(self):
+        """Citing an NPS insight + a get_segment_breakdown tool result this turn
+        deterministically builds a correct nps_bar_chart VizSpec."""
+        viz = _build_viz_for_citations(
+            citations=["ins-nps-1"],
+            insight_refs=[],
+            insights=[self.NPS_INSIGHT, self.OTHER_INSIGHT],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert isinstance(viz, VizSpec)
+        assert viz.viz_version == 1
+        assert viz.kind == "nps_bar_chart"
+        assert viz.title == "NPS is 42 this quarter"
+        assert viz.source_insight_id == "ins-nps-1"
+        # The segment with a null nps_avg is dropped, not coerced to 0
+        assert viz.data == [
+            {"segment": "Enterprise", "score": 55.0},
+            {"segment": "SMB", "score": 12.0},
+        ]
+
+    def test_returns_none_for_chart_free_turn_no_citations(self):
+        """No citations/insight_refs at all — the common case. Must return None,
+        not raise, and must not resemble a `must-pass` failure (ties to P0-1)."""
+        viz = _build_viz_for_citations(
+            citations=[], insight_refs=[], insights=[self.NPS_INSIGHT],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is None
+
+    def test_returns_none_when_cited_insight_is_not_nps(self):
+        """Citing a non-NPS insight, even with segment data available, returns None."""
+        viz = _build_viz_for_citations(
+            citations=["ins-driver-1"],
+            insight_refs=[],
+            insights=[self.NPS_INSIGHT, self.OTHER_INSIGHT],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is None
+
+    def test_returns_none_when_no_segment_breakdown_tool_result(self):
+        """NPS insight cited, but get_segment_breakdown never ran this turn."""
+        viz = _build_viz_for_citations(
+            citations=["ins-nps-1"],
+            insight_refs=[],
+            insights=[self.NPS_INSIGHT],
+            tool_results=[{"tool": "get_survey_overview", "args": {}, "result": {"response_count": 100}}],
+        )
+        assert viz is None
+
+    def test_returns_none_when_tool_results_empty(self):
+        viz = _build_viz_for_citations(
+            citations=["ins-nps-1"], insight_refs=[], insights=[self.NPS_INSIGHT], tool_results=[],
+        )
+        assert viz is None
+
+    def test_returns_none_when_insights_list_empty(self):
+        """Citation IDs referencing insights we weren't given can't be resolved."""
+        viz = _build_viz_for_citations(
+            citations=["ins-nps-1"], insight_refs=[], insights=[], tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is None
+
+    def test_matches_via_metric_json_name_when_category_is_not_metric_nps(self):
+        """Some insight producers may not set category=='metric.nps' but do set
+        metric_json.name=='NPS' (graphs/insights.py:4803 shape) — either is sufficient."""
+        insight = {"id": "ins-x", "category": "custom", "headline": "NPS by cohort", "metric_json": {"name": "NPS", "value": 30}}
+        viz = _build_viz_for_citations(
+            citations=["ins-x"], insight_refs=[], insights=[insight], tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is not None
+        assert viz.source_insight_id == "ins-x"
+
+    def test_matches_via_insight_refs_not_just_citations(self):
+        viz = _build_viz_for_citations(
+            citations=[], insight_refs=["ins-nps-1"], insights=[self.NPS_INSIGHT],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is not None
+
+    def test_falls_back_to_sentiment_chart_when_all_segments_lack_nps_avg(self):
+        """An NPS insight cited on a turn with no NPS-scored segments (e.g. a
+        CSAT-only survey) falls back to sentiment_by_segment_chart using
+        avg_sentiment_score, rather than returning no chart at all."""
+        result = {
+            "tool": "get_segment_breakdown",
+            "args": {},
+            "result": {"segments": [{"segment": "A", "count": 5, "avg_sentiment_score": 0.1, "nps_avg": None}]},
+        }
+        viz = _build_viz_for_citations(
+            citations=["ins-nps-1"], insight_refs=[], insights=[self.NPS_INSIGHT], tool_results=[result],
+        )
+        assert viz is not None
+        assert viz.kind == "sentiment_by_segment_chart"
+        assert viz.data == [{"segment": "A", "sentiment_score": 0.1}]
+
+    def test_returns_none_when_all_segments_lack_both_metrics(self):
+        result = {
+            "tool": "get_segment_breakdown",
+            "args": {},
+            "result": {"segments": [{"segment": "A", "count": 5, "avg_sentiment_score": None, "nps_avg": None}]},
+        }
+        viz = _build_viz_for_citations(
+            citations=["ins-nps-1"], insight_refs=[], insights=[self.NPS_INSIGHT], tool_results=[result],
+        )
+        assert viz is None
+
+    def test_falls_back_to_default_title_when_insight_has_no_headline(self):
+        insight = {"id": "ins-nps-1", "category": "metric.nps", "headline": "", "metric_json": {"name": "NPS"}}
+        viz = _build_viz_for_citations(
+            citations=["ins-nps-1"], insight_refs=[], insights=[insight], tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is not None
+        assert viz.title == "NPS by Segment"
+
+    def test_kind_is_a_closed_literal(self):
+        """VizSpec.kind rejects anything outside the closed allowlist — the
+        extension point for future widgets is a code change, not free text."""
+        with pytest.raises(Exception):
+            VizSpec(kind="some_future_widget", title="t", data=[])
+
+
+class TestBuildVizForCitationsSentimentBySegment:
+    """Second CRYSTAL_VIZ_REGISTRY widget: sentiment_by_segment_chart. Broader
+    than nps_bar_chart — fires for CSAT/CES/topic-driven turns too, using the
+    one per-segment field get_segment_breakdown always populates."""
+
+    SEGMENT_BREAKDOWN_RESULT = TestBuildVizForCitations.SEGMENT_BREAKDOWN_RESULT
+
+    def test_csat_insight_produces_sentiment_chart(self):
+        insight = {"id": "ins-csat-1", "category": "metric.csat", "headline": "CSAT is 4.2 this quarter",
+                   "metric_json": {"name": "CSAT", "value": 4.2}}
+        viz = _build_viz_for_citations(
+            citations=["ins-csat-1"], insight_refs=[], insights=[insight],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is not None
+        assert viz.kind == "sentiment_by_segment_chart"
+        assert viz.title == "CSAT is 4.2 this quarter"
+        assert viz.source_insight_id == "ins-csat-1"
+        assert viz.data == [
+            {"segment": "Enterprise", "sentiment_score": 0.4},
+            {"segment": "SMB", "sentiment_score": -0.1},
+            {"segment": "No NPS respondents", "sentiment_score": 0.0},
+        ]
+
+    def test_ces_insight_produces_sentiment_chart(self):
+        insight = {"id": "ins-ces-1", "category": "metric.ces", "headline": "CES is 5.1 this quarter"}
+        viz = _build_viz_for_citations(
+            citations=["ins-ces-1"], insight_refs=[], insights=[insight],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is not None
+        assert viz.kind == "sentiment_by_segment_chart"
+
+    def test_topic_insight_produces_sentiment_chart(self):
+        insight = {"id": "ins-topic-1", "category": "voice.topic", "headline": '"Long wait times" is a top theme'}
+        viz = _build_viz_for_citations(
+            citations=["ins-topic-1"], insight_refs=[], insights=[insight],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is not None
+        assert viz.kind == "sentiment_by_segment_chart"
+
+    def test_unrelated_category_still_returns_none(self):
+        """A category outside the segment-chart allowlist (e.g. a driver
+        insight) still returns no chart, even with segment data available —
+        this widget doesn't loosen the existing exclusion."""
+        insight = {"id": "ins-driver-1", "category": "driver.negative", "headline": "Shipping delays"}
+        viz = _build_viz_for_citations(
+            citations=["ins-driver-1"], insight_refs=[], insights=[insight],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is None
+
+    def test_segments_missing_sentiment_score_are_dropped_not_coerced(self):
+        result = {
+            "tool": "get_segment_breakdown", "args": {},
+            "result": {"segments": [
+                {"segment": "A", "avg_sentiment_score": 0.5, "nps_avg": None},
+                {"segment": "B", "avg_sentiment_score": None, "nps_avg": None},
+            ]},
+        }
+        insight = {"id": "ins-csat-1", "category": "metric.csat", "headline": "CSAT"}
+        viz = _build_viz_for_citations(
+            citations=["ins-csat-1"], insight_refs=[], insights=[insight], tool_results=[result],
+        )
+        assert viz is not None
+        assert viz.data == [{"segment": "A", "sentiment_score": 0.5}]
+
+    def test_nps_chart_takes_priority_when_both_metrics_available(self):
+        """When an NPS insight is cited AND segments carry nps_avg, the more
+        specific nps_bar_chart wins over the broader sentiment fallback —
+        confirms the priority ordering, not just that either can fire."""
+        viz = _build_viz_for_citations(
+            citations=["ins-nps-1"], insight_refs=[],
+            insights=[TestBuildVizForCitations.NPS_INSIGHT],
+            tool_results=[self.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert viz is not None
+        assert viz.kind == "nps_bar_chart"
+
+
+class TestBuildAppliedFilters:
+    """Tests for build_applied_filters(tool_results) -> list[AppliedFilter] — the
+    canonical transparency object (Phase 5). Pure function, no LLM/DB calls."""
+
+    def test_two_calls_sharing_same_survey_id_merge_into_one_entry(self):
+        """Two different tools scoped to the same survey_id merge into a single
+        `survey` entry whose sources list carries both tool names."""
+        tool_results = [
+            {"tool": "get_survey_overview", "args": {"survey_id": "s1"}, "result": {"response_count": 100}},
+            {"tool": "get_insights_list", "args": {"survey_id": "s1"}, "result": {"insights": []}},
+        ]
+        filters = build_applied_filters(tool_results)
+        survey_entries = [f for f in filters if f.kind == "survey"]
+        assert len(survey_entries) == 1
+        assert set(survey_entries[0].sources) == {"get_survey_overview", "get_insights_list"}
+
+    def test_no_filter_relevant_args_and_not_action_tool_produces_checked_fallback(self):
+        """A read-only tool with no filter-relevant args (e.g. get_org_portfolio,
+        which only takes a `limit`) produces a 'Checked: <tool>' fallback entry."""
+        tool_results = [
+            {"tool": "get_org_portfolio", "args": {"limit": 10}, "result": {"surveys": []}},
+        ]
+        filters = build_applied_filters(tool_results)
+        assert len(filters) == 1
+        assert filters[0].kind == "query"
+        assert filters[0].label == "Checked"
+        assert filters[0].value == "get org portfolio"
+        assert filters[0].sources == ["get_org_portfolio"]
+
+    def test_action_tool_with_no_filter_relevant_args_produces_no_fallback(self):
+        """A propose_* action tool with no filter-relevant args must NOT get the
+        'Checked' fallback — is_action_tool() excludes it."""
+        tool_results = [
+            {"tool": "propose_slack_alert", "args": {"message": "hi", "priority": "medium"}, "result": {"ok": True}},
+        ]
+        filters = build_applied_filters(tool_results)
+        assert filters == []
+
+    def test_failed_tool_call_is_excluded_entirely(self):
+        """A tool call whose result dict contains an 'error' key contributes
+        nothing to applied_filters — not a fallback, not a normalized entry."""
+        tool_results = [
+            {"tool": "get_survey_overview", "args": {"survey_id": "s1"}, "result": {"error": "not found"}},
+        ]
+        filters = build_applied_filters(tool_results)
+        assert filters == []
+
+    def test_window_start_end_pair_produces_one_date_range_entry(self):
+        """window_start/window_end is a paired-argument spec — must produce ONE
+        date_range entry (not two separate entries, one per key)."""
+        tool_results = [
+            {
+                "tool": "propose_manual_insight_run",
+                "args": {"survey_id": "s1", "window_start": "2026-01-01", "window_end": "2026-02-01"},
+                "result": {"proposal_type": "manual_insight_run"},
+            },
+        ]
+        filters = build_applied_filters(tool_results)
+        date_range_entries = [f for f in filters if f.kind == "date_range"]
+        assert len(date_range_entries) == 1
+        assert date_range_entries[0].value == "2026-01-01 → 2026-02-01"
+        assert date_range_entries[0].raw == {"window_start": "2026-01-01", "window_end": "2026-02-01"}
+
+    def test_dimension_match_value_pair_normalizes_to_single_entity_entry(self):
+        """get_ownership_route's dimension+match_value combo is a special-cased
+        pair, not two independent map lookups."""
+        tool_results = [
+            {"tool": "get_ownership_route", "args": {"dimension": "driver", "match_value": "onboarding"},
+             "result": {"owner": "csm-team"}},
+        ]
+        filters = build_applied_filters(tool_results)
+        assert len(filters) == 1
+        assert filters[0].kind == "entity"
+        assert filters[0].label == "Driver"
+        assert filters[0].value == "onboarding"
+
+    def test_survey_id_a_b_pair_produces_one_entry(self):
+        tool_results = [
+            {"tool": "compare_surveys", "args": {"survey_id_a": "s1", "survey_id_b": "s2", "metrics": ["nps"]},
+             "result": {"comparison": {}}},
+        ]
+        filters = build_applied_filters(tool_results)
+        survey_entries = [f for f in filters if f.kind == "survey"]
+        assert len(survey_entries) == 1
+        assert survey_entries[0].value == "s1 → s2"
+        metric_entries = [f for f in filters if f.kind == "metric"]
+        assert len(metric_entries) == 1
+        assert metric_entries[0].value == "nps"
+
+    def test_days_arg_resolves_to_friendly_lookback_string(self):
+        tool_results = [
+            {"tool": "get_metric_history", "args": {"survey_id": "s1", "days": 30}, "result": {"series": []}},
+        ]
+        filters = build_applied_filters(tool_results)
+        date_entries = [f for f in filters if f.kind == "date_range"]
+        assert len(date_entries) == 1
+        assert date_entries[0].value == "last 30 days"
+
+    def test_survey_id_resolves_friendly_title_from_result_hint(self):
+        """When the tool result carries a survey_title hint, the applied_filters
+        value uses it instead of the raw UUID."""
+        tool_results = [
+            {"tool": "get_survey_overview", "args": {"survey_id": "0123456789abcdef"},
+             "result": {"survey_title": "Q3 NPS Survey"}},
+        ]
+        filters = build_applied_filters(tool_results)
+        survey_entries = [f for f in filters if f.kind == "survey"]
+        assert survey_entries[0].value == "Q3 NPS Survey"
+
+
+class TestNormalizeSkillOutputViz:
+    """_normalize_skill_output threads insights/tool_results through to
+    _build_viz_for_citations. Both new params are optional and default to the
+    pre-viz behaviour (None) so every existing caller/test is unaffected."""
+
+    def test_viz_defaults_to_none_when_params_omitted(self):
+        """Backward compatibility: old 2-arg call signature still works and
+        produces viz=None, exactly as before this field existed."""
+        output = {
+            "answer": "NPS has declined by 8 points due to onboarding friction.",
+            "citations": ["ins-nps-1"],
+        }
+        result = _normalize_skill_output(output, "crystal-analyst")
+        assert result is not None
+        assert result.viz is None
+
+    def test_viz_populated_when_insights_and_tool_results_supplied(self):
+        output = {
+            "answer": "NPS is 42, with Enterprise well ahead of SMB this quarter.",
+            "citations": ["ins-nps-1"],
+        }
+        result = _normalize_skill_output(
+            output,
+            "crystal-analyst",
+            [TestBuildVizForCitations.NPS_INSIGHT],
+            [TestBuildVizForCitations.SEGMENT_BREAKDOWN_RESULT],
+        )
+        assert result is not None
+        assert result.viz is not None
+        assert result.viz.kind == "nps_bar_chart"
+
+    def test_viz_none_on_chart_free_turn_does_not_affect_other_fields(self):
+        """The overwhelming common case — no chart ingredients present — must be
+        a silent no-op, not an error, and must not perturb citations/answer."""
+        output = {
+            "answer": "Shipping delays remain the top driver of detractor sentiment.",
+            "citations": ["ins-driver-1"],
+        }
+        result = _normalize_skill_output(
+            output,
+            "crystal-analyst",
+            [TestBuildVizForCitations.OTHER_INSIGHT],
+            [],
+        )
+        assert result is not None
+        assert result.viz is None
+        assert result.citations == ["ins-driver-1"]
+
+    def test_applied_filters_non_empty_when_tool_calls_were_made(self):
+        """Integration-style: a full skill-turn's CrystalOutput (the same object
+        threaded into the SSE 'answer' event / REST response) carries a
+        non-empty applied_filters list when tool_results is non-empty."""
+        output = {
+            "answer": "NPS is 42 this quarter, driven largely by onboarding feedback.",
+            "citations": ["ins-nps-1"],
+        }
+        tool_results = [
+            {"tool": "get_survey_overview", "args": {"survey_id": "s1"}, "result": {"response_count": 100}},
+        ]
+        result = _normalize_skill_output(
+            output, "crystal-analyst", [TestBuildVizForCitations.NPS_INSIGHT], tool_results,
+        )
+        assert result is not None
+        assert result.applied_filters
+        assert isinstance(result.applied_filters[0], AppliedFilter)
+        assert result.applied_filters[0].kind == "survey"
+
+    def test_applied_filters_empty_when_no_tool_results(self):
+        output = {"answer": "NPS is 42 this quarter, driven largely by onboarding feedback."}
+        result = _normalize_skill_output(output, "crystal-analyst")
+        assert result is not None
+        assert result.applied_filters == []
 
 
 class TestResolveCrystalSkillMatch:
@@ -1687,7 +2159,7 @@ class TestRunSkillLoop:
 
         captured_tool_results = {}
 
-        async def fake_skill_synthesis(inp, tool_results, skill_meta=None, score=None):
+        async def fake_skill_synthesis(inp, tool_results, skill_meta=None, score=None, turn_id=None):
             captured_tool_results["results"] = tool_results
             captured_tool_results["skill_meta"] = skill_meta
             return CrystalOutput(
@@ -1708,6 +2180,61 @@ class TestRunSkillLoop:
         # Fix #3: the skill resolved during prefetch is reused by synthesis
         # (passed through) rather than re-routed a second time.
         assert captured_tool_results["skill_meta"] == skill_meta
+
+    @pytest.mark.asyncio
+    async def test_fallback_output_gets_viz_computed_from_citations(self):
+        """REST path (POST /insights/crystal via crystal_agent.run -> _run_skill_loop):
+        when the skill path fails, the _run_crystal fallback's returned CrystalOutput
+        must still carry a deterministically-computed viz, not the bare LLM output."""
+        fallback = CrystalOutput(answer="NPS is 42 this quarter.", citations=["ins-001"])
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=None)),
+            patch("crystalos.agents.crystal._run_crystal", new=AsyncMock(return_value=fallback)),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"data": "ok"})),
+            patch("crystalos.agents.crystal._build_viz_for_citations", return_value="sentinel-viz") as mock_build,
+        ):
+            result = await _run_skill_loop(self._make_inp(insights=SAMPLE_INSIGHTS))
+
+        assert result.viz == "sentinel-viz"
+        assert mock_build.called
+
+    @pytest.mark.asyncio
+    async def test_fallback_output_gets_applied_filters_computed(self):
+        """Same fallback branch as above: the _run_crystal fallback's returned
+        CrystalOutput must carry deterministically-computed applied_filters,
+        not the bare LLM output's (empty) default."""
+        fallback = CrystalOutput(answer="NPS is 42 this quarter.", citations=["ins-001"])
+        sentinel_filters = [AppliedFilter(kind="survey", label="Survey", value="s1", raw={"survey_id": "s1"})]
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=None)),
+            patch("crystalos.agents.crystal._run_crystal", new=AsyncMock(return_value=fallback)),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"data": "ok"})),
+            patch("crystalos.agents.crystal.build_applied_filters", return_value=sentinel_filters) as mock_build,
+        ):
+            result = await _run_skill_loop(self._make_inp(insights=SAMPLE_INSIGHTS))
+
+        assert result.applied_filters == sentinel_filters
+        assert mock_build.called
+
+    @pytest.mark.asyncio
+    async def test_chart_free_turn_fallback_viz_is_none(self):
+        """No citations at all — the deterministic check itself returns None,
+        the common case, and it must not raise."""
+        fallback = CrystalOutput(answer="Response volume is up across all regions.", citations=[])
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=None)),
+            patch("crystalos.agents.crystal._run_crystal", new=AsyncMock(return_value=fallback)),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"data": "ok"})),
+        ):
+            result = await _run_skill_loop(self._make_inp())
+
+        assert result.viz is None
 
 
 # ── TestRunSkillStream ────────────────────────────────────────────────────────
@@ -1862,6 +2389,183 @@ class TestRunSkillStream:
         answer_events = [e for e in events if e.get("type") == "answer"]
         assert len(answer_events) == 1
         assert answer_events[0]["answer"] == fallback.answer
+
+    @pytest.mark.asyncio
+    async def test_answer_event_omits_viz_when_absent(self):
+        """Chart-free turn (the overwhelming common case): 'answer' event's viz
+        key is present and explicitly null, never dropped or omitted-with-error."""
+        skill_out = self._make_skill_output()  # viz defaults to None
+        assert skill_out.viz is None
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            events = await self._collect(_run_skill_stream(self._make_inp()))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        assert len(answer_events) == 1
+        assert "viz" in answer_events[0]
+        assert answer_events[0]["viz"] is None
+
+    @pytest.mark.asyncio
+    async def test_answer_event_includes_viz_when_skill_output_has_viz(self):
+        """When the skill path's CrystalOutput carries a viz (set deterministically
+        by _normalize_skill_output), the SSE 'answer' event carries it too."""
+        viz = VizSpec(
+            kind="nps_bar_chart",
+            title="NPS is 42 this quarter",
+            data=[{"segment": "Enterprise", "score": 55.0}, {"segment": "SMB", "score": 12.0}],
+            source_insight_id="ins-nps-1",
+        )
+        skill_out = CrystalOutput(
+            answer="NPS is 42, with Enterprise well ahead of SMB this quarter.",
+            citations=["ins-nps-1"],
+            suggestions=[],
+            viz=viz,
+        )
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            events = await self._collect(_run_skill_stream(self._make_inp()))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        assert len(answer_events) == 1
+        assert answer_events[0]["viz"] == viz.model_dump()
+        assert answer_events[0]["viz"]["kind"] == "nps_bar_chart"
+
+    @pytest.mark.asyncio
+    async def test_fallback_answer_event_includes_viz_computed_from_run_crystal_output(self):
+        """Fallback branch (_skill_synthesis returns None -> _run_crystal): viz is
+        (re)computed from the structured citations/insights/tool_results this
+        generator still holds, since _run_crystal itself only sees prose history."""
+        fallback = CrystalOutput(
+            answer="NPS is 42, with Enterprise well ahead of SMB this quarter.",
+            citations=["ins-nps-1"],
+            suggestions=[],
+        )
+        computed_viz = VizSpec(kind="nps_bar_chart", title="NPS is 42", data=[{"segment": "A", "score": 1.0}])
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=None)),
+            patch("crystalos.agents.crystal._run_crystal", new=AsyncMock(return_value=fallback)),
+            patch("crystalos.agents.crystal._build_viz_for_citations", return_value=computed_viz) as mock_build,
+        ):
+            events = await self._collect(_run_skill_stream(self._make_inp()))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        assert len(answer_events) == 1
+        assert answer_events[0]["viz"] == computed_viz.model_dump()
+        assert mock_build.called
+
+    @pytest.mark.asyncio
+    async def test_answer_event_includes_applied_filters_when_skill_output_has_them(self):
+        """When the skill path's CrystalOutput carries applied_filters (set
+        deterministically by _normalize_skill_output), the SSE 'answer' event
+        carries them too."""
+        skill_out = CrystalOutput(
+            answer="NPS is 42, with Enterprise well ahead of SMB this quarter.",
+            citations=["ins-nps-1"],
+            suggestions=[],
+            applied_filters=[AppliedFilter(kind="survey", label="Survey", value="s1", raw={"survey_id": "s1"})],
+        )
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            events = await self._collect(_run_skill_stream(self._make_inp()))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        assert len(answer_events) == 1
+        assert answer_events[0]["applied_filters"] == [f.model_dump() for f in skill_out.applied_filters]
+        assert answer_events[0]["applied_filters"][0]["kind"] == "survey"
+
+    @pytest.mark.asyncio
+    async def test_answer_event_applied_filters_empty_list_when_absent(self):
+        """Chart/filter-free turn: 'answer' event's applied_filters key is present
+        as an empty list, never dropped or omitted."""
+        skill_out = self._make_skill_output()  # applied_filters defaults to []
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            events = await self._collect(_run_skill_stream(self._make_inp()))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        assert len(answer_events) == 1
+        assert answer_events[0]["applied_filters"] == []
+
+    @pytest.mark.asyncio
+    async def test_fallback_answer_event_includes_applied_filters_computed(self):
+        """Fallback branch (_skill_synthesis returns None -> _run_crystal):
+        applied_filters is (re)computed from this generator's tool_results,
+        since _run_crystal itself only sees prose history."""
+        fallback = CrystalOutput(
+            answer="NPS is 42, with Enterprise well ahead of SMB this quarter.",
+            citations=["ins-nps-1"],
+            suggestions=[],
+        )
+        computed_filters = [AppliedFilter(kind="survey", label="Survey", value="s1", raw={"survey_id": "s1"})]
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=None)),
+            patch("crystalos.agents.crystal._run_crystal", new=AsyncMock(return_value=fallback)),
+            patch("crystalos.agents.crystal.build_applied_filters", return_value=computed_filters) as mock_build,
+        ):
+            events = await self._collect(_run_skill_stream(self._make_inp()))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        assert len(answer_events) == 1
+        assert answer_events[0]["applied_filters"] == [f.model_dump() for f in computed_filters]
+        assert mock_build.called
 
     @pytest.mark.asyncio
     async def test_rate_limit_emits_error_event(self):
@@ -2103,6 +2807,418 @@ class TestRunSkillStream:
         mock_registry.find.assert_awaited_once()
 
 
+# ── G1: turn_id wire contract ──────────────────────────────────────────────────
+# MIGRATION_PLAN.md §4 blocker #1 — turn_id must be minted synchronously before
+# the `answer` SSE frame / REST payload ships, and the exact same value must be
+# the crystal_turn_events row's primary key (not a separately-generated one).
+
+class TestTurnIdWireContract:
+    def _make_inp(self, **kwargs):
+        defaults = dict(
+            survey_id="s1",
+            org_id="org1",
+            message="What are the top issues?",
+            insights=[],
+            topics=[],
+            metrics={},
+        )
+        defaults.update(kwargs)
+        return CrystalInput(**defaults)
+
+    async def _collect(self, gen) -> list[dict]:
+        events = []
+        async for line in gen:
+            events.append(json.loads(line))
+        return events
+
+    @staticmethod
+    def _assert_valid_uuid4_str(value: str) -> None:
+        import uuid as _uuid
+        assert isinstance(value, str) and value
+        _uuid.UUID(value)  # raises ValueError if not a valid UUID string
+
+    @pytest.mark.asyncio
+    async def test_skill_stream_turn_id_on_wire_matches_persisted_event_id(self):
+        """_run_skill_stream: the `answer` frame's turn_id is the exact id the
+        fire-and-forget telemetry write receives — proving it was minted once,
+        before the frame shipped, not independently regenerated for the DB row."""
+        skill_out = CrystalOutput(answer="NPS is 42 this quarter.", citations=[], suggestions=[])
+
+        captured_events = []
+
+        def fake_publish(event, ctx):
+            captured_events.append(event)
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=fake_publish),
+        ):
+            events = await self._collect(_run_skill_stream(self._make_inp()))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        assert len(answer_events) == 1
+        wire_turn_id = answer_events[0]["turn_id"]
+        self._assert_valid_uuid4_str(wire_turn_id)
+
+        assert len(captured_events) == 1
+        assert captured_events[0].id == wire_turn_id
+
+    @pytest.mark.asyncio
+    async def test_skill_stream_fallback_path_also_gets_turn_id(self):
+        """Fallback branch (_skill_synthesis -> None -> _run_crystal) still carries
+        turn_id on the wire and persists the same id."""
+        fallback = CrystalOutput(answer="Shipping delays drive detractor sentiment.", citations=[])
+
+        captured_events = []
+
+        def fake_publish(event, ctx):
+            captured_events.append(event)
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=None)),
+            patch("crystalos.agents.crystal._run_crystal", new=AsyncMock(return_value=fallback)),
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=fake_publish),
+        ):
+            events = await self._collect(_run_skill_stream(self._make_inp()))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        wire_turn_id = answer_events[0]["turn_id"]
+        self._assert_valid_uuid4_str(wire_turn_id)
+        assert captured_events[0].id == wire_turn_id
+
+    @pytest.mark.asyncio
+    async def test_two_separate_stream_calls_get_different_turn_ids(self):
+        """Two independent turns must never share a turn_id — this is what makes
+        turn_id usable as the assistant message's stable per-turn identity."""
+        skill_out = CrystalOutput(answer="NPS is 42 this quarter.", citations=[], suggestions=[])
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+        ):
+            events_1 = await self._collect(_run_skill_stream(self._make_inp()))
+            events_2 = await self._collect(_run_skill_stream(self._make_inp()))
+
+        turn_id_1 = [e for e in events_1 if e["type"] == "answer"][0]["turn_id"]
+        turn_id_2 = [e for e in events_2 if e["type"] == "answer"][0]["turn_id"]
+        assert turn_id_1 != turn_id_2
+
+    @pytest.mark.asyncio
+    async def test_legacy_react_stream_turn_id_on_wire_matches_persisted_event_id(self):
+        """_run_react_loop_streaming (admin ?legacy=true path) carries the same
+        turn_id contract as the default skill-stream path."""
+        from crystalos.agents.crystal import _run_react_loop_streaming
+
+        skill_out = CrystalOutput(answer="Onboarding friction drives low NPS.", citations=[], suggestions=[])
+        captured_events = []
+
+        def fake_publish(event, ctx):
+            captured_events.append(event)
+
+        mock_registry = MagicMock()
+        mock_registry._initialized = True
+        mock_registry._skills = {}
+        mock_registry.find = AsyncMock(return_value=[])
+        mock_registry.find_sync = MagicMock(return_value=None)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.lib.skill_registry.get_registry", return_value=mock_registry),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"data": "ok"})),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=fake_publish),
+        ):
+            events = []
+            async for line in _run_react_loop_streaming(self._make_inp()):
+                events.append(json.loads(line))
+
+        answer_events = [e for e in events if e.get("type") == "answer"]
+        assert len(answer_events) == 1
+        wire_turn_id = answer_events[0]["turn_id"]
+        self._assert_valid_uuid4_str(wire_turn_id)
+        assert len(captured_events) == 1
+        assert captured_events[0].id == wire_turn_id
+
+    @pytest.mark.asyncio
+    async def test_rest_path_skill_loop_turn_id_matches_persisted_event_id(self):
+        """REST path (/insights/crystal -> crystal_agent.run -> _run_skill_loop):
+        CrystalOutput.turn_id is the same id the telemetry write persists."""
+        skill_out = CrystalOutput(answer="NPS is 42 this quarter.", citations=[], suggestions=[])
+        captured_events = []
+
+        def fake_publish(event, ctx):
+            captured_events.append(event)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=skill_out)),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"data": "ok"})),
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=fake_publish),
+        ):
+            result = await _run_skill_loop(self._make_inp())
+
+        assert result is skill_out  # same object — attribute set in place, not copied
+        self._assert_valid_uuid4_str(result.turn_id)
+        assert len(captured_events) == 1
+        assert captured_events[0].id == result.turn_id
+
+    @pytest.mark.asyncio
+    async def test_rest_path_fallback_output_also_gets_turn_id(self):
+        """REST path fallback (_skill_synthesis -> None -> _run_crystal) also gets
+        a turn_id, backed by the same telemetry write."""
+        fallback = CrystalOutput(answer="Shipping delays drive detractor sentiment.", citations=[])
+        captured_events = []
+
+        def fake_publish(event, ctx):
+            captured_events.append(event)
+
+        with (
+            patch("crystalos.agents.crystal._crystal_rate_count", new=AsyncMock(return_value=0)),
+            patch("crystalos.agents.crystal._skill_synthesis", new=AsyncMock(return_value=None)),
+            patch("crystalos.agents.crystal._run_crystal", new=AsyncMock(return_value=fallback)),
+            patch("crystalos.crystal.tools.dispatch_tool", new=AsyncMock(return_value={"data": "ok"})),
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=fake_publish),
+        ):
+            result = await _run_skill_loop(self._make_inp())
+
+        assert result is fallback
+        self._assert_valid_uuid4_str(result.turn_id)
+        assert captured_events[0].id == result.turn_id
+
+
+class TestFireTelemetryToolsCalledAndErrors:
+    """Regression tests for _fire_telemetry's TurnEvent construction.
+
+    Bug fixed: `tools_called` used to drop each tool call's `args` (only
+    `{"tool": ...}` survived), and `tool_errors` was hardcoded to `[]` instead
+    of reflecting actual per-call failures. Also covers the `crystalos_version`
+    provenance field threaded from `lib.constants.CRYSTALOS_VERSION`.
+    """
+
+    def _make_inp(self, **kwargs):
+        defaults = dict(survey_id="s1", org_id="org1", message="What are the top issues?", insights=[])
+        defaults.update(kwargs)
+        return CrystalInput(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_tools_called_includes_args_not_just_tool_name(self):
+        """Regression: tools_called must carry each call's args, not just the
+        bare tool name (result is intentionally excluded — can be large/PII)."""
+        import asyncio
+
+        captured = []
+        tool_results = [
+            {"tool": "get_survey_overview", "args": {"survey_id": "s1"}, "result": {"response_count": 10}},
+        ]
+        output = CrystalOutput(answer="NPS is 42 this quarter.")
+
+        with (
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=lambda e, c: captured.append(e)),
+            patch("crystalos.lib.feedback_detector.detect_and_route_signal", new=AsyncMock(return_value=None)),
+        ):
+            _fire_telemetry(self._make_inp(), MagicMock(brand=None), None, output, tool_results, 123, "turn-1")
+            await asyncio.sleep(0)
+
+        assert len(captured) == 1
+        assert captured[0].tools_called == [{"tool": "get_survey_overview", "args": {"survey_id": "s1"}}]
+        # result is deliberately NOT included (large/may contain response text)
+        assert "result" not in captured[0].tools_called[0]
+
+    @pytest.mark.asyncio
+    async def test_tool_errors_reflects_actual_failures(self):
+        """Regression: tool_errors used to be hardcoded to []. Must now surface
+        every tool_results entry whose result dict contains an 'error' key."""
+        import asyncio
+
+        captured = []
+        tool_results = [
+            {"tool": "get_survey_overview", "args": {"survey_id": "s1"}, "result": {"response_count": 10}},
+            {"tool": "get_topic_details", "args": {"survey_id": "s1", "topic_name": "x"}, "result": {"error": "not found"}},
+        ]
+        output = CrystalOutput(answer="NPS is 42 this quarter.")
+
+        with (
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=lambda e, c: captured.append(e)),
+            patch("crystalos.lib.feedback_detector.detect_and_route_signal", new=AsyncMock(return_value=None)),
+        ):
+            _fire_telemetry(self._make_inp(), MagicMock(brand=None), None, output, tool_results, 123, "turn-1")
+            await asyncio.sleep(0)
+
+        assert captured[0].tool_errors == [{"tool": "get_topic_details", "error": "not found"}]
+
+    @pytest.mark.asyncio
+    async def test_no_failures_produces_empty_tool_errors(self):
+        import asyncio
+
+        captured = []
+        tool_results = [
+            {"tool": "get_survey_overview", "args": {"survey_id": "s1"}, "result": {"response_count": 10}},
+        ]
+        output = CrystalOutput(answer="NPS is 42 this quarter.")
+
+        with (
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=lambda e, c: captured.append(e)),
+            patch("crystalos.lib.feedback_detector.detect_and_route_signal", new=AsyncMock(return_value=None)),
+        ):
+            _fire_telemetry(self._make_inp(), MagicMock(brand=None), None, output, tool_results, 123, "turn-1")
+            await asyncio.sleep(0)
+
+        assert captured[0].tool_errors == []
+
+    @pytest.mark.asyncio
+    async def test_crystalos_version_wired_from_constant(self):
+        """TurnEvent.crystalos_version is populated from
+        crystalos.lib.constants.CRYSTALOS_VERSION."""
+        import asyncio
+        from crystalos.lib.constants import CRYSTALOS_VERSION
+
+        captured = []
+        output = CrystalOutput(answer="NPS is 42 this quarter.")
+
+        with (
+            patch("crystalos.lib.turn_publisher.publish_turn_event", side_effect=lambda e, c: captured.append(e)),
+            patch("crystalos.lib.feedback_detector.detect_and_route_signal", new=AsyncMock(return_value=None)),
+        ):
+            _fire_telemetry(self._make_inp(), MagicMock(brand=None), None, output, [], 0, "turn-1")
+            await asyncio.sleep(0)
+
+        assert captured[0].crystalos_version == CRYSTALOS_VERSION
+
+
+# ── G1: server-minted proposal ids ─────────────────────────────────────────────
+# MIGRATION_PLAN.md §4 blocker #2 — _normalize_proposal's id must be genuinely
+# unique per emission (not a bare deterministic title slug), while staying
+# stable across the SAME rendered proposal's own emitted->accepted->succeeded
+# lifecycle POSTs (P0-3's dedup fix, crystal_action_proposals_org_survey_key_uniq).
+
+class TestNormalizeProposalServerMintedId:
+    def _proposal(self, **overrides) -> dict:
+        base = {
+            "proposal_type": "workflow",
+            "title": "Notify CSM on detractors",
+            "description": "Route every detractor to a CSM",
+            "params": {},
+        }
+        base.update(overrides)
+        return base
+
+    def test_two_separate_emissions_of_the_same_recommendation_get_different_ids(self):
+        """The bug this fixes: two distinct turns proposing the identically-titled
+        recommendation must NOT collapse onto the same crystal_action_proposals
+        row. Different turn_id -> different id, even for an identical title."""
+        out_1 = _normalize_proposal(self._proposal(), turn_id="turn-aaa")
+        out_2 = _normalize_proposal(self._proposal(), turn_id="turn-bbb")
+        assert out_1["id"] != out_2["id"]
+
+    def test_same_turn_same_title_is_stable_across_calls(self):
+        """The SAME rendered proposal's own lifecycle POSTs (emitted, then later
+        accepted/succeeded) reuse the same in-memory object's .id — this asserts
+        the id-minting itself is deterministic given the same turn_id + title,
+        which is what makes that lifecycle collapse onto one DB row."""
+        out_1 = _normalize_proposal(self._proposal(), turn_id="turn-aaa")
+        out_2 = _normalize_proposal(self._proposal(), turn_id="turn-aaa")
+        assert out_1["id"] == out_2["id"]
+
+    def test_id_is_scoped_by_turn_id(self):
+        out = _normalize_proposal(self._proposal(), turn_id="turn-aaa")
+        assert out["id"].startswith("turn-aaa:")
+
+    def test_no_turn_id_falls_back_to_unique_uuid(self):
+        """Legacy/direct callers that don't have a turn_id yet still get a
+        genuinely unique id (never the old bare deterministic slug)."""
+        out_1 = _normalize_proposal(self._proposal())
+        out_2 = _normalize_proposal(self._proposal())
+        assert out_1["id"] != out_2["id"]
+        import uuid as _uuid
+        _uuid.UUID(out_1["id"])  # valid uuid4, not a title slug
+
+    def test_explicit_id_is_never_overwritten(self):
+        """A proposal that already carries its own id (e.g. a propose_* tool that
+        sets one explicitly) is left untouched regardless of turn_id."""
+        out = _normalize_proposal(self._proposal(id="explicit-id-1"), turn_id="turn-aaa")
+        assert out["id"] == "explicit-id-1"
+
+    def test_extract_action_proposals_threads_turn_id(self):
+        """_extract_action_proposals (tool-proposal path) forwards turn_id into
+        _normalize_proposal the same way the skill path does."""
+        from crystalos.agents.crystal import _extract_action_proposals
+
+        tool_results = [{
+            "tool": "propose_alert",
+            "result": {
+                "proposal_type": "alert",
+                "title": "Alert on NPS below 30",
+                "description": "Notify the team if NPS keeps falling",
+                "params": {},
+            },
+        }]
+        with patch("crystalos.crystal.registry.ACTION_TOOL_NAMES", {"propose_alert"}):
+            proposals_1 = _extract_action_proposals(tool_results, turn_id="turn-aaa")
+            proposals_2 = _extract_action_proposals(tool_results, turn_id="turn-bbb")
+
+        assert proposals_1[0]["id"] != proposals_2[0]["id"]
+        assert proposals_1[0]["id"].startswith("turn-aaa:")
+
+    @pytest.mark.asyncio
+    async def test_skill_synthesis_threads_turn_id_into_action_proposal_ids(self):
+        """_skill_synthesis forwards turn_id all the way into the action
+        proposals on the CrystalOutput it returns."""
+        output = {
+            "answer": "NPS is 28 — below target. Detractors cite onboarding friction repeatedly.",
+            "action_proposals": [
+                {"proposal_type": "workflow", "title": "Notify CSM on detractors",
+                 "description": "Route every detractor to a CSM", "params": {}},
+            ],
+        }
+        skill_meta = {
+            "name": "crystal-analyst",
+            "description": "Analytical skill",
+            "allowed_tools": [],
+            "_body": "",
+            "_dir": "/tmp",
+            "version": "1.0.0",
+            "evals": "EVALS.md",
+            "max_output_tokens": 2000,
+            "max_retries": 1,
+            "timeout_seconds": 60,
+        }
+        fake_result = SkillResult(
+            output=output, eval_score=0.9, eval_passed=True, eval_issues=[],
+            retried=False, skill_name="crystal-analyst", skill_version="1.0.0",
+            model="test-model", tokens_used=100, latency_ms=200.0,
+        )
+        inp = CrystalInput(survey_id="s1", org_id="org1", message="why is NPS dropping?", insights=[])
+
+        with patch("crystalos.lib.skill_runtime.SkillRuntime.execute", new=AsyncMock(return_value=fake_result)):
+            result = await _skill_synthesis(inp, [], skill_meta=skill_meta, score=0.9, turn_id="turn-ccc")
+
+        assert result is not None
+        assert len(result.action_proposals) == 1
+        assert result.action_proposals[0].id.startswith("turn-ccc:")
+
+
 class TestIsWorkflowTaxonomyQuestion:
     """Unit tests for the Wave 18 message-content detector, independent of routing
     plumbing — pure function, precision-first (see block comment in agents/crystal.py)."""
@@ -2264,7 +3380,7 @@ class TestWorkflowTaxonomyForceRoute:
         skill_out = self._make_skill_output()
         captured_inp: list[CrystalInput] = []
 
-        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None):
+        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None, turn_id=None):
             captured_inp.append(inp)
             return skill_out
 
@@ -2392,7 +3508,7 @@ class TestWorkflowTaxonomyForceRoute:
         skill_out = self._make_skill_output()
         captured_inp: list[CrystalInput] = []
 
-        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None):
+        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None, turn_id=None):
             captured_inp.append(inp)
             return skill_out
 
@@ -2428,7 +3544,7 @@ class TestWorkflowTaxonomyForceRoute:
         skill_out = self._make_skill_output()
         captured_inp: list[CrystalInput] = []
 
-        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None):
+        async def _capture_synthesis(inp, tool_results, skill_meta=None, score=None, turn_id=None):
             captured_inp.append(inp)
             return skill_out
 

@@ -13,6 +13,7 @@ import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useSurveys } from '../hooks/useSurveys';
 import { CrystalPanelProvider, useCrystalPanel } from '../contexts/crystalPanel';
 import { ROUTES } from '../constants/routes';
+import { useTranslation } from '../lib/i18n';
 
 const pageVariants: Variants = {
   initial: { opacity: 0, y: 10 },
@@ -27,25 +28,31 @@ function AppShellInner() {
   const location = useLocation();
   const { toggleCrystal, scope, isOpen, closeCrystal } = useCrystalPanel();
   const { surveys } = useSurveys();
+  const { t } = useTranslation();
 
   const isMobile = breakpoint === 'mobile';
   const isTablet = breakpoint === 'tablet';
-  // Full-bleed "no chrome" treatment is for the survey QUESTION builder only
-  // (it owns its own viewport + its own XperiqCopilot assistant/⌘K, per the
-  // comment below). This regex previously ALSO matched `/app/workflows/build`
-  // (Wave 14 bug report) — and, being a substring test, silently matched
+  // Full-bleed "no chrome" treatment is for the survey QUESTION builder only —
+  // it owns its own viewport (fixed QuestionPalette/PropertiesPanel), but,
+  // since Phase A, Crystal itself (panel/FAB/⌘K) is no longer suppressed here —
+  // the builder now routes its chat through the same global CrystalPanel every
+  // other page uses (see SurveyBuilderPage.tsx's useCrystalPanel() wiring).
+  // This regex previously ALSO matched `/app/workflows/build` (Wave 14 bug
+  // report) — and, being a substring test, silently matched
   // `/app/workflows/build/nl` too — meaning both workflow builder pages have
-  // been running chrome-less (no gutters/footer/BottomNav/CrystalPanel/⌘K)
-  // by accident. Neither page's own layout expects this (both use a normal
-  // `max-w-* mx-auto` container, per `app/src/pages/CLAUDE.md`'s page
-  // pattern) — narrowed to an exact regex so only the survey builder's
-  // dynamic `:id` segment matches, never a workflow route.
+  // been running chrome-less (no gutters/footer/BottomNav) by accident.
+  // Neither page's own layout expects this (both use a normal `max-w-* mx-auto`
+  // container, per `app/src/pages/CLAUDE.md`'s page pattern) — narrowed to an
+  // exact regex so only the survey builder's dynamic `:id` segment matches,
+  // never a workflow route.
   const isBuilder = /^\/surveys\/[^/]+\/build$/.test(location.pathname);
-  // The two "unified builder" pages (Wave 14) each mount their own
-  // contextual `AskCrystalFab` — suppress AppShell's generic default Crystal
-  // FAB there so re-enabling `CrystalPanel` on these routes (via the fix
-  // above) doesn't produce two overlapping "open Crystal" buttons in the
-  // same corner.
+  // The two Wave 14 workflow-builder pages each mount their own contextual
+  // `AskCrystalFab` (wired to the SAME global CrystalPanel/⌘K as everywhere
+  // else — only the FAB's own visual is swapped) — suppress AppShell's
+  // generic default Crystal FAB there so it doesn't produce two overlapping
+  // "open Crystal" buttons in the same corner. The survey builder (converged
+  // in Phase A) does NOT need this — it uses AppShell's default FAB/panel/⌘K
+  // like any other page, just with the no-chrome layout above.
   const hasOwnCrystalFab = location.pathname === ROUTES.WORKFLOW_BUILD || location.pathname === ROUTES.WORKFLOW_CANVAS;
 
   useEffect(() => {
@@ -57,19 +64,19 @@ function AppShellInner() {
     closeCrystal();
   }, [location.pathname, closeCrystal]);
 
-  // Global ⌘K / Ctrl+K shortcut to toggle Crystal panel
+  // Global ⌘K / Ctrl+K shortcut to toggle Crystal panel — no longer suppressed
+  // on the survey builder route (Phase A): Crystal now handles that route
+  // directly, same as everywhere else.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        // Don't intercept ⌘K inside the survey builder (XperiqCopilot owns it there)
-        if (isBuilder) return;
         e.preventDefault();
         toggleCrystal();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [isBuilder, toggleCrystal]);
+  }, [toggleCrystal]);
 
   const sidebarWidth = isMobile ? '0px' : isExpanded ? '16rem' : '3.5rem';
 
@@ -114,17 +121,16 @@ function AppShellInner() {
 
       {isMobile && !isBuilder && <BottomNav />}
 
-      {/* Global Crystal panel — available on every authenticated route.
-          Pages inject their data via setCrystalData(); scope is set via setScope(). */}
-      {!isBuilder && (
-        <CrystalPanel scope={scope} surveys={surveys} insights={null} />
-      )}
+      {/* Global Crystal panel — available on every authenticated route,
+          including the survey builder (Phase A). Pages inject their data via
+          setCrystalData(); scope is set via setScope(). */}
+      <CrystalPanel scope={scope} surveys={surveys} insights={null} />
 
       {/* Crystal FAB — collapsed icon when panel is closed. Suppressed on the
           two Wave 14 unified-builder pages (they mount their own contextual
           AskCrystalFab instead — see `hasOwnCrystalFab` above). */}
       <AnimatePresence>
-        {!isBuilder && !hasOwnCrystalFab && !isOpen && (
+        {!hasOwnCrystalFab && !isOpen && (
           <motion.button
             key="crystal-fab"
             initial={{ scale: 0, opacity: 0 }}
@@ -135,10 +141,13 @@ function AppShellInner() {
             whileTap={{ scale: 0.93 }}
             onClick={toggleCrystal}
             title="Ask Crystal (⌘K)"
-            aria-label="Open Crystal AI assistant"
+            aria-label={t('crystal.openPanelAriaLabel')}
             className="fixed z-40 flex items-center justify-center rounded-full"
             style={{
-              bottom: isMobile ? '5.5rem' : '1.5rem',
+              // The builder route hides BottomNav (see `{isMobile && !isBuilder
+              // && <BottomNav />}` above) — without `!isBuilder` here, the FAB
+              // would float above a BottomNav that isn't actually rendered there.
+              bottom: isMobile && !isBuilder ? '5.5rem' : '1.5rem',
               right: '1.5rem',
               width: 52,
               height: 52,

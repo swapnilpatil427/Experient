@@ -115,12 +115,30 @@ creation graph's revision loop).
 - **Tag Report tools** (`docs/tag-report/DESIGN.md`, scope `"tag"`) — read-only tools for the conversational surface on top of `graphs/tag_report.py`'s cross-survey rollup: `list_tags` (resolve a tag by name → `tag_id`, scope `"both"`), `get_tag_report` (latest or specific `run_id`'s trust-weighted per-metric findings, `render_hint='document'`), `get_tag_report_trail` (run history for a tag). Two action proposals: `propose_view_tag_report` → `view_tag_report`, `propose_generate_tag_report` → `generate_tag_report`. Every query re-validates the caller-supplied `tag_id` against `ctx.org_id` before reading any other table (`_load_org_tag`). `get_tools_for_scope("tag")` also includes `"group"`-scoped tools (`get_group_surveys`/`get_group_metrics`/`get_group_topics`/`analyze_group_coverage`) since a tag is a survey group. Routed via the `tag-analyst` skill; `CrystalContext.tag_ids` is populated from the request body's `scope: 'tag'` + `tag_id` (see `crystal_stream_endpoint` in `main.py` and `_build_ctx` in `agents/crystal.py`), and `_routing_hint_for_scope` nudges semantic skill routing toward `tag-analyst` for tag-scoped queries since `skill_registry.find` takes free text only, no scope parameter.
 - Thread continuity: `crystal_threads` by `(survey_id, org_id)`, 7-day TTL. Rate limit: 10 req/org/min (Redis)
 
+### `ToolDispatcher` vs. `dispatch_tool` (standing decision)
+`lib/tool_dispatcher.py`'s `ToolDispatcher` is fully built, tested, and initialized at
+startup (`main.py`'s lifespan) — but it is **not called anywhere in production code
+today**. `crystal/tools.py`'s `TOOL_REGISTRY`/`dispatch_tool` is the actual live
+tool-dispatch path for Crystal's existing ~60 tools, and stays frozen there — not
+migrated, not removed. Going forward: `ToolDispatcher` is the documented home for any
+**new** tool-shaped capability (its manifest-driven, importlib-resolved design is a
+better fit for tools that don't need to live inline in `crystal/tools.py`); the existing
+tools keep using `dispatch_tool` as their stable surface. Both guarantee the same
+error contract — always return a dict, never raise, `{"error": str(exc), "tool":
+tool_name}` on executor failure.
+
 ### Crystal action proposals & telemetry
 - Two emitters, one shape: skill path (`action_proposals[]` in skill output → `_normalize_skill_output`) and tool path (`propose_*` tools in `ACTION_TOOL_NAMES` → `_extract_action_proposals`). Both pass through `_normalize_proposal` (maps `_PROPOSAL_TYPE_ALIASES`, fills slug `id`, defaults priority/`requires_confirmation`). See the "Crystal vs Copilot" table above.
-- `_fire_telemetry` (end of both stream paths) fires two fire-and-forget tasks: `turn_publisher.publish_turn_event` (TurnEvent: tools, eval_score, latency, skill_name, quality signal) and `feedback_detector.detect_and_route_signal` + `persist_signal` (product-signal detection).
+- `_fire_telemetry` (end of both stream paths) fires two fire-and-forget tasks: `turn_publisher.publish_turn_event` (TurnEvent: tools, eval_score, latency, skill_name, quality signal, `crystalos_version`, `tools_called` incl. `args`, real `tool_errors`) and `feedback_detector.detect_and_route_signal` + `persist_signal` (product-signal detection).
+- `applied_filters` (`AppliedFilter` in `agents/crystal.py`) — a per-turn transparency object built by `build_applied_filters(tool_results)`, normalizing every tool call's arguments (survey/tag/checkpoint/date-range/segment/metric/topic/sentiment/layer/lane/query/entity/benchmark) into one flat, deduped list surfaced on `CrystalOutput` and every SSE `answer` event/REST response — "what did Crystal actually search," independent of the citations shown. Wired at all 4 `CrystalOutput`-construction sites (alongside `viz`); Node backend forwards it through `experience.ts`'s `crystalHandler` and `insights.ts`'s pluck-lists the same way `viz` is forwarded. Frontend: `AppliedFiltersDisclosure` (a component in `CrystalPanel.tsx`, alongside `CrystalThinkingBubble`/`ActionProposalCard`).
 
 ### SkillRuntime quality gate
 `lib/skill_runtime.py` `execute()` runs EVALS.md (hybrid structural + LLM-judge), gated by `SKILL_EVAL_PASS_THRESHOLD`; retries once on failure with failure context; skills with no EVALS.md get a baseline output gate (not a blind pass); high-scoring runs are written to the example bank. Authoring details in `SKILLS.md`.
+
+- **EVALS.md must be a markdown pipe-table** (`| E# | criterion | weight | threshold |`) — `_parse_evals_md` only extracts lines starting with `|`; a prose/bullet-format EVALS.md silently parses to zero criteria and falls through to the baseline gate (fixed 2026-08 for `gap-analyst`/`platform-gap-tracker`/`xm-market-researcher`, one of which had an unenforced SOC2/HIPAA/FedRAMP must-pass safety rule as a result — always verify a new/edited EVALS.md actually parses non-empty).
+- **Two deterministic structural checks beyond `STRUCTURAL_KEYWORDS`**: an "N-M entries with fields X, Y, Z" checker and an "is one of: a, b, c" enum-membership checker, both regex-matched directly off the criterion's own description text in `_eval_structural` (which now also receives `input_data`, previously silently discarded). A criterion whose text doesn't match either regex falls through unchanged to the existing keyword/LLM-judge path.
+- **`SKILL_CRITERION_VALIDATORS`** (`lib/skill_validators.py`) — a `dict[(skill_name, criterion_id), Callable[[input_data, output], float]]` registry, checked in `_eval_criterion` before the generic structural/LLM dispatch, for criteria that need a bespoke deterministic check tied to one specific skill (e.g. `workflow-analyst` E2's registry-membership grounding, which reads `input_data["survey_facts"]["workflow_registry"]` — never `tool_results`, which never carries it). A validator's score flows into the existing must-pass/retry machinery exactly like any other criterion score — no new control flow.
+- **`_OUTPUT_TRANSFORMS`** — an ordered `list[Callable[[dict], dict]]` + `register_output_transform` decorator, run once after the eval/retry loop resolves and before the example-bank write. Each transform is fail-open (a raising transform is logged and skipped, never propagated). `pii_scrubber.scrub_dict` is registered as the first transform, so PII is scrubbed from a skill's output before it can ever reach `skill_examples`.
 
 ### BrandContext / permissions (`crystal/context.py`)
 `BrandContext` carries brand persona + `permitted_features`/`restricted_features` allowlist + per-brand limits; `ROLE_PERMISSIONS` resolved via `_resolve_permissions` (role defaults ∩ brand contract) gates which tools Crystal may use per request.
@@ -173,6 +191,20 @@ creation graph's revision loop).
   not currently receiving live traffic, or responses whose tagging previously failed (no retry-tracking
   state needed — a failed attempt just leaves `ai_enriched_at` null, so both this sweep and the stream
   trigger naturally retry it next time).
+
+## Harness components: when can each be removed?
+
+Every fallback/legacy path below exists because of a specific past limitation, not by
+design intent. Review periodically — a component whose "can be removed when" condition
+has been met is dead weight, not a permanent fixture.
+
+| Component | Exists because | Can be removed when |
+|---|---|---|
+| Legacy ReAct loop (`?legacy=true`, `_run_react_loop_streaming`) | Predates skill-first routing; kept for admin debug parity | Admin debugging no longer needs a non-skill-routed comparison path |
+| `find_sync()` difflib fallback in `skill_registry.py` | Covers the window before `warm_router()`'s embeddings finish at startup, or if embedding calls fail | Never — this is a permanent degrade-gracefully path, not a migration artifact |
+| `ToolDispatcher` (`lib/tool_dispatcher.py`) sitting unused alongside `dispatch_tool` | Built once as a better-designed mechanism, but the existing ~60 tools were never migrated onto it | Either all new tool-shaped capability actually lands there consistently (validated), or it's deleted if nothing ever adopts it |
+| `TOOL_PERMISSION_MAP` covering only 4 of ~60 tools, legacy-path-only | Never resolved whether the other ~56 are intentionally permission-open or an incomplete migration | A deliberate product/security decision is made either way — currently undecided, not fixed |
+| EXAMPLES.md → DB-example fallback in `_build_system` | Lets a skill get few-shot examples before it has production history | Never — this is permanent cold-start behavior, not a migration path |
 
 ## Environment variables
 > **Full list:** `docs/ENV_VARS.md` (canonical). **Adding an `os.getenv("X")`? Add it there AND to the root `.env.example` in the same PR.** Advanced tunables live in `lib/constants.py`. Key ones below.

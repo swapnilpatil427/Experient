@@ -67,3 +67,14 @@ def sample_org_context():
         "target_audience": "enterprise customers",
         "prior_survey_count": 3,
     }
+
+
+def assert_tool_ok(result: dict, tool_name: str | None = None) -> None:
+    """Assert a tool-executor / dispatch_tool result dict represents success.
+
+    Mirrors the ad-hoc `"error" not in result` checks already scattered across
+    this test suite — use this shared helper going forward instead of
+    repeating the inline check.
+    """
+    label = f" for tool {tool_name!r}" if tool_name else ""
+    assert "error" not in result, f"expected no error{label}, got: {result.get('error')!r}"

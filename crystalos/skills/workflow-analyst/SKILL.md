@@ -9,7 +9,7 @@ description: |
   fire, and proposes a concrete workflow (trigger + conditions + actions) grounded in the live
   trigger/condition/action registry when the user's data and intent justify one. Never creates
   or edits a workflow itself — always proposes, via `propose_workflow`, for the user to confirm.
-  Input: message, conversation_context, survey_facts, tool_results (registry + survey overview).
+  Input: message, conversation_context, survey_facts (includes the workflow registry), tool_results (survey overview).
   Output: answer (2-5 sentences), citations[], suggestions[], action_proposals[].
 compatibility: |
   Designed for Crystal's skill-first streaming path (single-turn or multi-turn). Requires the

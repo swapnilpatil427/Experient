@@ -10,9 +10,9 @@ Two routing tables:
 
 Environments:
   dev        Free OpenRouter models. OpenAI OSS + Gemma + Qwen free pools. $0 cost.
-  dev-paid   DeepSeek v4 Flash for reasoning; Gemini 2.5 Flash for writing + QC.
+  dev-paid   DeepSeek v4 Flash for reasoning, incl. Crystal chat; Gemini 2.5 Flash for writing + QC.
              ~$0.008–0.020/skill run. ~$0.015–0.035/pipeline run.
-  staging    DeepSeek v4 Pro for all high-reasoning roles (upgraded from R1).
+  staging    DeepSeek v4 Pro for all high-reasoning roles (upgraded from R1), incl. Crystal chat.
              Gemini 2.5 Flash for narration / QC / writing.
              ~$0.025–0.060/run (Pro at ~$1.10/1M in vs R1 $0.55/1M).
   prod       Same as staging with higher token budgets and ABSA scale.
@@ -23,6 +23,13 @@ Cross-vendor QC rule (all envs):
   QC agent ALWAYS uses a different vendor than Creator.
   Creator=DeepSeek → QC=Gemini; Creator=Gemini → QC=Qwen.
   Applies to both pipeline agents and CrystalOS skills (survey-qc, compliance-scanner).
+  Same pattern covers Crystal's own judge: crystal / crystal-analyst = DeepSeek →
+  crystal_eval = Gemini. (2026-08: crystal/crystal-analyst moved off Gemini onto DeepSeek
+  at product request for more reasoning/output headroom on citations, suggestions and
+  action_proposals — NOT because the deterministic viz/chart payload needs tokens; that
+  chart is built by _build_viz_for_citations() in agents/crystal.py *after* the LLM call
+  and costs the model nothing. crystal_eval deliberately stays on Gemini so the
+  cross-vendor QC rule still holds for Crystal's hallucination check.)
 
 Model routing via OpenRouter only (all envs):
   All models route through OpenRouter (https://openrouter.ai).
@@ -37,6 +44,15 @@ CrystalOS skill model selection rationale (mid-2026):
   google/gemma-4-31b-it:free   — Highest quality free tier for narrative tasks
   openai/gpt-oss-120b:free     — Best free reasoning pool (OSS reasoning param)
   qwen/qwen3-coder:free        — Best free structured JSON (1M ctx, coder-tuned)
+
+  crystal / crystal-analyst (2026-08 change) — deepseek/deepseek-v4-flash (dev-paid) /
+  deepseek/deepseek-v4-pro (staging, prod). Previously google/gemini-2.5-flash. Moved to
+  DeepSeek's reasoning tier for more headroom on citations/suggestions/action_proposals
+  richness (product request); max_tokens roughly doubled alongside the move. Tradeoff:
+  DeepSeek's documented 128K context_window replaces Gemini's 1M for this role — a real
+  decrease in raw model context, accepted because Crystal's actual per-turn input (a
+  handful of insights/topics/tool results, not the full corpus) sits far below 128K in
+  practice. crystal_eval stays on Gemini (see Cross-vendor QC rule above).
 """
 import os
 from dataclasses import dataclass
@@ -120,11 +136,14 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
     # DeepSeek v4 Flash: ~$0.20/1M in, $0.80/1M out. Better XM domain knowledge than OpenAI.
     # Gemini 2.5 Flash for cross-vendor QC, writing, and interactive copilot ($0.15/1M).
     # Gemini 2.0 Flash for fast structured validators + ABSA ($0.10/1M).
+    # crystal moved from Gemini (Tier B) to DeepSeek (Tier A) 2026-08 — product request
+    # for more headroom on citations/suggestions/action_proposals; context_window drops
+    # from Gemini's 1M to DeepSeek's 128K for this role (see module docstring).
     #
     # Tier | Model                        $/1M in  $/1M out  Used for
     # ─────┼───────────────────────────────────────────────────────────────────
-    #  A   | deepseek/deepseek-v4-flash   $0.20    $0.80     creator, topics, expert, reports
-    #  B   | google/gemini-2.5-flash      $0.15    $0.60     QC, writing, crystal, copilot, QA
+    #  A   | deepseek/deepseek-v4-flash   $0.20    $0.80     creator, topics, expert, reports, crystal
+    #  B   | google/gemini-2.5-flash      $0.15    $0.60     QC, writing, copilot, QA
     #  C   | google/gemini-2.5-flash      $0.10    $0.40     verify, evaluate, ABSA, validators
     #
     # ~$0.008–0.025 per full orchestration run (3–4× cheaper than prior o3-mini/o4-mini setup).
@@ -135,6 +154,9 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
         "insight_expert":  ModelConfig("deepseek/deepseek-v4-flash", max_tokens=2000,  temperature=0.1,  context_window=128_000),
         "report_summary":  ModelConfig("deepseek/deepseek-v4-flash", max_tokens=12000, temperature=0.1,  context_window=128_000),
         "report_full":     ModelConfig("deepseek/deepseek-v4-flash", max_tokens=60000, temperature=0.0,  context_window=128_000),
+        # Crystal Q&A — doubled max_tokens (1500→3000) for citations/suggestions/action_proposals
+        # headroom; the answer text itself stays 2-5 sentences (unchanged, see CrystalOutput/SKILL.md).
+        "crystal":         ModelConfig("deepseek/deepseek-v4-flash", max_tokens=3000,  temperature=0.3,  context_window=128_000),
 
         # Tier B — Gemini 2.5 Flash: cross-vendor QC + writing + interactive (1M ctx)
         "qc":              ModelConfig("google/gemini-2.5-flash",    max_tokens=1000,  temperature=0.1,  context_window=1_000_000),
@@ -144,7 +166,6 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
         # skip-logic outputs full questions array — needs 4000 tokens, same as survey-creator
         "skip-logic":      ModelConfig("google/gemini-2.5-flash",    max_tokens=4000,  temperature=0.1,  context_window=1_000_000),
         "report_headline": ModelConfig("google/gemini-2.5-flash",    max_tokens=5000,  temperature=0.1,  context_window=1_000_000),
-        "crystal":         ModelConfig("google/gemini-2.5-flash",    max_tokens=1500,  temperature=0.3,  context_window=1_000_000),
         "copilot":         ModelConfig("google/gemini-2.5-flash",    max_tokens=3000,  temperature=0.3,  context_window=1_000_000),
         "response_gen":    ModelConfig("google/gemini-2.5-flash",    max_tokens=12000,  temperature=0.8,  context_window=1_000_000),
 
@@ -161,14 +182,18 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
     # ── staging ──────────────────────────────────────────────────────────────────
     # DeepSeek v4 Pro for all reasoning-heavy roles — upgraded from R1.
     # v4 Pro: stronger reasoning, better XM domain knowledge, 128K ctx, ~$1.10/1M in.
-    # Gemini 2.5 Flash for QC, writing, synthesis, conversation ($0.15/1M, 1M ctx).
+    # Gemini 2.5 Flash for QC, narration, writing ($0.15/1M, 1M ctx).
     # Gemini 2.0 Flash for fast validators + ABSA ($0.10/1M).
     # Qwen 2.5 72B for advisory roles ($0.90/1M, multilingual XM expertise).
+    # crystal moved from Gemini (Tier B) to DeepSeek Pro (Tier A) 2026-08 — same rationale
+    # as dev-paid (product request for citation/action_proposal headroom); this is the
+    # "all high-reasoning roles" upgrade this env's docstring already calls for.
+    # context_window drops from Gemini's 1M to DeepSeek's 128K for this role.
     #
     # Tier | Model                          $/1M in   $/1M out  Used for
     # ─────┼────────────────────────────────────────────────────────────────────
-    #  A   | deepseek/deepseek-v4-pro       $1.10     $4.40     creator, topics, expert, reports
-    #  B   | google/gemini-2.5-flash        $0.15     $0.60     QC, narrate, crystal, writing
+    #  A   | deepseek/deepseek-v4-pro       $1.10     $4.40     creator, topics, expert, reports, crystal
+    #  B   | google/gemini-2.5-flash        $0.15     $0.60     QC, narrate, writing
     #  C   | google/gemini-2.5-flash      $0.10     $0.40     verify, evaluate, ABSA, validators
     #  D   | qwen/qwen-2.5-72b-instruct     $0.90     $0.90     recommender, cross-vendor advisory
     #
@@ -180,17 +205,19 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
         "insight_expert":  ModelConfig("deepseek/deepseek-v4-pro", max_tokens=2000,  temperature=0.1, context_window=128_000),
         "report_summary":  ModelConfig("deepseek/deepseek-v4-pro", max_tokens=12000, temperature=0.1, context_window=128_000),
         "report_full":     ModelConfig("deepseek/deepseek-v4-pro", max_tokens=60000, temperature=0.0, context_window=128_000),
+        # Crystal Q&A — doubled max_tokens (1500→3000) for citations/suggestions/action_proposals
+        # headroom; the answer text itself stays 2-5 sentences (unchanged, see CrystalOutput/SKILL.md).
+        "crystal":         ModelConfig("deepseek/deepseek-v4-pro", max_tokens=3000,  temperature=0.3, context_window=128_000),
 
         # Cross-vendor QC (Gemini vs DeepSeek creator — enforces vendor diversity)
         "qc":              ModelConfig("google/gemini-2.5-flash",  max_tokens=1000,  temperature=0.1, context_window=1_000_000),
         "qc_validator":    ModelConfig("google/gemini-2.5-flash",  max_tokens=400,   temperature=0.2, context_window=1_000_000),
 
-        # Tier B — Gemini 2.5 Flash: QC, narration, crystal, writing
+        # Tier B — Gemini 2.5 Flash: QC, narration, writing
         "compliance":      ModelConfig("google/gemini-2.5-flash",  max_tokens=600,   temperature=0.1, context_window=1_000_000),
         # skip-logic outputs full questions array — needs 4000 tokens, same as survey-creator
         "skip-logic":      ModelConfig("google/gemini-2.5-flash",  max_tokens=4000,  temperature=0.1, context_window=1_000_000),
         "copilot":         ModelConfig("google/gemini-2.5-flash",  max_tokens=2000,  temperature=0.3, context_window=1_000_000),
-        "crystal":         ModelConfig("google/gemini-2.5-flash",  max_tokens=1500,  temperature=0.3, context_window=1_000_000),
         "response_gen":    ModelConfig("google/gemini-2.5-flash",  max_tokens=12000,  temperature=0.8, context_window=1_000_000),
         "report_headline": ModelConfig("google/gemini-2.5-flash",  max_tokens=5000,  temperature=0.1, context_window=1_000_000),
 
@@ -211,11 +238,15 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
     # ── prod ─────────────────────────────────────────────────────────────────────
     # DeepSeek v4 Pro for all high-reasoning roles — upgraded from R1.
     # v4 Pro: next-gen reasoning, better XM domain alignment, comparable cost.
-    # Gemini 2.5 Flash for synthesis, QC, conversation (1M ctx, $0.15/1M).
+    # Gemini 2.5 Flash for synthesis, QC (1M ctx, $0.15/1M).
     # Gemini 2.0 Flash for fast validators + ABSA ($0.10/1M).
     # Qwen 2.5 72B for cross-vendor advisory roles ($0.90/1M, multilingual XM).
     # ~$0.040–0.100/run (with full 12-advisor skill system).
     # OPENROUTER_API_KEY required. ANTHROPIC_API_KEY NOT required.
+    # crystal moved from Gemini to DeepSeek Pro 2026-08 (product request — headroom for
+    # citations/suggestions/action_proposals; NOT for the viz chart, which is built by
+    # deterministic post-LLM Python and costs no tokens). context_window drops from
+    # Gemini's 1M to DeepSeek's 128K for this role — see module docstring for the tradeoff.
     "prod": {
         "creator":         ModelConfig(
             "deepseek/deepseek-v4-pro",    # Best reasoning for survey design — $1.10/1M
@@ -283,10 +314,13 @@ _ROUTING: dict[EnvName, dict[AgentName, ModelConfig]] = {
             context_window=128_000,
         ),
         "crystal":         ModelConfig(
-            "google/gemini-2.5-flash",     # XM Q&A — multilingual + synthesis — $0.15/1M
-            max_tokens=1500,
+            "deepseek/deepseek-v4-pro",    # XM Q&A — DeepSeek reasoning tier — $1.10/1M
+            max_tokens=3000,               # doubled (1500→3000): headroom for citations/
+                                            # suggestions/action_proposals; answer itself
+                                            # stays 2-5 sentences (CrystalOutput contract).
             temperature=0.3,
-            context_window=1_000_000,
+            context_window=128_000,        # DeepSeek's documented ctx — down from Gemini's
+                                            # 1M for this role; accepted, see module docstring.
         ),
         "response_gen":    ModelConfig(
             "google/gemini-2.5-flash",     # Diverse XM persona generation — $0.15/1M
@@ -322,7 +356,8 @@ MAX_DAILY_SPEND_USD: float = float(os.getenv("MAX_DAILY_SPEND_USD", "0"))
 # Each model is chosen by: quality for the task × cost × context window needed.
 #
 # Design principles:
-#   - Complex reasoning skills (insight-narrator, action-recommender) → DeepSeek v4 Pro (prod)
+#   - Complex reasoning skills (insight-narrator, action-recommender, crystal-analyst)
+#     → DeepSeek v4 Pro (prod) / v4 Flash (dev-paid)
 #   - XM writing + instruction following → Gemini 2.5 Flash (best multilingual, 1M ctx)
 #   - Fast structured validators → Gemini 2.0 Flash (cheapest, 1M ctx)
 #   - Domain advisory + APAC XM → Qwen 2.5 72B (strong XM knowledge, cost-efficient)
@@ -336,7 +371,9 @@ MAX_DAILY_SPEND_USD: float = float(os.getenv("MAX_DAILY_SPEND_USD", "0"))
 #   action advisors:   ~600-800 tokens (2-4 actions with params)
 #   survey-creator:    ~3000-4000 tokens (8-12 questions with schemas)
 #   copilot/refiner:   ~1500-2000 tokens (full questions array + changes)
-#   crystal-analyst:   ~1000-1200 tokens (answer + citations + suggestions)
+#   crystal-analyst:   ~2400 tokens (answer [2-5 sentences, unchanged] + citations +
+#                      suggestions + action_proposals headroom — doubled from ~1200 on
+#                      2026-08 product request; answer length itself is not the target)
 #   survey-qc:         ~600-800 tokens (qc_score + issues + improvements)
 #   compliance:        ~800-1000 tokens (issues + recommendations)
 
@@ -386,7 +423,7 @@ _SKILL_ROUTING: dict[str, dict[str, ModelConfig]] = {
     },
 
     # ── dev-paid ────────────────────────────────────────────────────────────────
-    # DeepSeek v4 Flash for complex reasoning/domain tasks.
+    # DeepSeek v4 Flash for complex reasoning/domain tasks, incl. crystal-analyst (2026-08).
     # Gemini 2.5 Flash for writing, QC, and interactive skills.
     # Gemini 2.0 Flash for fast structured output validators.
     # ~$0.003–0.012 per skill execution.
@@ -406,9 +443,12 @@ _SKILL_ROUTING: dict[str, dict[str, ModelConfig]] = {
         "close-the-loop-advisor":    ModelConfig("deepseek/deepseek-v4-flash",              max_tokens=800,  temperature=0.0, context_window=128_000),
         "predictive-action-advisor": ModelConfig("deepseek/deepseek-v4-flash",              max_tokens=800,  temperature=0.0, context_window=128_000),
         "survey-creator":            ModelConfig("deepseek/deepseek-v4-flash",              max_tokens=4000, temperature=0.3, context_window=128_000),
+        # crystal-analyst — moved off Gemini (was 1200 tok / 1M ctx) 2026-08 for reasoning
+        # headroom on citations/suggestions/action_proposals; DeepSeek's 128K ctx replaces
+        # Gemini's 1M for this skill (tradeoff — see module docstring).
+        "crystal-analyst":           ModelConfig("deepseek/deepseek-v4-flash",              max_tokens=2400, temperature=0.3, context_window=128_000),
 
         # Gemini 2.5 Flash: writing, QC, interactive, 1M ctx ($0.15/1M in, $0.60/1M out)
-        "crystal-analyst":           ModelConfig("google/gemini-2.5-flash",                 max_tokens=1200, temperature=0.3, context_window=1_000_000),
         "copilot-analyst":           ModelConfig("google/gemini-2.5-flash",                 max_tokens=2000, temperature=0.2, context_window=1_000_000),
         "survey-refiner":            ModelConfig("google/gemini-2.5-flash",                 max_tokens=2000, temperature=0.2, context_window=1_000_000),
         "survey-qc":                 ModelConfig("google/gemini-2.5-flash",                 max_tokens=800,  temperature=0.0, context_window=1_000_000),  # cross-vendor: QC≠creator
@@ -425,8 +465,9 @@ _SKILL_ROUTING: dict[str, dict[str, ModelConfig]] = {
     },
 
     # ── staging ─────────────────────────────────────────────────────────────────
-    # DeepSeek v4 Pro for complex XM reasoning ($1.10/1M in, $4.40/1M out).
-    # Gemini 2.5 Flash for multilingual writing, QC, Crystal ($0.15/1M, 1M ctx).
+    # DeepSeek v4 Pro for complex XM reasoning ($1.10/1M in, $4.40/1M out), incl.
+    # crystal-analyst (2026-08 — moved off Gemini for citation/action_proposal headroom).
+    # Gemini 2.5 Flash for multilingual writing, QC ($0.15/1M, 1M ctx).
     # DeepSeek v4 Flash for fast advisory skills ($0.20/1M — cost vs quality sweet spot).
     # Qwen 2.5 72B for cross-vendor advisory roles ($0.90/1M, strong XM domain).
     "staging": {
@@ -439,9 +480,11 @@ _SKILL_ROUTING: dict[str, dict[str, ModelConfig]] = {
         "specialist-enps":           ModelConfig("deepseek/deepseek-v4-pro",                max_tokens=1000, temperature=0.1, context_window=128_000),
         "specialist-custom":         ModelConfig("deepseek/deepseek-v4-pro",                max_tokens=1000, temperature=0.1, context_window=128_000),
         "survey-creator":            ModelConfig("deepseek/deepseek-v4-pro",                max_tokens=4000, temperature=0.3, context_window=128_000),
+        # crystal-analyst — moved off Gemini (was 1200 tok / 1M ctx) 2026-08; DeepSeek's
+        # 128K ctx replaces Gemini's 1M for this skill (tradeoff — see module docstring).
+        "crystal-analyst":           ModelConfig("deepseek/deepseek-v4-pro",                max_tokens=2400, temperature=0.3, context_window=128_000),
 
-        # Gemini 2.5 Flash: multilingual writing, QC, Crystal (1M ctx)
-        "crystal-analyst":           ModelConfig("google/gemini-2.5-flash",                 max_tokens=1200, temperature=0.3, context_window=1_000_000),
+        # Gemini 2.5 Flash: multilingual writing, QC (1M ctx)
         "copilot-analyst":           ModelConfig("google/gemini-2.5-flash",                 max_tokens=2000, temperature=0.2, context_window=1_000_000),
         "survey-refiner":            ModelConfig("google/gemini-2.5-flash",                 max_tokens=2000, temperature=0.2, context_window=1_000_000),
         "survey-qc":                 ModelConfig("google/gemini-2.5-flash",                 max_tokens=800,  temperature=0.0, context_window=1_000_000),  # cross-vendor: QC≠DeepSeek creator
@@ -465,8 +508,11 @@ _SKILL_ROUTING: dict[str, dict[str, ModelConfig]] = {
 
     # ── prod ────────────────────────────────────────────────────────────────────
     # Same as staging with higher token budgets for edge cases.
-    # DeepSeek v4 Pro: flagship reasoning for insight generation + specialists.
-    # Gemini 2.5 Flash: production QC, Crystal, writing (1M ctx, battle-tested).
+    # DeepSeek v4 Pro: flagship reasoning for insight generation + specialists + Crystal
+    # (crystal-analyst moved off Gemini 2026-08 — product request for citation/
+    # action_proposal headroom; NOT for the viz chart, which is deterministic Python
+    # built after the LLM call and costs no tokens — see module docstring).
+    # Gemini 2.5 Flash: production QC, writing, copilot (1M ctx, battle-tested).
     # DeepSeek v4 Flash: all 12 advisory specialists (cost-optimised advisory tier).
     # Qwen 2.5 72B: survey-recommender (APAC XM knowledge + cost-efficient).
     # ~$0.040–0.100/run at full pipeline + 12 advisors.
@@ -480,9 +526,11 @@ _SKILL_ROUTING: dict[str, dict[str, ModelConfig]] = {
         "specialist-enps":           ModelConfig("deepseek/deepseek-v4-pro",                max_tokens=1000, temperature=0.1, context_window=128_000),
         "specialist-custom":         ModelConfig("deepseek/deepseek-v4-pro",                max_tokens=1000, temperature=0.1, context_window=128_000),
         "survey-creator":            ModelConfig("deepseek/deepseek-v4-pro",                max_tokens=4500, temperature=0.3, context_window=128_000),
+        # crystal-analyst — moved off Gemini (was 1200 tok / 1M ctx) 2026-08; DeepSeek's
+        # 128K ctx replaces Gemini's 1M for this skill (tradeoff — see module docstring).
+        "crystal-analyst":           ModelConfig("deepseek/deepseek-v4-pro",                max_tokens=2400, temperature=0.3, context_window=128_000),
 
-        # Gemini 2.5 Flash: production QC, Crystal, writing, copilot
-        "crystal-analyst":           ModelConfig("google/gemini-2.5-flash",                 max_tokens=1200, temperature=0.3, context_window=1_000_000),
+        # Gemini 2.5 Flash: production QC, writing, copilot
         "copilot-analyst":           ModelConfig("google/gemini-2.5-flash",                 max_tokens=2000, temperature=0.2, context_window=1_000_000),
         "survey-refiner":            ModelConfig("google/gemini-2.5-flash",                 max_tokens=2000, temperature=0.2, context_window=1_000_000),
         "survey-qc":                 ModelConfig("google/gemini-2.5-flash",                 max_tokens=800,  temperature=0.0, context_window=1_000_000),  # cross-vendor: QC≠DeepSeek creator

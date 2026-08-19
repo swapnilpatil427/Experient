@@ -81,9 +81,15 @@ describe('AppShell — CrystalPanel + chrome gating by route', () => {
     expect(screen.getByTestId('crystal-panel-mounted')).toBeInTheDocument();
   });
 
-  it('does NOT mount CrystalPanel on the survey question builder (full-bleed, has its own XperiqCopilot)', () => {
+  // Phase A — the survey question builder used to mount its own independent
+  // chat (XperiqCopilot, ExperientCopilot.tsx) and suppress the global
+  // CrystalPanel entirely. It's converged onto the same global panel every
+  // other page uses (SurveyBuilderPage.tsx now wires useCrystalPanel() itself)
+  // — only the no-chrome full-bleed layout remains builder-specific (see the
+  // two tests below).
+  it('mounts CrystalPanel on the survey question builder (converged onto the global panel)', () => {
     renderAt('/surveys/survey-123/build');
-    expect(screen.queryByTestId('crystal-panel-mounted')).not.toBeInTheDocument();
+    expect(screen.getByTestId('crystal-panel-mounted')).toBeInTheDocument();
   });
 
   it('restores footer/BottomNav-clearance chrome on the workflow builder route (previously suppressed by the same bug)', () => {
@@ -108,6 +114,14 @@ describe('AppShell — CrystalPanel + chrome gating by route', () => {
 
   it('still renders the generic default Crystal FAB on an ordinary page', () => {
     renderAt(ROUTES.WORKFLOWS);
+    expect(screen.getByRole('button', { name: /open crystal ai assistant/i })).toBeInTheDocument();
+  });
+
+  // Phase A — the survey builder doesn't mount its own contextual FAB (unlike
+  // the two workflow-builder pages above), so it keeps AppShell's generic
+  // default one.
+  it('renders the generic default Crystal FAB on the survey builder route too (converged, no bespoke FAB)', () => {
+    renderAt('/surveys/survey-123/build');
     expect(screen.getByRole('button', { name: /open crystal ai assistant/i })).toBeInTheDocument();
   });
 });

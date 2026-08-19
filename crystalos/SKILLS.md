@@ -418,6 +418,41 @@ Add the skill path to `skills/plugin.json`:
 }
 ```
 
+### EVALS.md format (required — must be a markdown table)
+
+`EVALS.md` **must** use a markdown pipe-table — `_parse_evals_md` (`lib/skill_runtime.py`)
+only extracts lines starting with `|`; prose or bullet-list criteria silently parse to an
+empty list and the skill falls through to the baseline output gate (non-empty content
+check, max score 0.70) instead of your actual quality bar:
+
+```markdown
+| ID | Criterion | Weight | Threshold |
+|----|-----------|--------|-----------|
+| E1 | Output is valid JSON with actions array | 30 | must pass |
+| E2 | actions has 1-4 entries with id, type, priority, title, description, params | 25 | must pass |
+| E3 | Each action references specific data from input | 25 | >= 0.80 |
+```
+
+`threshold` is either `must pass` (any failure zeroes the whole skill score) or a numeric
+bound like `>= 0.75`. Always confirm a new/edited EVALS.md actually parses non-empty
+(`SkillRuntime()._parse_evals_md(open("EVALS.md").read())`) — a silently-empty EVALS.md is
+easy to miss in review since the skill still runs, it just never enforces anything.
+
+Three criterion shapes are graded **deterministically** (no LLM call) if the wording
+matches, cheaper and more reliable than the LLM judge:
+- `STRUCTURAL_KEYWORDS` — generic keywords like "valid json", "required fields", "word
+  count", "count", "non-empty".
+- `"<field> has N-M entries with <key1>, <key2>, ..."` — array-length + per-entry-keys
+  check, matched via regex directly off the criterion text.
+- `"<field> is one of: a, b, c"` — enum-membership check, same regex-off-the-text approach.
+
+If a criterion needs a bespoke deterministic check tied to your specific skill (not a
+generic reusable pattern), register a validator in `lib/skill_validators.py`'s
+`SKILL_CRITERION_VALIDATORS` dict, keyed by `(skill_name, criterion_id)` — it's checked
+before the generic structural/LLM dispatch and its score flows into the existing
+must-pass/retry machinery like any other criterion. See `validate_workflow_registry_grounding`
+for a real example (workflow-analyst E2).
+
 ### SKILL.md frontmatter fields
 
 ```yaml

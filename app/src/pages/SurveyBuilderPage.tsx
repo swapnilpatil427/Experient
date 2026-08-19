@@ -17,7 +17,7 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
-import { XperiqCopilot } from '../components/ExperientCopilot';
+import { useCrystalPanel } from '../contexts/crystalPanel';
 import { TagSelector } from '../components/TagSelector';
 import type { Question, Template, SkipLogicRule, DisplayLogic } from '../types';
 import type { SurveyTag } from '../lib/api';
@@ -1805,6 +1805,22 @@ export function SurveyBuilderPage() {
   const pending = (location.state as Record<string, unknown>) || null;
   const api = useApi();
 
+  // Phase A (survey-builder convergence) — the builder used to mount its own
+  // independent chat (XperiqCopilot, ExperientCopilot.tsx); it now routes
+  // through the same global Crystal panel every other page uses. See
+  // contexts/crystalPanel.tsx for the builderChatHandler/builderQuestionsHydrator/
+  // builderRecommendation* fields this page registers below.
+  const {
+    openCrystal,
+    setScope: setCrystalScope,
+    setCrystalData,
+    setBuilderContext,
+    setBuilderChatHandler,
+    setBuilderQuestionsHydrator,
+    setBuilderRecommendations,
+    setBuilderRecommendationHandler,
+  } = useCrystalPanel();
+
   // Edit mode: surveyIdParam is a real DB id (not 'new')
   const isEditMode = !!surveyIdParam && surveyIdParam !== 'new';
   const hasStateQuestions = isEditMode
@@ -2001,13 +2017,75 @@ export function SurveyBuilderPage() {
       isDirtyRef.current = true;
       setQuestions(result.questions.map(mapAiToBuilderQuestion) as Question[]);
     }
-    // Return message + compliance_risk so ExperientCopilot can show rich result
+    // Return message + compliance_risk so the recommendation's ActionProposalCard
+    // (rendered by the global Crystal panel — see contexts/crystalPanel.tsx's
+    // builderRecommendationHandler) can show the real, non-hardcoded result.
     return {
       recommendations:  result.recommendations,
       message:          result.message || undefined,
       compliance_risk:  result.compliance_risk || undefined,
     };
   }, [api, copilotRunId, surveyTypeId, surveySettings, surveyTitle]);
+
+  // Applies a Copilot-refined question list to local state in place — the
+  // counterpart CrystalPanel's executeAction calls (via builderQuestionsHydrator)
+  // when an edit_survey/edit_survey_questions proposal is applied while this
+  // exact builder page is open, instead of navigating to the same route.
+  const applyBuilderQuestions = useCallback((qs: unknown[]) => {
+    if (!Array.isArray(qs) || !qs.length) return;
+    isDirtyRef.current = true;
+    setQuestions((qs as Question[]).map(mapAiToBuilderQuestion) as Question[]);
+  }, []);
+
+  // ── Crystal chassis wiring (Phase A) ────────────────────────────────────────
+  // Scope Crystal to this survey and register the builder-specific handlers,
+  // mirroring the exact pattern WorkflowBuilderPage/WorkflowCanvasPage already
+  // use for builderContext/builderDraftHydrator (AppShell.tsx's
+  // `hasOwnCrystalFab`). Cleanup on unmount resets every field so leaving the
+  // builder never leaves a stale handler wired into the global panel.
+  useEffect(() => {
+    setCrystalScope(surveyId ?? 'all');
+    setBuilderContext({ kind: 'survey_builder' });
+    return () => {
+      setCrystalScope('all');
+      setBuilderContext(null);
+      setCrystalData([], []);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surveyId]);
+
+  useEffect(() => {
+    setBuilderChatHandler(handleAiCommand);
+    return () => setBuilderChatHandler(null);
+  }, [handleAiCommand, setBuilderChatHandler]);
+
+  useEffect(() => {
+    setBuilderQuestionsHydrator(applyBuilderQuestions);
+    return () => setBuilderQuestionsHydrator(null);
+  }, [applyBuilderQuestions, setBuilderQuestionsHydrator]);
+
+  useEffect(() => {
+    setBuilderRecommendationHandler(copilotRunId ? handleApplyRecommendation : null);
+    return () => setBuilderRecommendationHandler(null);
+  }, [copilotRunId, handleApplyRecommendation, setBuilderRecommendationHandler]);
+
+  // Recommendations from the agents pipeline are seeded once — `copilotRecs`
+  // is referentially stable for the page's lifetime (set via a bare useState
+  // initializer, never updated), matching the ref-guard in CrystalPanel.tsx's
+  // seeding effect.
+  useEffect(() => {
+    setBuilderRecommendations(copilotRecs.length > 0 ? copilotRecs : null);
+    return () => setBuilderRecommendations(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-open Crystal after AI generation completes — matches the old
+  // XperiqCopilot's autoOpenCrystal/initialMessage behavior, minus the
+  // bespoke greeting text (Crystal's own default welcome view covers it now).
+  useEffect(() => {
+    if (autoOpenCrystal) openCrystal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenCrystal]);
 
   const buildPayload = () => ({
     title: surveyTitle,
@@ -2412,25 +2490,11 @@ export function SurveyBuilderPage() {
       <div className="fixed pointer-events-none -z-10 rounded-full"
         style={{ top: '-5%', right: '-10%', width: 600, height: 600, background: 'rgba(224,231,255,0.25)', filter: 'blur(150px)' }} />
 
-      <XperiqCopilot
-        context={{
-          surveyTitle,
-          questionCount: questions.length,
-          surveyType: surveyTypeId ?? undefined,
-          surveySettings,
-          templateInfo: fromTemplate ? { label: fromTemplate.label } : undefined,
-          isBuilder: true,
-          runId: copilotRunId ?? undefined,
-        }}
-        onRefine={handleAiCommand}
-        onApplyRecommendation={copilotRunId ? handleApplyRecommendation : undefined}
-        recommendations={copilotRecs.length > 0 ? copilotRecs : undefined}
-        initiallyOpen={false}
-        initialMessage={autoOpenCrystal
-          ? `Survey generated! I've built ${questions.length} question${questions.length !== 1 ? 's' : ''} based on your goal. You can ask me to refine any question, add skip logic, reorder, or make any other changes — just tell me what you need.`
-          : undefined
-        }
-      />
+      {/* Crystal chat chassis convergence (Phase A) — this page used to mount
+          its own independent chat (XperiqCopilot, ExperientCopilot.tsx). It
+          now uses the same global CrystalPanel every other page uses (mounted
+          once in AppShell), scoped/wired via useCrystalPanel() above — AppShell
+          no longer suppresses Crystal on this route. No panel JSX to render here. */}
     </>
   );
 }
