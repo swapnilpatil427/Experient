@@ -5474,6 +5474,31 @@ const en = {
       totalSurveys:    'Total Surveys',
     },
   },
+
+  // Dev-only assistant-ui minimal adoption spike (docs/xperiq-assistant-ui/BRIEF.md).
+  // Never rendered outside `import.meta.env.DEV` — see App.tsx / routes.ts
+  // `DEV_CRYSTAL_ASSISTANT_UI`. Kept behind t() anyway per the no-hardcoded-
+  // strings rule; there is no production surface for this namespace yet.
+  crystalAssistantUi: {
+    devBanner: 'Crystal · assistant-ui spike — dev preview only',
+    scopeAll: 'Portfolio scope',
+    scopeLoading: 'Loading surveys…',
+    threadListTitle: 'Threads',
+    newThread: 'New thread',
+    renameThread: 'Rename thread',
+    renamePrompt: 'Rename this thread',
+    archiveThread: 'Archive thread',
+    unarchiveThread: 'Unarchive thread',
+    deleteThread: 'Delete thread',
+    archivedSectionTitle: 'Archived',
+    untitledThread: 'New conversation',
+    emptyThreadTitle: 'Ask Crystal anything',
+    emptyThreadSubtitle: 'Messages in this thread persist in your browser across refreshes.',
+    composerPlaceholder: 'Message Crystal…',
+    send: 'Send',
+    errorAnswerPrefix: 'Crystal ran into a problem: {message}',
+    errorGeneric: 'Something went wrong talking to Crystal.',
+  },
 };
 
 export default en;

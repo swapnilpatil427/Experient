@@ -1,7 +1,19 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAppAuth } from './lib/auth.tsx';
 import { ROUTES } from './constants/routes';
 import { AppShell } from './components/AppShell';
+
+// Dev-only manual preview of the minimal assistant-ui adoption spike
+// (docs/xperiq-assistant-ui/BRIEF.md) — lazy so a production bundle's static
+// analysis can drop the module; the route below is additionally gated on
+// `import.meta.env.DEV` so it's never reachable at runtime even if a build
+// somehow still contained the chunk.
+const CrystalAssistantUIDevPage = import.meta.env.DEV
+  ? lazy(() =>
+      import('./pages/dev/CrystalAssistantUIDevPage').then((m) => ({ default: m.CrystalAssistantUIDevPage })),
+    )
+  : null;
 import { LandingPage } from './pages/LandingPage';
 import { OnboardingPage } from './pages/OnboardingPage';
 import { SurveysListPage } from './pages/SurveysListPage';
@@ -110,6 +122,22 @@ export default function App() {
         <Route path={ROUTES.SIGNIN}     element={<ErrorBoundary><SignInPage /></ErrorBoundary>} />
         <Route path={ROUTES.ONBOARDING} element={<ErrorBoundary><OnboardingPage /></ErrorBoundary>} />
         <Route path="/s/:token"         element={<ErrorBoundary><SurveyFillPage /></ErrorBoundary>} />
+
+        {/* Dev-only manual preview — CrystalAssistantUIDevPage is `null` in any
+            build where `import.meta.env.DEV` is false, so this Route is simply
+            never registered outside local dev. */}
+        {CrystalAssistantUIDevPage && (
+          <Route
+            path={ROUTES.DEV_CRYSTAL_ASSISTANT_UI}
+            element={
+              <ErrorBoundary>
+                <Suspense fallback={null}>
+                  <CrystalAssistantUIDevPage />
+                </Suspense>
+              </ErrorBoundary>
+            }
+          />
+        )}
 
         {/* ── Protected routes ── */}
         <Route element={<ProtectedRoute />}>

@@ -114,6 +114,10 @@ export const ROUTES = {
   ADMIN_SUPPORT_EDIT:         '/app/admin/support/edit/:docId',
   ADMIN_SUPPORT_GAPS:         '/app/admin/support/gaps',
   ADMIN_SUPPORT_STATS:        '/app/admin/support/stats',
+
+  // Dev-only — assistant-ui minimal adoption spike (docs/xperiq-assistant-ui/BRIEF.md).
+  // Never rendered outside `import.meta.env.DEV` — see App.tsx.
+  DEV_CRYSTAL_ASSISTANT_UI:   '/dev/crystal-assistant-ui',
 };
 
 /** Replace :param placeholders with concrete values */
