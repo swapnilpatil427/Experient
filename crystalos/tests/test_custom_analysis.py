@@ -18,6 +18,7 @@ import pytest
 from crystalos.graphs.custom_analysis import (
     apply_filter_spec, _resolve_credit_cost_for_corpus, _cap_trust,
     _build_custom_insights, _filter_label, run_custom_analysis,
+    _insert_custom_insight,
 )
 
 
@@ -252,6 +253,124 @@ class TestCustomAnalysisIsolation:
 
         assert inserted, "expected at least one custom insight"
         assert all(i["trust_score"] <= 55 for i in inserted)
+
+
+class TestRunCustomAnalysisFiltersInvalidLayerInsights:
+    """If _build_custom_insights ever emits an insight outside {descriptive,
+    diagnostic} (the exact bug _insert_custom_insight's own guard exists to
+    catch), the report's blob/trust_avg/completion status must not silently
+    claim more than what's actually persisted — the invalid insight must be
+    filtered out BEFORE any of those are computed, not just rejected at the
+    DB layer with everything else left counting it."""
+
+    def _make_mock_pool(self):
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_pool_ctx = MagicMock()
+        mock_pool_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_pool = MagicMock()
+        mock_pool.connection = MagicMock(return_value=mock_pool_ctx)
+        return mock_pool
+
+    @pytest.mark.asyncio
+    async def test_invalid_layer_insight_excluded_from_db_trust_avg_and_blob(self):
+        mock_pool = self._make_mock_pool()
+        survey = {"id": "survey-1", "title": "Test", "questions": [{"id": "q1", "type": "nps"}]}
+        corpus = [{"id": "r1", "answers": [{"questionId": "q1", "value": 9}],
+                   "submitted_at": datetime.now(timezone.utc), "ai_topics": []}]
+
+        bad_insight = {"layer": "predictive", "category": "forecast.churn",
+                        "headline": "should never persist", "trust_score": 90}
+        good_insight = {"layer": "descriptive", "category": "metric.nps",
+                         "headline": "real insight", "trust_score": 80}
+
+        inserted: list = []
+
+        async def _capture_insert(crid, org, sid, ins, label):
+            inserted.append(ins)
+
+        captured_blob: dict = {}
+
+        async def _capture_blob(blob, *a, **kw):
+            captured_blob.update(blob)
+            return "blob-ref"
+
+        with patch("crystalos.graphs.custom_analysis.db._pool_conn", return_value=mock_pool), \
+             patch("crystalos.graphs.custom_analysis._load_survey",
+                   new_callable=AsyncMock, return_value=survey), \
+             patch("crystalos.graphs.custom_analysis._load_corpus",
+                   new_callable=AsyncMock, return_value=corpus), \
+             patch("crystalos.graphs.custom_analysis._update_custom_report",
+                   new_callable=AsyncMock), \
+             patch("crystalos.graphs.custom_analysis._build_custom_insights",
+                   return_value=[bad_insight, good_insight]), \
+             patch("crystalos.graphs.custom_analysis._insert_custom_insight",
+                   new=AsyncMock(side_effect=_capture_insert)), \
+             patch("crystalos.graphs.custom_analysis.extract_open_texts", return_value=[]), \
+             patch("crystalos.graphs.custom_analysis.write_checkpoint_blob",
+                   new=AsyncMock(side_effect=_capture_blob)):
+            result = await run_custom_analysis(
+                "survey-1", "org-1", "run-1", "cr-1", filter_spec={}, actor="user:abc")
+
+        # Never inserted
+        assert all(i["headline"] != "should never persist" for i in inserted)
+        assert any(i["headline"] == "real insight" for i in inserted)
+        # trust_score_avg only reflects the valid insight (80), not an
+        # average pulled down/up by the rejected one (90)
+        assert result["trust_score_avg"] == 80
+        # Blob's own insights list matches what was actually persisted
+        assert all(i["headline"] != "should never persist" for i in captured_blob["insights"])
+        assert any(i["headline"] == "real insight" for i in captured_blob["insights"])
+        assert result["status"] == "completed"
+
+
+class TestInsertCustomInsightLayerGuard:
+    """Custom Analysis's 'no predictive layer' hard invariant used to be
+    enforced only by omission (no forecasting tool imported) with no runtime
+    guard that would catch a future accidental predictive emission. Assert
+    _insert_custom_insight now refuses to write anything outside
+    {descriptive, diagnostic}."""
+
+    def _make_mock_pool(self):
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_pool_ctx = MagicMock()
+        mock_pool_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_pool = MagicMock()
+        mock_pool.connection = MagicMock(return_value=mock_pool_ctx)
+        return mock_pool, mock_conn
+
+    @pytest.mark.asyncio
+    async def test_blocks_predictive_layer_insight(self):
+        mock_pool, mock_conn = self._make_mock_pool()
+        ins = {"layer": "predictive", "category": "forecast.churn", "headline": "x"}
+        with patch("crystalos.graphs.custom_analysis.db._pool_conn", return_value=mock_pool):
+            await _insert_custom_insight("cr-1", "org-1", "survey-1", ins, "All responses")
+        mock_conn.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_blocks_missing_or_unknown_layer(self):
+        mock_pool, mock_conn = self._make_mock_pool()
+        for bad_layer in (None, "", "speculative"):
+            ins = {"layer": bad_layer, "category": "x", "headline": "y"}
+            with patch("crystalos.graphs.custom_analysis.db._pool_conn", return_value=mock_pool):
+                await _insert_custom_insight("cr-1", "org-1", "survey-1", ins, "All responses")
+        mock_conn.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allows_descriptive_and_diagnostic_layers(self):
+        mock_pool, mock_conn = self._make_mock_pool()
+        for good_layer in ("descriptive", "diagnostic"):
+            ins = {"layer": good_layer, "category": "metric.nps", "headline": "y"}
+            with patch("crystalos.graphs.custom_analysis.db._pool_conn", return_value=mock_pool):
+                await _insert_custom_insight("cr-1", "org-1", "survey-1", ins, "All responses")
+        assert mock_conn.execute.call_count == 2
 
 
 # ── Phase 7 retention job ──────────────────────────────────────────────────────

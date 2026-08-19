@@ -18,13 +18,15 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict
 
 from crystalos.lib.json_coerce import json_dumps_safe
 from crystalos.lib.logger import logger
 from crystalos.lib.openrouter import _call_with_backoff
+from crystalos.lib.pii_scrubber import scrub_dict as _scrub_dict
+from crystalos.lib.skill_validators import SKILL_CRITERION_VALIDATORS
 
 
 class _SkillOutput(BaseModel):
@@ -53,6 +55,10 @@ class SkillResult:
 STRUCTURAL_KEYWORDS: frozenset[str] = frozenset({
     "valid json", "required fields", "word count", "character limit",
     "count", "length", "number of", "contains", "starts with", "ends with",
+    # Bare "present" is deliberately absent: criteria like crystal-support E5
+    # ("present when resolved=false and absent when resolved=true") are conditional
+    # logic, not presence checks, and must stay with the LLM judge.
+    "non-empty",
 })
 
 
@@ -60,6 +66,103 @@ def _is_structural_criterion(description: str) -> bool:
     """Return True if this criterion can be evaluated deterministically."""
     desc = description.lower()
     return any(kw in desc for kw in STRUCTURAL_KEYWORDS)
+
+
+def _named_output_fields(description: str, output: dict) -> list[str]:
+    """Return the output keys a criterion explicitly names, in output order.
+
+    A presence criterion normally lists the fields it cares about, e.g.
+    "answer, citations, suggestions present and non-empty" or
+    "Required fields present and non-empty: title, executive_summary, ...".
+    Intersecting the description's word tokens with the output's real keys is
+    deliberately conservative: an unrecognised phrasing yields `[]`, and the
+    caller then falls back to scoring every key (the historical behaviour).
+
+    Returns [] when the criterion names no output field.
+    """
+    tokens = set(re.findall(r"[a-z_][a-z0-9_]*", description.lower()))
+    return [k for k in output.keys() if k.lower() in tokens]
+
+
+# ── Deterministic pattern checks (Phase 2 broadened structural matching) ──────
+#
+# These are matched BEFORE the STRUCTURAL_KEYWORDS dispatch, on their own regexes,
+# so a criterion only gets the deterministic answer when the exact shape matches.
+# If the regex doesn't match, the criterion falls through unchanged to whatever
+# it would have done before (existing keyword-gated structural check, or the LLM
+# judge) — see `_eval_criterion`.
+
+_ENTRIES_PATTERN = re.compile(
+    r"(\w+)\s+has\s+(\d+)-(\d+)\s+entries?\s+with\s+([\w,\s]+)", re.IGNORECASE
+)
+
+_ENUM_PATTERN = re.compile(
+    # The colon is required (not optional): every real "is one of" criterion in
+    # the skill corpus is phrased "<field> is one of: a, b, c" — requiring the
+    # colon keeps this from accidentally matching ordinary prose like "the
+    # rating is one of the best we've seen".
+    r"(\w+)\s+is\s+one\s+of:\s*([\w,\s]+)", re.IGNORECASE
+)
+
+
+def _eval_entries_with_fields(match: re.Match, output: dict) -> float:
+    """"<field> has <lo>-<hi> entries with <k1, k2, ...>" — e.g. csat-action-advisor
+    E2: "actions has 1-4 entries with id, type, priority, title, description, params".
+
+    Checks: the named field is a list, its length is within [lo, hi] inclusive,
+    and every entry is a dict with all required keys present (non-empty), using
+    the same "present" convention as the existing "required fields" check.
+    """
+    field_name = match.group(1)
+    lo, hi = int(match.group(2)), int(match.group(3))
+    required_keys = [k.strip() for k in match.group(4).split(",") if k.strip()]
+
+    values = output.get(field_name)
+    if not isinstance(values, list):
+        return 0.0
+    if not (lo <= len(values) <= hi):
+        return 0.0
+    for entry in values:
+        if not isinstance(entry, dict):
+            return 0.0
+        for key in required_keys:
+            if entry.get(key) in (None, "", [], {}):
+                return 0.0
+    return 1.0
+
+
+def _eval_enum_membership(match: re.Match, output: dict) -> float:
+    """"<field> is one of: a, b, c" — e.g. specialist-csat E3:
+    "csat_rating is one of: excellent, good, needs_improvement, critical".
+
+    Checks output[field] is a member of the literal comma-separated value set.
+    """
+    field_name = match.group(1)
+    allowed = {v.strip().rstrip(".") for v in match.group(2).split(",") if v.strip()}
+    value = output.get(field_name)
+    return 1.0 if value in allowed else 0.0
+
+
+# ── Kind A extension point: output transforms (Phase 3 — PII wiring) ──────────
+#
+# A small ordered list of `dict -> dict` transforms run over a skill's resolved
+# output after eval-checking finishes and before the example-bank write, so
+# scrubbed output (not raw) is what gets persisted/logged downstream. Each
+# transform is fail-open: a raising transform is caught, logged, and its effect
+# is skipped — it never corrupts the output or propagates.
+
+_OUTPUT_TRANSFORMS: list[Callable[[dict], dict]] = []
+
+
+def register_output_transform(fn: Callable[[dict], dict]) -> Callable[[dict], dict]:
+    """Decorator/registrar: append `fn` to the ordered list of output transforms."""
+    _OUTPUT_TRANSFORMS.append(fn)
+    return fn
+
+
+# PII scrubbing must run on every skill's output before it reaches the example
+# bank or any downstream consumer of SkillResult.output.
+_OUTPUT_TRANSFORMS.append(_scrub_dict)
 
 
 class SkillRuntime:
@@ -189,6 +292,21 @@ class SkillRuntime:
 
         latency_ms = (time.monotonic() - t0) * 1000
 
+        # ── Output transforms (PII scrub, etc.) ────────────────────────────
+        # Run after eval_score/eval_passed/output_raw are fully settled and
+        # before the example-bank write, so scrubbed output — never raw — is
+        # what gets persisted and returned.
+        for transform in _OUTPUT_TRANSFORMS:
+            try:
+                output_raw = transform(output_raw)
+            except Exception as exc:
+                logger.warning(
+                    "output_transform_failed",
+                    skill=skill_name,
+                    transform=getattr(transform, "__name__", repr(transform)),
+                    error=str(exc),
+                )
+
         # ── Write example if quality passes ───────────────────────────────
         if write_example and eval_score >= SKILL_EXAMPLE_WRITE_THRESHOLD:
             asyncio.create_task(
@@ -257,33 +375,95 @@ class SkillRuntime:
         """Assemble system prompt: SKILL.md body + reference files + few-shot examples."""
         parts: list[str] = [skill_meta.get("_body", "")]
 
-        # Reference files in skill's references/ subdirectory
-        skill_dir = Path(skill_meta.get("_dir", "."))
-        refs_dir = skill_dir / "references"
-        if refs_dir.is_dir():
-            ref_sections: list[str] = []
-            for ref_file in sorted(refs_dir.glob("*.md")):
-                try:
-                    content = ref_file.read_text(encoding="utf-8")
-                    ref_sections.append(f"\n## Reference: {ref_file.stem}\n\n{content}")
-                except Exception:
-                    pass
-            if ref_sections:
-                parts.append("\n\n---\n" + "\n".join(ref_sections))
+        # Reference files in skill's references/ subdirectory. Disk reads are
+        # blocking — run off the event loop so they can't stall other
+        # concurrent SSE streams sharing this process.
+        ref_block = await asyncio.to_thread(self._read_reference_files, skill_meta)
+        if ref_block:
+            parts.append(ref_block)
 
-        # Few-shot examples from DB
+        # Few-shot examples: DB-sourced production examples take priority; if a
+        # skill has none yet (e.g. it's new, or hasn't accumulated production
+        # traffic), fall back to hand-authored worked examples in its own
+        # EXAMPLES.md file. Never both — DB examples are proven-in-production
+        # and always preferred once they exist.
         examples = await self._fetch_examples(skill_meta["name"])
+        if not examples:
+            examples = await asyncio.to_thread(self._parse_examples_md_fallback, skill_meta)
         if examples:
             ex_block = "\n\n---\n## High-Quality Examples from Production\n\n"
             for i, ex in enumerate(examples[:3], 1):
+                score = ex.get("eval_score")
+                label = f"quality score: {score:.2f}" if score is not None else "seed example"
                 ex_block += (
-                    f"### Example {i} (quality score: {ex.get('eval_score', 0):.2f})\n"
+                    f"### Example {i} ({label})\n"
                     f"**Input:**\n```json\n{json_dumps_safe(ex['input_json'], indent=2)}\n```\n"
                     f"**Output:**\n```json\n{json_dumps_safe(ex['output_json'], indent=2)}\n```\n\n"
                 )
             parts.append(ex_block)
 
         return "\n".join(parts)
+
+    def _read_reference_files(self, skill_meta: dict) -> str:
+        """Read a skill's references/*.md files into one appendable block.
+        Synchronous/blocking — callers should run this via asyncio.to_thread."""
+        skill_dir = Path(skill_meta.get("_dir", "."))
+        refs_dir = skill_dir / "references"
+        if not refs_dir.is_dir():
+            return ""
+        ref_sections: list[str] = []
+        for ref_file in sorted(refs_dir.glob("*.md")):
+            try:
+                content = ref_file.read_text(encoding="utf-8")
+                ref_sections.append(f"\n## Reference: {ref_file.stem}\n\n{content}")
+            except Exception:
+                pass
+        if not ref_sections:
+            return ""
+        return "\n\n---\n" + "\n".join(ref_sections)
+
+    _EXAMPLE_BLOCK_RE = re.compile(r"\*\*([^*]+)\*\*\s*:?\s*```json\s*(.*?)```", re.DOTALL)
+
+    def _parse_examples_md_fallback(self, skill_meta: dict) -> list[dict]:
+        """Parse worked examples directly out of a skill's own EXAMPLES.md as a
+        fallback source of few-shot examples when the DB example bank is empty.
+
+        Many skills ship hand-authored EXAMPLES.md content that today never
+        reaches the model (few-shot injection is DB-only) — this recovers that
+        authoring investment for cold-start skills without touching the DB path
+        at all. Pairs any bold header containing "input" with the next bold
+        header containing "output" (tolerates "**Input**:", "**Input**",
+        "**Expected Output**", etc. — the wording varies across skills).
+        Returns [] gracefully for any file that doesn't parse — this is a pure
+        bonus source, never a regression versus today's DB-only behavior.
+        """
+        try:
+            skill_dir = Path(skill_meta.get("_dir", "."))
+            examples_path = skill_dir / skill_meta.get("examples", "EXAMPLES.md")
+            if not examples_path.is_file():
+                return []
+            text = examples_path.read_text(encoding="utf-8")
+            blocks = self._EXAMPLE_BLOCK_RE.findall(text)
+            out: list[dict] = []
+            i = 0
+            while i < len(blocks) - 1:
+                header_a, json_a = blocks[i]
+                header_b, json_b = blocks[i + 1]
+                if "input" in header_a.lower() and "output" in header_b.lower():
+                    try:
+                        out.append({
+                            "input_json": json.loads(json_a),
+                            "output_json": json.loads(json_b),
+                            "eval_score": None,
+                        })
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    i += 2
+                else:
+                    i += 1
+            return out
+        except Exception:
+            return []
 
     async def _fetch_examples(self, skill_name: str) -> list[dict]:
         """Fetch top examples from skill_examples table. Returns [] gracefully on any error."""
@@ -370,6 +550,7 @@ class SkillRuntime:
         weighted_sum = 0.0
         weight_total = 0.0
         must_pass_failed = False
+        skill_name = skill_meta.get("name")
 
         for crit in criteria:
             crit_id = crit["id"]
@@ -377,7 +558,9 @@ class SkillRuntime:
             weight = float(crit["weight"])
             desc = crit["description"].lower()
 
-            score = await self._eval_criterion(desc, crit_id, input_data, output, weight)
+            score = await self._eval_criterion(
+                desc, crit_id, input_data, output, weight, skill_name=skill_name
+            )
 
             if threshold == "must pass":
                 if score < 1.0:
@@ -432,11 +615,32 @@ class SkillRuntime:
         input_data: dict,
         output: dict,
         weight: float,
+        skill_name: str | None = None,
     ) -> float:
         """Evaluate one criterion. Use keyword rules for structural checks,
         LLM judge for semantic/quality checks."""
+        # Kind B extension point: a skill's own must-pass criteria can be graded
+        # by exact Python logic, keyed by (skill_name, criterion_id), bypassing
+        # the generic structural/LLM dispatch entirely for that one criterion.
+        if skill_name is not None:
+            validator = SKILL_CRITERION_VALIDATORS.get((skill_name, criterion_name))
+            if validator is not None:
+                return validator(input_data, output)
+
+        # Deterministic pattern checks: tried before the keyword dispatch, but
+        # only take effect when the exact shape matches — otherwise the
+        # criterion falls through unchanged to the existing keyword-gated
+        # structural check or the LLM judge below.
+        entries_match = _ENTRIES_PATTERN.search(description)
+        if entries_match:
+            return _eval_entries_with_fields(entries_match, output)
+
+        enum_match = _ENUM_PATTERN.search(description)
+        if enum_match:
+            return _eval_enum_membership(enum_match, output)
+
         if _is_structural_criterion(description):
-            return self._eval_structural(description, output)
+            return self._eval_structural(description, output, input_data)
 
         # Semantic/quality criterion — use LLM judge
         output_str = json_dumps_safe(output)
@@ -472,7 +676,9 @@ Respond with ONLY a decimal number (e.g. 0.7). No explanation."""
         except Exception:
             return 0.5  # neutral fallback on any LLM error
 
-    def _eval_structural(self, description: str, output: dict) -> float:
+    def _eval_structural(
+        self, description: str, output: dict, input_data: dict | None = None
+    ) -> float:
         """Fast deterministic evaluation for structural criteria."""
         desc = description.lower()
 
@@ -480,10 +686,14 @@ Respond with ONLY a decimal number (e.g. 0.7). No explanation."""
         if "valid json" in desc:
             return 1.0 if isinstance(output, dict) and not output.get("error") else 0.0
 
-        # Required fields present and non-empty
+        # Score only the fields the criterion names. Scoring every output key
+        # instead lets a legitimately empty optional field (e.g. `action_proposals:
+        # []`, which crystal-analyst's SKILL.md instructs) fail a must-pass gate.
         if "required fields" in desc or "non-empty" in desc:
-            non_empty = sum(1 for v in output.values() if v not in (None, "", [], {}))
-            return min(1.0, non_empty / max(len(output), 1))
+            named = _named_output_fields(desc, output)
+            keys = named if named else list(output.keys())
+            non_empty = sum(1 for k in keys if output.get(k) not in (None, "", [], {}))
+            return min(1.0, non_empty / max(len(keys), 1))
 
         # Count range check: "key_findings count is 3-5"
         m = re.search(r"(\w+(?:_\w+)*)\s+count\s+is\s+(\d+)-(\d+)", desc)

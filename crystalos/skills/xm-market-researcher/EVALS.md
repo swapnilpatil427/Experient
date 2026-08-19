@@ -1,31 +1,23 @@
-# XM Market Researcher — Quality Criteria
+# Evals
 
-## What "good" looks like
+## Criteria
 
-### Sourcing (Required)
-- Every competitor capability claim has at least one source (URL, publication name, date)
-- Sources are from the last 90 days unless explicitly noted as historical
-- G2/Capterra reviews are cited with approximate count ("~30 reviews mention X"), not single anecdotes
-- Job postings used as signals are from within the last 60 days
+| ID | Criterion | Weight | Threshold |
+|----|-----------|--------|-----------|
+| E1 | Output is valid JSON with gap_updates, new_gaps, market_shifts, and competitor_weaknesses arrays | 20 | must pass |
+| E2 | Every gap_updates and competitor_weaknesses entry has a non-empty source or evidence field (URL, publication, or specific review count) | 25 | must pass |
+| E3 | new_gaps entries are genuinely new — not duplicates of existing GAP-XXX gaps referenced elsewhere in the output | 15 | >= 0.75 |
+| E4 | market_shifts contains at least 1 entry with a specific (not vague) implication_for_experient | 15 | >= 0.70 |
+| E5 | executive_summary is present and non-empty, and is not purely positive about Experient's competitive position | 15 | >= 0.75 |
+| E6 | Effort estimates and urgency classifications are realistic and defensible (e.g. no "1 day" for SOC 2 certification-class work) | 10 | >= 0.70 |
 
-### Gap Analysis Quality
-- `gap_updates` contains at least 3 entries after any 90-day research window
-- New gaps (`new_gaps`) are genuinely new — not duplicates of existing GAP-XXX entries
-- Each gap has a specific Crystal opportunity identified where one exists
-- Effort estimates are realistic (not "1 day" for SOC 2 certification)
+## Scoring
 
-### Market Shifts Quality
-- At least 1 macro market shift identified per research run
-- Implication for Experient is specific (not "this could be important") 
-- Urgency classifications are defensible: "immediate" = decision needed in <30 days
+Pass threshold: overall score >= 0.75
 
-### Competitor Weaknesses
-- Weaknesses are based on customer evidence (reviews, forums), not assumptions
-- Each weakness maps to a specific Experient capability that addresses it
-- Crystal opportunity is identified where the weakness creates an AI-first win
+## Failure Behavior
 
-### Disqualifying Outputs
-- Any output without source citations on competitor claims → fail
-- Any output that claims a gap is closed without evidence it shipped → fail
-- Output that is purely positive about Experient's position → fail (this document exists to surface hard truths)
-- Missing new gaps when research clearly shows a competitor shipped something material → fail
+On failure inject failed criteria. Max 1 retry.
+E2 failure: inject "Every competitor claim MUST cite a source (URL, publication, or quantified review count like '~30 reviews mention X') — no unsourced claims."
+E5 failure: inject "This document exists to surface hard truths about Experient's competitive position — a purely positive summary is a failure. Identify at least one genuine gap or risk."
+E6 failure: inject "Effort estimates must be realistic — e.g. SOC 2 certification-class work cannot be estimated at '1 day'."

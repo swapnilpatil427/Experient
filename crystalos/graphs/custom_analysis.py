@@ -244,6 +244,16 @@ async def _update_custom_report(custom_report_id: str, **fields) -> None:
         logger.warning("custom_report_update_failed", custom_report_id=custom_report_id, error=str(exc))
 
 
+
+# HARD INVARIANT: Custom Analysis has no predictive layer — only descriptive +
+# diagnostic insights are ever allowed. This was previously enforced only by
+# omission (no forecasting tool is imported into this module) with no runtime
+# guard that would catch a future accidental "predictive" emission. Checked
+# here, at the one place every insight is written, rather than left as an
+# assumption a future change to _build_custom_insights could silently violate.
+_ALLOWED_CUSTOM_INSIGHT_LAYERS = frozenset({"descriptive", "diagnostic"})
+
+
 async def _insert_custom_insight(
     custom_report_id: str, org_id: str, survey_id: str, ins: dict, filter_label: str,
 ) -> None:
@@ -251,6 +261,14 @@ async def _insert_custom_insight(
 
     Immutable snapshot — no superseded_at, no ON CONFLICT update.
     """
+    if ins.get("layer") not in _ALLOWED_CUSTOM_INSIGHT_LAYERS:
+        logger.error(
+            "custom_insight_invalid_layer_blocked",
+            custom_report_id=custom_report_id,
+            layer=ins.get("layer"),
+            category=ins.get("category"),
+        )
+        return
     try:
         async with db._pool_conn().connection() as conn:
             await conn.execute(
@@ -438,6 +456,21 @@ async def run_custom_analysis(
         # ── Build insights (descriptive + diagnostic only — NO predictive) ────
         insights = _build_custom_insights(metrics, topics, sample_size, below_min_n, label)
 
+        # Filter to the allowed layers BEFORE anything downstream (DB insert,
+        # trust_avg, blob, completion log) touches `insights`, so a future
+        # accidental predictive/other-layer emission from _build_custom_insights
+        # can't make the report blob/summary/status claim more than what's
+        # actually persisted in custom_report_insights. _insert_custom_insight's
+        # own per-row guard stays as defense-in-depth; this is the primary gate.
+        rejected = [i for i in insights if i.get("layer") not in _ALLOWED_CUSTOM_INSIGHT_LAYERS]
+        if rejected:
+            logger.error(
+                "custom_analysis_insights_filtered_invalid_layer",
+                custom_report_id=custom_report_id,
+                rejected_layers=[i.get("layer") for i in rejected],
+            )
+        insights = [i for i in insights if i.get("layer") in _ALLOWED_CUSTOM_INSIGHT_LAYERS]
+
         # ── Persist insights to custom_report_insights ONLY ───────────────────
         for ins in insights:
             await _insert_custom_insight(custom_report_id, org_id, survey_id, ins, label)
@@ -491,8 +524,8 @@ async def run_custom_analysis(
                     "UPDATE agent_runs SET status='completed', completed_at=NOW() WHERE id=%s",
                     (run_id,),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("custom_analysis_agent_run_audit_update_failed", run_id=run_id, error=str(exc))
 
         logger.info(
             "custom_analysis_done",
@@ -522,8 +555,8 @@ async def run_custom_analysis(
                     "UPDATE agent_runs SET status='failed', completed_at=NOW() WHERE id=%s",
                     (run_id,),
                 )
-        except Exception:
-            pass
+        except Exception as audit_exc:
+            logger.warning("custom_analysis_agent_run_audit_update_failed", run_id=run_id, error=str(audit_exc))
         return {"custom_report_id": custom_report_id, "status": "failed", "error": str(exc)}
 
 

@@ -3797,14 +3797,29 @@ TOOL_EXECUTORS: dict[str, Any] = {
 
 
 async def dispatch_tool(tool_name: str, ctx: CrystalContext, params: dict) -> dict:
-    """Dispatch a tool call to the appropriate executor."""
+    """Dispatch a tool call to the appropriate executor.
+
+    Always returns a dict — never raises. Matches the contract already
+    guaranteed by `lib/tool_dispatcher.py::ToolDispatcher.dispatch()`:
+    on executor failure, returns `{"error": str(exc), "tool": tool_name}`
+    instead of letting the exception propagate.
+    """
     executor = TOOL_EXECUTORS.get(tool_name)
     if not executor:
         return {"error": f"Unknown tool: {tool_name}"}
 
     start = _time.monotonic()
     try:
-        result = await executor(ctx, params)
+        try:
+            result = await executor(ctx, params)
+        except Exception as exc:
+            logger.error(
+                "tool_dispatch_error",
+                tool=tool_name,
+                error=str(exc),
+                traceback=traceback.format_exc(),
+            )
+            return {"error": str(exc), "tool": tool_name}
         crystal_tool_calls_total.labels(tool=tool_name, org_id=ctx.org_id or "unknown").inc()
         return result
     finally:

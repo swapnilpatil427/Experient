@@ -62,31 +62,127 @@ function buildApp() {
   return app;
 }
 
+// Simulates the real Postgres upsert contract of the fixed INSERT ... ON CONFLICT
+// (org_id, survey_id, proposal_key) DO UPDATE in routes/insights.ts, so the tests
+// below exercise the actual lifecycle-guard *behaviour* — not just the SQL text —
+// without needing a live database. Keyed by (org_id, survey_id, proposal_key),
+// matching the new partial unique index (migration 20260806000001).
+function makeFakeProposalsStore() {
+  const TERMINAL = new Set(['succeeded', 'failed', 'dismissed']);
+  const rowsByKey = new Map();
+  let nextId = 1;
+
+  return vi.fn(async (sql, params) => {
+    if (!sql.includes('crystal_action_proposals') || !sql.includes('INSERT INTO')) {
+      return { rows: [] };
+    }
+    const [orgId, brandId, surveyId, proposalKey, type, , priority, businessRationale, confidence, status, outcomeRef, errorDetail] = params;
+    const key = `${orgId}|${surveyId}|${proposalKey}`;
+    const existing = rowsByKey.get(key);
+
+    if (!existing) {
+      const row = {
+        id: `p-${nextId++}`,
+        org_id: orgId,
+        brand_id: brandId,
+        survey_id: surveyId,
+        proposal_key: proposalKey,
+        type,
+        priority,
+        business_rationale: businessRationale,
+        confidence,
+        status,
+        outcome_ref: outcomeRef,
+        error_detail: errorDetail,
+        emitted_at: '2026-08-06T00:00:00.000Z',
+        updated_at: '2026-08-06T00:00:00.000Z',
+      };
+      rowsByKey.set(key, row);
+      return { rows: [row] };
+    }
+
+    // Lifecycle guard: a terminal status is never regressed by a non-terminal one.
+    const blocked = TERMINAL.has(existing.status) && !TERMINAL.has(status);
+    const merged = blocked
+      ? existing
+      : {
+          ...existing,
+          status,
+          outcome_ref: outcomeRef ?? existing.outcome_ref,
+          error_detail: errorDetail,
+          updated_at: '2026-08-06T00:05:00.000Z',
+        };
+    rowsByKey.set(key, merged);
+    return { rows: [merged] };
+  });
+}
+
 describe('POST /api/insights/:surveyId/crystal/proposals', () => {
   beforeEach(() => {
     dbQuery = vi.fn();
   });
 
-  it('inserts a new proposal then updates the same proposalKey (upsert path)', async () => {
-    // First call: INSERT (no conflict) → status emitted
-    // Second call: same proposalKey → DO UPDATE → status succeeded
-    // The insights router runs ensureTopicsTables() CREATE/ALTER statements on
-    // import, so the shared mock receives unrelated calls too. Count only the
-    // proposal upserts to assert the insert→update path.
-    const upserts = [];
-    dbQuery = vi.fn(async (sql, params) => {
-      if (!sql.includes('crystal_action_proposals')) return { rows: [] };
-      expect(sql).toContain('INSERT INTO crystal_action_proposals');
-      expect(sql).toContain('ON CONFLICT (org_id, proposal_key)');
-      // org_id is always param $1
-      expect(params[0]).toBe('o1');
-      upserts.push(params);
-      if (upserts.length === 1) {
-        return { rows: [{ id: 'p-1', proposal_key: 'pk-1', status: 'emitted', outcome_ref: null }] };
-      }
-      return { rows: [{ id: 'p-1', proposal_key: 'pk-1', status: 'succeeded', outcome_ref: 'wf-9' }] };
+  // G1 funnel fix (2026-08-06, docs/assistant-ui-migration/MIGRATION_PLAN.md §4
+  // item 4 / §6). Replaces the test that used to pin the defect: the conflict
+  // target now includes survey_id, so the same proposal_key on two different
+  // surveys in one org no longer collapses onto a single row.
+  it('scopes the upsert to (org_id, survey_id, proposal_key) — same proposalKey on two surveys does not collapse', async () => {
+    dbQuery = makeFakeProposalsStore();
+    const app = buildApp();
+
+    const body = JSON.stringify({
+      proposalKey: 'pk-1',
+      type: 'create_workflow',
+      params: { foo: 'bar' },
+      priority: 'high',
+      businessRationale: 'Reduce churn',
+      confidence: 0.8,
+      status: 'emitted',
     });
 
+    const resS1 = await inject(app, {
+      method: 'POST',
+      url: '/api/insights/s1/crystal/proposals',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    const resS2 = await inject(app, {
+      method: 'POST',
+      url: '/api/insights/s2/crystal/proposals',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+
+    expect(resS1.statusCode).toBe(200);
+    expect(resS2.statusCode).toBe(200);
+    const rowS1 = resS1.json();
+    const rowS2 = resS2.json();
+    // Two distinct rows, not one row overwriting the other.
+    expect(rowS1.id).not.toBe(rowS2.id);
+    expect(rowS1.survey_id).toBe('s1');
+    expect(rowS2.survey_id).toBe('s2');
+
+    // Assert the SQL itself carries the fixed conflict target, so a future
+    // regression that widens/narrows it again is caught even if the fake
+    // store's behaviour happens to still look right.
+    const sawInsert = [];
+    const spySql = vi.fn(async (sql, params) => {
+      sawInsert.push(sql);
+      return makeFakeProposalsStore()(sql, params);
+    });
+    dbQuery = spySql;
+    await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/insights/s3/crystal/proposals',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    const proposalSql = sawInsert.find((sql) => sql.includes('crystal_action_proposals'));
+    expect(proposalSql).toContain('ON CONFLICT (org_id, survey_id, proposal_key)');
+  });
+
+  it('inserts a new proposal then updates the same proposalKey on the same survey (upsert path)', async () => {
+    dbQuery = makeFakeProposalsStore();
     const app = buildApp();
 
     const res1 = await inject(app, {
@@ -105,7 +201,8 @@ describe('POST /api/insights/:surveyId/crystal/proposals', () => {
     });
 
     expect(res1.statusCode).toBe(200);
-    expect(res1.json()).toMatchObject({ id: 'p-1', status: 'emitted' });
+    expect(res1.json()).toMatchObject({ status: 'emitted' });
+    const proposalId = res1.json().id;
 
     const res2 = await inject(app, {
       method: 'POST',
@@ -120,11 +217,78 @@ describe('POST /api/insights/:surveyId/crystal/proposals', () => {
     });
 
     expect(res2.statusCode).toBe(200);
-    expect(res2.json()).toMatchObject({ id: 'p-1', status: 'succeeded', outcome_ref: 'wf-9' });
-    expect(upserts).toHaveLength(2);
-    // Second call carries the updated status + outcome ref (params order: ...status@$10, outcome_ref@$11)
-    expect(upserts[1][9]).toBe('succeeded');
-    expect(upserts[1][10]).toBe('wf-9');
+    // Same row (id unchanged), status + outcome_ref now updated.
+    expect(res2.json()).toMatchObject({ id: proposalId, status: 'succeeded', outcome_ref: 'wf-9' });
+  });
+
+  // This is the rewrite of the test that used to PIN the defect (a later status
+  // silently overwriting an earlier terminal one). The red-then-green here is the
+  // point: this exact scenario — `succeeded` recorded, then a late `accepted`
+  // arrives (the same-tick race described in MIGRATION_TEST_PLAN.md §4.1 item h,
+  // now also fixed client-side by awaiting every track() call in CrystalPanel.tsx)
+  // — must NOT regress the row back to a non-terminal status.
+  it('lifecycle guard: a terminal status cannot be overwritten by a late non-terminal status', async () => {
+    dbQuery = makeFakeProposalsStore();
+    const app = buildApp();
+
+    const emit = (body) => inject(app, {
+      method: 'POST',
+      url: '/api/insights/s1/crystal/proposals',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    await emit({ proposalKey: 'pk-1', type: 'create_workflow', status: 'emitted' });
+    const succeeded = await emit({ proposalKey: 'pk-1', type: 'create_workflow', status: 'succeeded', outcomeRef: 'wf-9' });
+    expect(succeeded.json().status).toBe('succeeded');
+
+    // Simulates `accepted` arriving after `succeeded` — the exact race the old
+    // fire-and-forget `track()` calls could produce.
+    const lateAccepted = await emit({ proposalKey: 'pk-1', type: 'create_workflow', status: 'accepted' });
+    expect(lateAccepted.statusCode).toBe(200);
+    expect(lateAccepted.json().status).toBe('succeeded');
+    expect(lateAccepted.json().outcome_ref).toBe('wf-9');
+  });
+
+  it('emitted_at is set once on INSERT and is never part of the DO UPDATE SET clause', async () => {
+    let proposalSql = null;
+    dbQuery = vi.fn(async (sql, params) => {
+      if (sql.includes('crystal_action_proposals') && sql.includes('INSERT INTO')) {
+        proposalSql = sql;
+        return { rows: [{ id: 'p-1', status: params[9] }] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/insights/s1/crystal/proposals',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proposalKey: 'pk-1', type: 'create_workflow', status: 'emitted' }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    // emitted_at is in the INSERT column/VALUES list (set once, at first emit) ...
+    expect(proposalSql).toMatch(/emitted_at\)[\s\S]*?VALUES[\s\S]*?NOW\(\)/);
+    // ... and absent from the DO UPDATE SET clause (never clobbered on update).
+    const setClause = proposalSql.slice(proposalSql.indexOf('DO UPDATE SET'), proposalSql.indexOf('RETURNING'));
+    expect(setClause).not.toContain('emitted_at');
+  });
+
+  it('returns 400 when status is not a recognized value', async () => {
+    const proposalCalls = [];
+    dbQuery = vi.fn(async (sql) => {
+      if (sql.includes('crystal_action_proposals')) proposalCalls.push(sql);
+      return { rows: [] };
+    });
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/insights/s1/crystal/proposals',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proposalKey: 'pk-1', type: 'create_workflow', status: 'bogus' }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(proposalCalls).toHaveLength(0);
   });
 
   it('returns 400 when type is missing', async () => {

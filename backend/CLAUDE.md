@@ -62,12 +62,19 @@ Plus `/webhooks/clerk`, `/api/health`, `/api/metrics`.
 ## Crystal Intelligence (AI) routes
 `routes/insights.ts` exposes the Crystal/AI endpoints:
 - `POST /api/insights/:surveyId/generate` — trigger insight pipeline via `agentsClient.ts`
-- `POST /api/insights/:surveyId/crystal` — Crystal SSE stream (proxied to CrystalOS skill-first path)
+- `POST /api/experience/:scope/crystal/stream` (`routes/experience.ts`) — the real Crystal **SSE stream**
+  the frontend actually calls (`scope` is `survey`/`org`/`tag`), proxied to CrystalOS's
+  `/insights/crystal/stream`. `POST /api/insights/:surveyId/crystal` below is the **REST fallback**
+  (used only if the stream fetch itself throws) with thread persistence — not the streaming path.
+- `POST /api/insights/:surveyId/crystal` — Crystal REST fallback + thread persistence (proxied to CrystalOS skill-first path)
 - `GET  /api/insights/:surveyId/topics` (+ `/topics/hierarchy`) — topic list / hierarchy
 - `GET|DELETE /api/insights/:surveyId/crystal/history` — Crystal conversation history
 - `POST|GET /api/insights/:surveyId/crystal/proposals` — **action-proposal outcome tracking**.
-  POST upserts on `(org_id, proposal_key)` with `status ∈ {emitted,accepted,dismissed,succeeded,failed}`
-  (idempotent); GET lists recent proposals for analytics. Backed by `crystal_action_proposals`.
+  POST upserts on `(org_id, survey_id, proposal_key)` with `status ∈ {emitted,accepted,dismissed,succeeded,failed}`
+  (idempotent; unrecognized `status` → 400). A terminal status (`succeeded|failed|dismissed`) can never
+  be regressed by a late/out-of-order non-terminal write — see the `DO UPDATE ... CASE` guard in
+  `routes/insights.ts`. GET lists recent proposals for analytics. Backed by `crystal_action_proposals`
+  (unique index `crystal_action_proposals_org_survey_key_uniq`, migration `20260806000001`).
 - **Insight Pipeline v2 — Phase 3 (manual runs + reports):**
   - `POST /api/insights/:surveyId/runs` — start a manual/refresh run (`{ mode: expert|quick|refresh, window_start?, window_end?, label? }`).
     Daily-limit gate → 429 `RATE_LIMITED`; credit preflight → 402 `INSUFFICIENT_CREDITS`; creates `agent_runs`,

@@ -403,3 +403,11 @@ THREAD_ARCHIVE_TURN_THRESHOLD:  int   = int(os.getenv("THREAD_ARCHIVE_TURN_THRES
 ORG_MEMORY_SWEEP_INTERVAL_MIN:  int   = int(os.getenv("ORG_MEMORY_SWEEP_INTERVAL_MIN",  "5"))
 HALLUCINATION_FAIL_THRESHOLD:   float = float(os.getenv("HALLUCINATION_FAIL_THRESHOLD", "0.6"))
 HALLUCINATION_FLAG_THRESHOLD:   float = float(os.getenv("HALLUCINATION_FLAG_THRESHOLD", "0.8"))
+
+# ── Build provenance ──────────────────────────────────────────────────────────
+# CrystalOS is not installed as a packaged distribution (no [project] version in
+# pyproject.toml), so there's no `importlib.metadata.version()` to read. This is
+# a manually-bumped marker stamped onto telemetry (see lib/turn_publisher.py's
+# TurnEvent.crystalos_version) so a turn event can be traced back to roughly
+# which build produced it.
+CRYSTALOS_VERSION: str = os.getenv("CRYSTALOS_VERSION", "0.1.0")

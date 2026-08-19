@@ -3967,6 +3967,12 @@ const en = {
     notResolved:        'Not resolved? Create a ticket',
     thumbsUp:           'This helped',
     thumbsDown:         'Not helpful',
+    openPanelAriaLabel:  'Open Crystal AI assistant',
+    closePanelAriaLabel: 'Close Crystal',
+    sendMessageAriaLabel: 'Send',
+    builderTooltip:        'Crystal — Xperiq Survey Builder Copilot (⌘K)',
+    openBuilderAriaLabel:  'Open Crystal — Xperiq Survey Builder Copilot',
+    builderBadge:          'Survey Builder Copilot',
     // Tag Report auto-scoping — Crystal is focused on a single tag's cross-survey rollup
     tagScopeChip:       'Tag: {name}',
     tagScopeSubtitle:   'Ask about tag: {name}',

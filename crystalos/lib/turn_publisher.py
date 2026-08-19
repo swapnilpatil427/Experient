@@ -23,6 +23,10 @@ from crystalos.lib.logger import logger
 
 @dataclass
 class TurnEvent:
+    # Minted by the caller (agents/crystal.py) BEFORE the SSE `answer` frame /
+    # REST response ships, so the client-visible turn_id and this row's real
+    # primary key are the same value — see MIGRATION_PLAN.md §4 blocker #1.
+    id:              str
     org_id:          str
     brand_id:        str | None
     user_id:         str
@@ -40,6 +44,10 @@ class TurnEvent:
     specialist_used: str | None
     skill_name:      str | None = None  # skill that handled this turn
     quality_signal:  str | None = None
+    # Which CrystalOS build produced this turn. Callers should set this from
+    # `crystalos.lib.constants.CRYSTALOS_VERSION` — defaults to None so any
+    # existing caller that doesn't pass it keeps working unchanged.
+    crystalos_version: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -78,13 +86,17 @@ async def _write_turn_event(event: TurnEvent, ctx: CrystalContext) -> None:
         async with _pool_conn().connection() as conn:
             await conn.execute(
                 """INSERT INTO crystal_turn_events
-                   (org_id, brand_id, user_id, survey_id, thread_id, turn_index,
+                   (id, org_id, brand_id, user_id, survey_id, thread_id, turn_index,
                     query, tools_called, tool_errors, eval_score, model_used,
                     tokens_in, tokens_out, latency_ms, specialist_used, skill_name,
-                    quality_signal)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
-                           %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    quality_signal, crystalos_version)
+                   VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
+                           %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
+                    # Explicit id — skips the column's DEFAULT gen_random_uuid()
+                    # rather than relying on it, so this row's PK is the exact
+                    # value already handed to the client.
+                    event.id,
                     event.org_id,
                     event.brand_id,
                     event.user_id,
@@ -102,6 +114,7 @@ async def _write_turn_event(event: TurnEvent, ctx: CrystalContext) -> None:
                     event.specialist_used,
                     event.skill_name,
                     event.quality_signal,
+                    event.crystalos_version,
                 ),
             )
     except Exception as exc:

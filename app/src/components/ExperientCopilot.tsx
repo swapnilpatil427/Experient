@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Icon } from './Icon';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useTranslation } from '../lib/i18n';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -113,6 +114,7 @@ function buildGreeting({ surveyTitle, questionCount, surveyType, surveySettings,
 
 // onAction is scaffolded for future UI commands (open panels, highlight questions, etc.)
 export function XperiqCopilot({ context = {}, onRefine, onAction, onApplyRecommendation, recommendations, quickCommands, initiallyOpen = false, initialMessage }: XperiqCopilotProps) {
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(initiallyOpen);
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     const msgs: ChatMessage[] = [{ role: 'ai', text: buildGreeting(context) }];
@@ -276,10 +278,10 @@ export function XperiqCopilot({ context = {}, onRefine, onAction, onApplyRecomme
 
         <button
           onClick={() => setIsOpen((o) => !o)}
-          title="Crystal — Experient Copilot (⌘K)"
+          title={t('crystal.builderTooltip')}
           className="relative w-14 h-14 rounded-full flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
           style={{ background: 'linear-gradient(135deg, var(--color-primary), var(--color-tertiary))', boxShadow: '0 6px 24px color-mix(in srgb, var(--color-primary) 38%, transparent)' }}
-          aria-label="Open Crystal — Experient Copilot"
+          aria-label={t('crystal.openBuilderAriaLabel')}
         >
           <AnimatePresence mode="wait">
             <motion.span
@@ -344,7 +346,7 @@ export function XperiqCopilot({ context = {}, onRefine, onAction, onApplyRecomme
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 leading-none mb-0.5">
                     <span className="text-sm font-black text-on-surface">Crystal</span>
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}>Experient Copilot</span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)', color: 'var(--color-primary)' }}>{t('crystal.builderBadge')}</span>
                   </div>
                   <div className="text-[10px] text-[#9ca3af] font-medium">Survey Intelligence · Builder</div>
                 </div>

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
+from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -176,12 +178,47 @@ class ActionProposal(BaseModel):
 from crystalos.lib.json_coerce import extract_skill_answer, json_dumps_safe, normalize_suggestions
 
 
+class VizSpec(BaseModel):
+    """Neutral, versioned generative-UI payload (MIGRATION_PLAN.md §3 mitigation #5).
+
+    Deliberately NOT assistant-ui's own spec shape — the frontend adapter
+    translates. ``kind`` is a closed server allowlist (one member for this G0
+    spike); adding a widget type means adding a Literal member here AND a
+    matching entry in the frontend's total render map, never a free string.
+    """
+    viz_version: Literal[1] = 1
+    kind: Literal["nps_bar_chart", "sentiment_by_segment_chart"]
+    title: str
+    data: list[dict]                     # nps_bar_chart: [{"segment": str, "score": float}, ...]
+                                          # sentiment_by_segment_chart: [{"segment": str, "sentiment_score": float}, ...]
+    source_insight_id: str | None = None
+
+
+class AppliedFilter(BaseModel):
+    """One resolved 'what Crystal actually scoped/searched' fact for this
+    turn, surfaced to the frontend as a transparency/trust affordance.
+    Deliberately ONE flat shape — every tool argument family in
+    crystal/registry.py's TOOL_REGISTRY normalizes into it; a new tool
+    reusing any existing argument name is normalized automatically."""
+    kind: str
+    label: str
+    value: str
+    raw: dict = {}
+    sources: list[str] = []
+
+
 class CrystalOutput(BaseModel):
     answer: str                          # 2-5 sentences, concise and evidence-based
     citations: list[str] = []            # insight IDs or topic names referenced
     suggestions: list[str] = []          # 2-3 follow-up questions
     insight_refs: list[str] = []         # insight IDs used in the answer
     action_proposals: list[ActionProposal] = []  # proposed actions (from action tools)
+    viz: VizSpec | None = None           # Tier-0 deterministic chart — never model-chosen
+    applied_filters: list[AppliedFilter] = []  # transparency: what Crystal scoped/searched this turn
+    # Server-minted, set by the caller (not by any synthesis path) after this
+    # object is built — see _run_skill_stream/_run_react_loop_streaming/_run_skill_loop.
+    # Same value as the crystal_turn_events row this turn writes (G1 fix).
+    turn_id: str | None = None
 
     @field_validator("suggestions", mode="before")
     @classmethod
@@ -949,13 +986,32 @@ _PROPOSAL_TYPE_ALIASES = {
 }
 
 
-def _normalize_proposal(p: dict) -> dict:
+def _normalize_proposal(p: dict, turn_id: str | None = None) -> dict:
     """Normalise a tool/skill proposal dict to the frontend ActionProposal shape.
 
     Tool proposals carry ``proposal_type`` and often lack ``id``/``type``; the
     frontend (and the ActionProposal model) need ``type`` + ``id``. This maps
-    the alias, fills a slug ``id``, and applies safe defaults so the proposal
-    both validates and renders.
+    the alias, fills a server-minted ``id``, and applies safe defaults so the
+    proposal both validates and renders.
+
+    ``id`` doubles as the frontend's ``proposalKey`` (CrystalPanel.tsx sends
+    ``proposal.id`` verbatim as ``proposalKey`` — there is no separate field on
+    the wire, and the frontend is out of scope to change here). Two properties
+    both need to hold for the SAME field:
+      1. Genuinely unique per emission — two distinct recommendations (even an
+         identically-titled one from a later turn) must NOT collapse onto the
+         same crystal_action_proposals row (that was the bug: a bare title
+         slug alone is deterministic across turns).
+      2. Stable for the lifetime of ONE rendered proposal card — the frontend
+         fires emitted -> accepted -> succeeded/failed as separate POSTs of the
+         same in-memory ActionProposal object's ``.id``, and those must still
+         collapse onto one row (P0-3's dedup fix, migration 20260806000001).
+    Scoping the slug by ``turn_id`` (unique per turn, minted before this
+    proposal is even built — see _run_skill_stream et al.) satisfies both:
+    stable across the object's own lifecycle POSTs (same turn_id + same slug
+    each time), unique across turns (different turn_id). Falls back to a bare
+    uuid4 when no turn_id is available (legacy/direct callers, tests) — still
+    unique, just not turn-scoped.
     """
     import re as _re
     out = dict(p)
@@ -963,13 +1019,14 @@ def _normalize_proposal(p: dict) -> dict:
     out["type"] = _PROPOSAL_TYPE_ALIASES.get(ptype, ptype)
     if not out.get("id"):
         slug = _re.sub(r"[^a-z0-9]+", "-", (out.get("title") or out["type"]).lower()).strip("-")[:48]
-        out["id"] = slug or "proposal"
+        slug = slug or "proposal"
+        out["id"] = f"{turn_id}:{slug}" if turn_id else str(uuid.uuid4())
     out.setdefault("priority", "medium")
     out.setdefault("requires_confirmation", True)
     return out
 
 
-def _extract_action_proposals(tool_results: list[dict]) -> list[dict]:
+def _extract_action_proposals(tool_results: list[dict], turn_id: str | None = None) -> list[dict]:
     """Pull action proposals out of action-tool results (for the frontend to render)."""
     from crystalos.crystal.registry import ACTION_TOOL_NAMES
     proposals: list[dict] = []
@@ -978,9 +1035,11 @@ def _extract_action_proposals(tool_results: list[dict]) -> list[dict]:
             result = tr.get("result") or {}
             if isinstance(result, dict):
                 if "actions" in result:
-                    proposals.extend(_normalize_proposal(a) for a in result["actions"][:5] if isinstance(a, dict))
+                    proposals.extend(
+                        _normalize_proposal(a, turn_id=turn_id) for a in result["actions"][:5] if isinstance(a, dict)
+                    )
                 elif "proposal_type" in result:
-                    proposals.append(_normalize_proposal(result))
+                    proposals.append(_normalize_proposal(result, turn_id=turn_id))
     return proposals
 
 
@@ -1165,7 +1224,246 @@ def _merged_citation_ids(citations: list | None, insight_refs: list | None) -> l
     return merged
 
 
-def _normalize_skill_output(output: dict, skill_name: str) -> "CrystalOutput | None":
+_SEGMENT_CHART_INSIGHT_CATEGORIES = frozenset(
+    {"metric.nps", "metric.csat", "metric.ces", "voice.topic"}
+)
+
+
+def _build_viz_for_citations(
+    citations: list[str] | None,
+    insight_refs: list[str] | None,
+    insights: list[dict] | None,
+    tool_results: list[dict] | None,
+) -> "VizSpec | None":
+    """Tier-0 deterministic chart selection (TRACKER.md decision #2) — never model-chosen.
+
+    Pure function over data this turn has *already fetched*; no LLM call, no
+    new query. Tries two chart shapes, in priority order, both requiring a
+    ``get_segment_breakdown`` tool result already in this turn's
+    ``tool_results`` (the executor at crystal/tools.py:475-543 — the only
+    place in the codebase that produces a real per-segment shape;
+    ``schemas/insight.py``'s ``segment_json`` column exists in the DB/schema
+    but is never populated by any pipeline node, so it is not a usable source
+    here):
+
+      1. **nps_bar_chart** — a cited/referenced insight that is an NPS metric
+         insight (``category == "metric.nps"`` or ``metric_json.name ==
+         "NPS"`` — the two shapes the pipeline actually writes, see
+         graphs/insights.py:4803 and graphs/custom_analysis.py:564), plus at
+         least one segment carrying ``nps_avg``. Takes priority when both
+         ``nps_avg`` and ``avg_sentiment_score`` are available, since it's the
+         more specific, directly-named metric.
+      2. **sentiment_by_segment_chart** — falls back to this whenever a
+         broader metric-category insight is cited (NPS/CSAT/CES/topic — see
+         ``_SEGMENT_CHART_INSIGHT_CATEGORIES``) but ``nps_avg`` isn't usable
+         (e.g. a CSAT-only or topic-driven turn), using ``avg_sentiment_score``
+         — the one per-segment field ``get_segment_breakdown`` always
+         populates regardless of metric, unlike ``nps_avg`` which requires
+         NPS-scored responses to exist.
+
+    Missing all ingredients returns None — no chart, no error. That's the
+    common case (most turns never call ``get_segment_breakdown``), and it must
+    stay a silent no-op so it doesn't drag down EVALS `non_empty` scoring on
+    chart-free turns (P0-1).
+    """
+    cited = {str(c) for c in list(citations or []) + list(insight_refs or []) if str(c).strip()}
+    if not cited:
+        return None
+
+    matched_insight: dict | None = None
+    is_nps = False
+    for ins in insights or []:
+        if str(ins.get("id", "")) not in cited:
+            continue
+        metric_name = (ins.get("metric_json") or {}).get("name")
+        category = ins.get("category")
+        if category == "metric.nps" or metric_name == "NPS":
+            matched_insight = ins
+            is_nps = True
+            break
+        if matched_insight is None and category in _SEGMENT_CHART_INSIGHT_CATEGORIES:
+            matched_insight = ins
+    if matched_insight is None:
+        return None
+
+    segments: list | None = None
+    for tr in tool_results or []:
+        if tr.get("tool") != "get_segment_breakdown":
+            continue
+        candidate = (tr.get("result") or {}).get("segments")
+        if isinstance(candidate, list) and candidate:
+            segments = candidate
+            break
+    if not segments:
+        return None
+
+    source_id = str(matched_insight.get("id")) if matched_insight.get("id") else None
+
+    if is_nps:
+        nps_data = [
+            {"segment": str(s.get("segment", "unknown")), "score": float(s["nps_avg"])}
+            for s in segments
+            if isinstance(s, dict) and s.get("nps_avg") is not None
+        ]
+        if nps_data:
+            return VizSpec(
+                kind="nps_bar_chart",
+                title=matched_insight.get("headline") or "NPS by Segment",
+                data=nps_data,
+                source_insight_id=source_id,
+            )
+        # NPS insight cited but no segment carries nps_avg (e.g. a CSAT-only
+        # survey) — fall through to the sentiment shape below rather than
+        # returning no chart at all.
+
+    sentiment_data = [
+        {"segment": str(s.get("segment", "unknown")), "sentiment_score": float(s["avg_sentiment_score"])}
+        for s in segments
+        if isinstance(s, dict) and s.get("avg_sentiment_score") is not None
+    ]
+    if not sentiment_data:
+        return None
+
+    return VizSpec(
+        kind="sentiment_by_segment_chart",
+        title=matched_insight.get("headline") or "Sentiment by Segment",
+        data=sentiment_data,
+        source_insight_id=source_id,
+    )
+
+
+# ── applied_filters — canonical transparency object ──────────────────────────
+# Maps every filter-relevant TOOL_REGISTRY argument name to a (kind, label)
+# pair. Verified against the CURRENT crystal/registry.py TOOL_REGISTRY (~60
+# tools) — added `segment` (get_xo_context), `report_id` (get_insight_report /
+# propose_view_report), and `run_id` (get_tag_report / get_tag_report_trail /
+# propose_view_tag_report / propose_generate_tag_report) beyond the original
+# design, which didn't yet cover those three. Deliberately excludes pure
+# payload/pagination args (limit, title, description, message, webhook_url,
+# severity, threshold, priority, confidence, rationale, business_rationale,
+# gap_description, gap_type, purpose, target_audience, edit_request,
+# trigger_condition, desired_outcome, alert_type, condition, mode, run_mode,
+# estimated_credits, label, url, summary, owner_user_id, owner_label,
+# role_label, channel) — those describe what an action tool should DO/create,
+# not what Crystal scoped/searched, so they never produce an applied_filters
+# entry (correctly falling through to the is_action_tool() exclusion below).
+_ARG_KIND_MAP: dict[str, tuple[str, str]] = {
+    "survey_id": ("survey", "Survey"),
+    "checkpoint_id": ("checkpoint", "Checkpoint"),
+    "tag_id": ("tag", "Tag"), "tag_ids": ("tag", "Tags"),
+    "response_id": ("entity", "Response"), "contact_id": ("entity", "Contact"),
+    "account_id": ("entity", "Account"), "case_id": ("entity", "Case"),
+    "driver": ("entity", "Driver"), "driver_ref": ("entity", "Driver"),
+    "segment_question_id": ("segment", "Segment"), "segment_question_text": ("segment", "Segment"),
+    "target_segment": ("segment", "Segment"), "segment": ("segment", "Segment"),
+    "department_id": ("segment", "Department"), "department_name": ("segment", "Department"),
+    "group_id": ("segment", "Group"), "group_name": ("segment", "Group"), "role_key": ("segment", "Role"),
+    "metric": ("metric", "Metric"), "metrics": ("metric", "Metrics"),
+    "topic_name": ("topic", "Topic"), "focus_topic": ("topic", "Topic focus"), "focus_area": ("topic", "Topic focus"),
+    "sentiment": ("sentiment", "Sentiment"), "layer": ("layer", "Insight layer"), "lane": ("lane", "Lane"),
+    "time_window": ("date_range", "Time window"), "days": ("date_range", "Lookback (days)"),
+    "lookback": ("date_range", "Lookback"),
+    "industry": ("benchmark", "Industry benchmark"),
+    "search_query": ("query", "Search"), "query": ("query", "Search"), "concept": ("query", "Search"),
+    "report_id": ("report", "Report"), "run_id": ("report", "Report run"),
+}
+_PAIR_SPECS: list[tuple[str, str, str, str]] = [
+    ("survey_id_a", "survey_id_b", "survey", "Surveys compared"),
+    ("checkpoint_id_a", "checkpoint_id_b", "checkpoint", "Checkpoints compared"),
+    ("window_start", "window_end", "date_range", "Date range"),
+]
+
+
+def build_applied_filters(tool_results: list[dict]) -> list["AppliedFilter"]:
+    """Pure function: turn one turn's tool_results into the deduped
+    applied_filters list. Call once, after tool_results is fully populated,
+    before CrystalOutput/the SSE 'answer' event is built."""
+    from crystalos.crystal.registry import is_action_tool
+    entries: list[AppliedFilter] = []
+    for tr in tool_results:
+        tool, args, result = tr.get("tool", ""), tr.get("args") or {}, tr.get("result")
+        if not isinstance(result, dict) or "error" in result:
+            continue
+        one = _normalize_one_call(tool, args, result)
+        if not one and not is_action_tool(tool):
+            one = [AppliedFilter(kind="query", label="Checked",
+                                  value=tool.replace("_", " "), raw=dict(args), sources=[tool])]
+        entries.extend(one)
+    return _dedupe_filters(entries)
+
+
+def _normalize_one_call(tool: str, args: dict, result: dict) -> list["AppliedFilter"]:
+    out: list[AppliedFilter] = []
+    consumed: set[str] = set()
+    if "dimension" in args and "match_value" in args:
+        dim = str(args["dimension"])
+        out.append(AppliedFilter(kind="entity", label=dim.replace("_", " ").title(),
+                                  value=str(args["match_value"]),
+                                  raw={"dimension": dim, "match_value": args["match_value"]}, sources=[tool]))
+        consumed |= {"dimension", "match_value"}
+    for a, b, kind, label in _PAIR_SPECS:
+        if a in args and b in args and a not in consumed:
+            out.append(AppliedFilter(kind=kind, label=label, value=f"{args[a]} → {args[b]}",
+                                      raw={a: args[a], b: args[b]}, sources=[tool]))
+            consumed |= {a, b}
+    for key, (kind, label) in _ARG_KIND_MAP.items():
+        if key in consumed or key not in args or args[key] in (None, "", [], {}):
+            continue
+        out.append(AppliedFilter(kind=kind, label=label,
+                                  value=_resolve_friendly_value(key, args[key], result),
+                                  raw={key: args[key]}, sources=[tool]))
+    return out
+
+
+def _resolve_friendly_value(key: str, raw_value, result: dict) -> str:
+    if key in ("days", "lookback"):
+        return f"last {raw_value} days" if key == "days" else f"last {raw_value} checkpoints"
+    if isinstance(raw_value, list):
+        return ", ".join(str(v) for v in raw_value)
+    if key in ("survey_id", "tag_id", "checkpoint_id", "segment_question_id") and isinstance(result, dict):
+        for hint_key in ("survey_title", "title", "tag_name", "name"):
+            if result.get(hint_key):
+                return str(result[hint_key])
+        return f"{str(raw_value)[:8]}…"
+    return str(raw_value)
+
+
+def _dedupe_filters(entries: list["AppliedFilter"]) -> list["AppliedFilter"]:
+    merged: dict[tuple, AppliedFilter] = {}
+    order: list[tuple] = []
+    for e in entries:
+        first_raw_val = next(iter(e.raw.values()), None)
+        key = (e.kind, str(first_raw_val))
+        if key in merged:
+            existing = merged[key]
+            for s in e.sources:
+                if s not in existing.sources:
+                    existing.sources.append(s)
+        else:
+            merged[key] = e
+            order.append(key)
+    return [merged[k] for k in order]
+
+
+def _derive_viz_and_filters(
+    citations: list, insight_refs: list, insights: list, tool_results: list[dict],
+) -> tuple["VizSpec | None", list["AppliedFilter"]]:
+    """Shared derivation for the two Tier-0 deterministic post-processing
+    signals computed from a turn's citations/tool_results — never model-chosen.
+    Single call site for both, so a future change to either doesn't have to be
+    remembered across every place a CrystalOutput/final answer is built."""
+    viz = _build_viz_for_citations(citations, insight_refs, insights, tool_results)
+    applied_filters = build_applied_filters(tool_results or [])
+    return viz, applied_filters
+
+
+def _normalize_skill_output(
+    output: dict,
+    skill_name: str,
+    insights: list[dict] | None = None,
+    tool_results: list[dict] | None = None,
+    turn_id: str | None = None,
+) -> "CrystalOutput | None":
     """Map any skill's output dict to CrystalOutput.
 
     Skills have different output shapes; this function normalises them into the
@@ -1207,11 +1505,13 @@ def _normalize_skill_output(output: dict, skill_name: str) -> "CrystalOutput | N
     for p in (output.get("action_proposals") or output.get("actions") or [])[:3]:
         try:
             if isinstance(p, dict):
-                action_proposals.append(ActionProposal(**_normalize_proposal(p)))
+                action_proposals.append(ActionProposal(**_normalize_proposal(p, turn_id=turn_id)))
             else:
                 action_proposals.append(p)
         except Exception:
             continue
+
+    viz, applied_filters = _derive_viz_and_filters(citations, insight_refs, insights, tool_results)
 
     return CrystalOutput(
         answer=answer,
@@ -1219,6 +1519,8 @@ def _normalize_skill_output(output: dict, skill_name: str) -> "CrystalOutput | N
         suggestions=suggestions,
         insight_refs=insight_refs,
         action_proposals=action_proposals,
+        viz=viz,
+        applied_filters=applied_filters,
     )
 
 
@@ -1227,6 +1529,7 @@ async def _skill_synthesis(
     tool_results: list[dict],
     skill_meta: dict | None = None,
     score: float | None = None,
+    turn_id: str | None = None,
 ) -> "CrystalOutput | None":
     """Route synthesis through the skill framework before falling back to _run_crystal.
 
@@ -1238,6 +1541,10 @@ async def _skill_synthesis(
     If ``skill_meta`` is supplied, routing is skipped — the caller has already
     resolved the best skill (avoids a redundant second embedding/route call
     in the same turn).
+
+    ``turn_id`` is forwarded to _normalize_skill_output so any action
+    proposals in the skill's output get turn-scoped, server-minted ids (see
+    _normalize_proposal).
     """
     try:
         from crystalos.lib.constants import CRYSTAL_ROUTING_EXCLUDED_SKILLS
@@ -1358,7 +1665,7 @@ async def _skill_synthesis(
             )
             return None
 
-        return _normalize_skill_output(result.output, skill_name)
+        return _normalize_skill_output(result.output, skill_name, inp.insights, tool_results, turn_id=turn_id)
 
     except Exception as exc:
         logger.warning("crystal_skill_synthesis_error", error=str(exc))
@@ -1398,6 +1705,11 @@ async def _run_react_loop_streaming(inp: CrystalInput, db_pool=None, request=Non
     if await _crystal_rate_count(inp.org_id) > 10:
         yield _json.dumps({"type": "error", "message": "Rate limit exceeded"})
         return
+
+    # Minted here, synchronously, before any SSE frame ships — so it's on the
+    # wire (turn_id) at the exact same moment it becomes the crystal_turn_events
+    # row's real primary key (G1 fix; see _fire_telemetry / turn_publisher.py).
+    turn_id = str(uuid.uuid4())
 
     # ── Debug: emit skill routing scores ──────────────────────────────────────
     if debug:
@@ -1450,14 +1762,14 @@ async def _run_react_loop_streaming(inp: CrystalInput, db_pool=None, request=Non
     yield _json.dumps({"type": "synthesizing", "message": "Putting it all together..."})
 
     # Action proposals → separate SSE event for the frontend to render as cards
-    action_proposals = _extract_action_proposals(tool_results)
+    action_proposals = _extract_action_proposals(tool_results, turn_id=turn_id)
     if action_proposals:
         yield _json.dumps({"type": "action_proposals", "proposals": action_proposals})
 
     augmented_inp = _augment_inp_with_tools(inp, tool_results)
     _t_synth_start = _time.monotonic()
     # Skill-first: try the skill framework before the generic Crystal synthesis
-    skill_out = await _skill_synthesis(inp, tool_results)
+    skill_out = await _skill_synthesis(inp, tool_results, turn_id=turn_id)
     if skill_out is not None:
         if skill_out.action_proposals and not action_proposals:
             yield _json.dumps({
@@ -1470,20 +1782,39 @@ async def _run_react_loop_streaming(inp: CrystalInput, db_pool=None, request=Non
             "citations": _merged_citation_ids(skill_out.citations, skill_out.insight_refs),
             "insight_refs": skill_out.insight_refs,
             "suggestions": skill_out.suggestions,
+            "viz": skill_out.viz.model_dump() if skill_out.viz else None,
+            "applied_filters": [f.model_dump() for f in (skill_out.applied_filters or [])],
+            "turn_id": turn_id,
         })
+        _fire_telemetry(
+            inp, ctx, None, skill_out, tool_results,
+            round((_time.monotonic() - _t_start) * 1000), turn_id,
+        )
     else:
+        final: CrystalOutput | None = None
         try:
             final = await _run_crystal(augmented_inp)
+            # _run_crystal has no tool_results/insights of its own — augmented_inp
+            # folded tool_results into prose history, so the structured data this
+            # deterministic check needs is only available out here.
+            viz, applied_filters = _derive_viz_and_filters(final.citations, final.insight_refs, inp.insights, tool_results)
             yield _json.dumps({
                 "type": "answer",
                 "answer": final.answer,
                 "citations": _merged_citation_ids(final.citations, final.insight_refs),
                 "insight_refs": final.insight_refs,
                 "suggestions": final.suggestions,
+                "viz": viz.model_dump() if viz else None,
+                "applied_filters": [f.model_dump() for f in applied_filters],
+                "turn_id": turn_id,
             })
         except Exception as exc:
             logger.error("crystal_stream_final_failed", error=str(exc))
             yield _json.dumps({"type": "error", "message": "Failed to generate answer"})
+        _fire_telemetry(
+            inp, ctx, None, final, tool_results,
+            round((_time.monotonic() - _t_start) * 1000), turn_id,
+        )
 
     if debug:
         _t_total_ms = round((_time.monotonic() - _t_start) * 1000)
@@ -1590,10 +1921,19 @@ async def _run_skill_loop(inp: CrystalInput) -> CrystalOutput:
     2. Fetch targeted tool context (deterministic, 1-3 direct tool calls)
     3. Route synthesis to best matching skill via SkillRuntime
     4. Fallback: single-shot _run_crystal synthesis (NOT the ReAct loop)
+
+    REST counterpart of _run_skill_stream — same turn_id contract: minted
+    synchronously before returning, set on the CrystalOutput, and used as the
+    crystal_turn_events row's id, so /insights/crystal's response carries the
+    same turn_id its telemetry row was written with (G1 fix).
     """
+    import time as _time
+
     if await _crystal_rate_count(inp.org_id) > 10:
         raise ValueError("Rate limit exceeded: 10 requests per minute per org")
 
+    turn_id = str(uuid.uuid4())
+    _t_start = _time.monotonic()
     ctx = _build_ctx(inp)
 
     # Pre-fetch tool context (best-effort — skill still runs if tools fail)
@@ -1614,14 +1954,21 @@ async def _run_skill_loop(inp: CrystalInput) -> CrystalOutput:
 
     # Reuse the skill resolved above — avoids a redundant second route call.
     skill_out = await _skill_synthesis(
-        inp, tool_results, skill_meta=skill_meta_hint, score=skill_route_score
+        inp, tool_results, skill_meta=skill_meta_hint, score=skill_route_score, turn_id=turn_id
     )
+    latency_ms = round((_time.monotonic() - _t_start) * 1000)
     if skill_out is not None:
+        skill_out.turn_id = turn_id  # mutate in place — callers may hold this exact reference
+        _fire_telemetry(inp, ctx, skill_meta_hint, skill_out, tool_results, latency_ms, turn_id)
         return skill_out
 
     # Fallback: single-shot Crystal synthesis
     augmented = _augment_inp_with_tools(inp, tool_results)
-    return await _run_crystal(augmented)
+    final = await _run_crystal(augmented)
+    final.viz, final.applied_filters = _derive_viz_and_filters(final.citations, final.insight_refs, inp.insights, tool_results)
+    final.turn_id = turn_id
+    _fire_telemetry(inp, ctx, None, final, tool_results, latency_ms, turn_id)
+    return final
 
 
 def _fire_telemetry(
@@ -1631,13 +1978,26 @@ def _fire_telemetry(
     output: "CrystalOutput | None",
     tool_results: "list[dict]",
     latency_ms: int,
+    turn_id: str,
 ) -> None:
-    """Fire-and-forget telemetry: turn event + product signal detection."""
+    """Fire-and-forget telemetry: turn event + product signal detection.
+
+    ``turn_id`` must be the exact value already sent to the client on the
+    `answer` SSE frame / REST payload — it becomes crystal_turn_events.id, so
+    the row this write produces is addressable by the id the client already
+    has (G1 fix; see turn_publisher.TurnEvent).
+    """
     import asyncio
     skill_name = skill_meta["name"] if skill_meta else None
     try:
         from crystalos.lib.turn_publisher import TurnEvent, publish_turn_event, detect_quality_signal
+        try:
+            from crystalos.lib.constants import CRYSTALOS_VERSION
+        except ImportError:
+            # TODO: wire crystalos_version once available
+            CRYSTALOS_VERSION = None
         event = TurnEvent(
+            id=turn_id,
             org_id=inp.org_id,
             brand_id=ctx.brand.brand_id if getattr(ctx, "brand", None) else None,
             user_id=inp.user_id or "anonymous",
@@ -1645,8 +2005,12 @@ def _fire_telemetry(
             thread_id=None,   # nullable after migration 009
             turn_index=0,
             query=inp.message[:500],
-            tools_called=[{"tool": r["tool"]} for r in tool_results],
-            tool_errors=[],
+            tools_called=[{"tool": r["tool"], "args": r.get("args")} for r in tool_results],
+            tool_errors=[
+                {"tool": r["tool"], "error": r["result"]["error"]}
+                for r in tool_results
+                if isinstance(r.get("result"), dict) and "error" in r["result"]
+            ],
             eval_score=output.eval_score if output and hasattr(output, "eval_score") else None,
             model_used=None,
             tokens_in=0,
@@ -1655,8 +2019,11 @@ def _fire_telemetry(
             specialist_used=skill_name,
             skill_name=skill_name,
             quality_signal=detect_quality_signal(inp.message),
+            crystalos_version=CRYSTALOS_VERSION,
         )
-        asyncio.create_task(publish_turn_event(event, ctx))
+        # Synchronous by design — it schedules its own task internally. Do not wrap
+        # in create_task(); that passes None to create_task() and raises TypeError.
+        publish_turn_event(event, ctx)
     except Exception:
         pass
     try:
@@ -1812,6 +2179,11 @@ async def _run_skill_stream(
         yield _json.dumps({"type": "error", "message": "Rate limit exceeded"})
         return
 
+    # Minted here, synchronously, before any SSE frame ships — so it's on the
+    # wire (turn_id) at the exact same moment it becomes the crystal_turn_events
+    # row's real primary key (G1 fix; see _fire_telemetry / turn_publisher.py).
+    turn_id = str(uuid.uuid4())
+
     # ── Find best skill and pre-fetch its context ─────────────────────────────
     skill_meta_hint: dict | None = None
     skill_route_score: float | None = None
@@ -1953,7 +2325,7 @@ async def _run_skill_stream(
 
     # Reuse the skill resolved above — avoids a redundant second route/embedding call.
     skill_out = await _skill_synthesis(
-        inp, tool_results, skill_meta=skill_meta_hint, score=skill_route_score
+        inp, tool_results, skill_meta=skill_meta_hint, score=skill_route_score, turn_id=turn_id
     )
     latency_ms = round((_time.monotonic() - _t_start) * 1000)
 
@@ -1971,8 +2343,11 @@ async def _run_skill_stream(
             "citations": _merged_citation_ids(skill_out.citations, skill_out.insight_refs),
             "insight_refs": skill_out.insight_refs,
             "suggestions": skill_out.suggestions,
+            "viz": skill_out.viz.model_dump() if skill_out.viz else None,
+            "applied_filters": [f.model_dump() for f in (skill_out.applied_filters or [])],
+            "turn_id": turn_id,
         })
-        _fire_telemetry(inp, ctx, skill_meta_hint, skill_out, tool_results, latency_ms)
+        _fire_telemetry(inp, ctx, skill_meta_hint, skill_out, tool_results, latency_ms, turn_id)
         return
 
     # Fallback: single-shot Crystal synthesis (not the ReAct loop)
@@ -1980,17 +2355,24 @@ async def _run_skill_stream(
     try:
         augmented = _augment_inp_with_tools(inp, tool_results)
         final = await _run_crystal(augmented)
+        # Same reasoning as the legacy stream's fallback branch — _run_crystal
+        # only sees prose-folded history, so recompute from the structured data
+        # this generator still holds (inp.insights + tool_results).
+        viz, applied_filters = _derive_viz_and_filters(final.citations, final.insight_refs, inp.insights, tool_results)
         yield _json.dumps({
             "type": "answer",
             "answer": final.answer,
             "citations": _merged_citation_ids(final.citations, final.insight_refs),
             "insight_refs": final.insight_refs,
             "suggestions": final.suggestions,
+            "viz": viz.model_dump() if viz else None,
+            "applied_filters": [f.model_dump() for f in applied_filters],
+            "turn_id": turn_id,
         })
     except Exception as exc:
         logger.error("crystal_skill_stream_fallback_failed", error=str(exc))
         yield _json.dumps({"type": "error", "message": "Failed to generate answer"})
-    _fire_telemetry(inp, ctx, None, final, tool_results, latency_ms)
+    _fire_telemetry(inp, ctx, None, final, tool_results, latency_ms, turn_id)
 
 
 class CrystalAgent:
@@ -2005,7 +2387,18 @@ class CrystalAgent:
             raise  # rate limit — surface to caller
         except Exception as exc:
             logger.warning("crystal_skill_loop_fallback", error=str(exc))
+            # _run_skill_loop raised before minting its own turn_id (or before
+            # anything else useful ran) — mint one here too, best-effort, so this
+            # rarer double-fallback still returns a turn_id backed by a real row
+            # rather than a dangling one. Never let telemetry failure here mask
+            # the actual answer.
+            turn_id = str(uuid.uuid4())
             output = await _run_crystal(inp)
+            output.turn_id = turn_id
+            try:
+                _fire_telemetry(inp, _build_ctx(inp), None, output, [], 0, turn_id)
+            except Exception:
+                pass
         return output, []
 
 

@@ -3,7 +3,9 @@
 // Slides in from the right over the Insights page content.
 // Wired to the Crystal hero ask bar, ⌘K shortcut, and SideNav Crystal item.
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, Children, type ReactNode } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { invalidate } from '../lib/dataBus';
 import { useTranslation } from '../lib/i18n';
@@ -675,6 +677,17 @@ export function CrystalPanel({
     if (!isOpen) setIsExpanded(false);
   }, [isOpen]);
 
+  // Escape-to-close — ported up from XperiqCopilot (ExperientCopilot.tsx), which
+  // had this and CrystalPanel didn't.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCrystal();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, closeCrystal]);
+
   const handleMic = useCallback(() => {
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionCtor) return;
@@ -1236,6 +1249,7 @@ export function CrystalPanel({
                 onClick={closeCrystal}
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-red-50 hover:text-red-500 transition-colors flex-shrink-0"
                 title="Close Crystal (⌘K)"
+                aria-label={t('crystal.closePanelAriaLabel')}
               >
                 <Icon name="close" size={16} />
               </button>
@@ -1498,6 +1512,7 @@ export function CrystalPanel({
                   size="sm"
                   onClick={handleSubmit}
                   disabled={!input.trim() || isThinking}
+                  aria-label={t('crystal.sendMessageAriaLabel')}
                   className="flex-shrink-0 font-bold text-white border-0 self-end text-xs"
                   style={{
                     background:
@@ -1723,7 +1738,16 @@ function parseInlineCitations(text: string): { text: string; extraIds: string[] 
     const ids = inner.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?/gi) ?? [];
     ids.forEach((id: string) => extraIds.push(id.toLowerCase()));
     return '';
-  }).replace(/\s{2,}/g, ' ').trim();
+  })
+    // Collapse only horizontal whitespace runs (the double-space a stripped
+    // bracket can leave mid-sentence) — NOT newlines. `\s{2,}` used to also
+    // match `\n\n`, silently collapsing markdown paragraph/list-item breaks
+    // into a single space before CrystalMarkdown ever saw them.
+    .replace(/[ \t]{2,}/g, ' ')
+    // Still cap truly excessive blank-line runs so a model hiccup can't bloat
+    // the rendered answer with a wall of empty paragraphs.
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   return { text: cleaned, extraIds: [...new Set(extraIds)] };
 }
 
@@ -1825,6 +1849,69 @@ function InlineCitation({ citation, index }: { citation: CrystalCitation; index:
         </div>
       )}
     </span>
+  );
+}
+
+/**
+ * Renders Crystal's answer as real markdown (bold, bullet/numbered lists,
+ * paragraph breaks, headers, links, code, tables) while still resolving
+ * inline `[uuid]`/`[short-hex]` citation markers to InlineCitation
+ * superscripts at their exact position in the text.
+ *
+ * Integration approach: markdown parsing runs completely unmodified over the
+ * raw content first — a bare `[8chars]`/`[uuid]` with no following `(url)` or
+ * `[ref]` (and no matching reference-link definition anywhere in the answer,
+ * which CrystalOS never emits) parses as plain literal bracket text under
+ * CommonMark, never as a link — so citation markers never collide with real
+ * markdown syntax and need no pre/post-processing of the raw string before
+ * handing it to react-markdown. Every component override below that can
+ * legitimately contain a citation marker as one of its string children
+ * (paragraph, list item, heading, table cell, blockquote, bold/italic run,
+ * link text) re-splits ITS OWN string children through `CitedText` — the same
+ * citation-matching primitive this file already used pre-markdown, just
+ * applied per rendered text run instead of once over the whole raw string.
+ * `code`/`pre` are deliberately NOT given this treatment — a citation marker
+ * inside a code span is real code-like content, not a citation, and showing
+ * its literal brackets there is correct.
+ */
+function citationizeChildren(children: ReactNode, citations: CrystalCitation[]): ReactNode {
+  if (!citations.length) return children;
+  return Children.map(children, (child) =>
+    typeof child === 'string' ? <CitedText content={child} citations={citations} /> : child,
+  );
+}
+
+function CrystalMarkdown({ content, citations }: { content: string; citations: CrystalCitation[] }) {
+  const components: Components = {
+    p:  ({ children }) => <p className="mb-2 last:mb-0">{citationizeChildren(children, citations)}</p>,
+    li: ({ children }) => <li>{citationizeChildren(children, citations)}</li>,
+    ul: ({ children }) => <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>,
+    ol: ({ children }) => <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>,
+    strong: ({ children }) => <strong className="font-bold">{citationizeChildren(children, citations)}</strong>,
+    em: ({ children }) => <em className="italic">{citationizeChildren(children, citations)}</em>,
+    h1: ({ children }) => <h1 className="text-base font-bold mt-2 mb-1">{citationizeChildren(children, citations)}</h1>,
+    h2: ({ children }) => <h2 className="text-sm font-bold mt-2 mb-1">{citationizeChildren(children, citations)}</h2>,
+    h3: ({ children }) => <h3 className="text-sm font-bold mt-2 mb-1">{citationizeChildren(children, citations)}</h3>,
+    blockquote: ({ children }) => (
+      <blockquote className="border-l-2 border-outline-variant/40 pl-3 italic opacity-90 mb-2">
+        {citationizeChildren(children, citations)}
+      </blockquote>
+    ),
+    a: ({ children, href }) => (
+      <a href={href} target="_blank" rel="noreferrer" className="underline text-primary">
+        {citationizeChildren(children, citations)}
+      </a>
+    ),
+    code: ({ children }) => <code className="px-1 py-0.5 rounded bg-black/5 text-[0.85em]">{children}</code>,
+    table: ({ children }) => <table className="w-full text-xs my-2 border-collapse">{children}</table>,
+    th: ({ children }) => <th className="border border-outline-variant/30 px-2 py-1 text-left">{citationizeChildren(children, citations)}</th>,
+    td: ({ children }) => <td className="border border-outline-variant/30 px-2 py-1">{citationizeChildren(children, citations)}</td>,
+  };
+
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      {content}
+    </ReactMarkdown>
   );
 }
 
@@ -2102,7 +2189,7 @@ function CrystalBubble({
         </div>
         {/* Answer text — inline citations rendered as numbered superscripts */}
         <div className="text-sm leading-relaxed mb-3">
-          <CitedText content={message.content} citations={message.citations ?? []} />
+          <CrystalMarkdown content={message.content} citations={message.citations ?? []} />
         </div>
 
         {/* Insight report document cards (render_hint==='document') */}

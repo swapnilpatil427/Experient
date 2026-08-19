@@ -88,17 +88,14 @@ def skill_question_to_model(sq: dict) -> Question:
 def skill_questions_to_models(skill_questions: list) -> list[Question]:
     """Convert a list of skill-shaped questions into validated ``Question`` objects.
 
-    Raises ValueError if the list is empty or no question maps successfully.
+    Raises ValueError if the list is empty; raises on the first question that
+    fails to map (fail-fast, not best-effort-per-question — see
+    skill_question_to_model).
     """
     if not isinstance(skill_questions, list) or not skill_questions:
         raise ValueError("skill output has no questions")
 
-    out: list[Question] = []
-    for sq in skill_questions:
-        out.append(skill_question_to_model(sq))
-    if not out:
-        raise ValueError("no questions could be mapped from skill output")
-    return out
+    return [skill_question_to_model(sq) for sq in skill_questions]
 
 
 def question_models_to_skill_shape(questions: list[Question]) -> list[dict]:

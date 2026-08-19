@@ -1,26 +1,22 @@
-# Platform Gap Tracker — Quality Criteria
+# Evals
 
-## Required behaviors
+## Criteria
 
-### Accuracy (most important)
-- Never marks a gap CLOSED without pointing to a specific file/migration/route as evidence
-- Never marks compliance gaps (GAP-001 SOC2, GAP-002 HIPAA, GAP-003 FedRAMP) as CLOSED — these require external audits, not just code
-- Correctly distinguishes between "skeleton/TODO" code and working implementations
-- Reads actual file content when search results are ambiguous
+| ID | Criterion | Weight | Threshold |
+|----|-----------|--------|-----------|
+| E1 | gaps_assessed is a positive integer consistent with the counts of closed, partially_closed, and still_open | 15 | >= 0.80 |
+| E2 | Every closed gap has non-empty evidence citing a specific file, migration, or route — never a design doc, plan, or TODO comment | 30 | >= 0.85 |
+| E3 | GAP-001 (SOC2), GAP-002 (HIPAA), GAP-003 (FedRAMP) never appear in closed — these require external audit/certification, not just code, and must never be auto-closed for any reason | 30 | must pass |
+| E4 | Every partially_closed entry has non-empty what_exists and what_remains | 10 | must pass |
+| E5 | summary is present and non-empty, 2-3 sentences on sprint progress vs. the gap inventory | 15 | must pass |
 
-### Completeness
-- Checks every open gap in MARKET_GAPS.md — never skips one
-- Runs at least 10 of the 15 prescribed search commands before classifying
-- Documents what evidence was checked for each classification
+## Scoring
 
-### Document Update Quality
-- Always writes the changelog entry at the top of MARKET_GAPS.md
-- Uses exact GAP-XXX identifiers from the document
-- Status transitions are reversible: OPEN → IN_PROGRESS → CLOSED (never skips)
-- Closed gaps are moved to Section 9 completely (not just status-flagged in place)
+Pass threshold: overall score >= 0.75
 
-### Disqualifying Outputs
-- Any CLOSED classification without specific file evidence → fail
-- Changelog entry missing → fail
-- Any gap assessment that doesn't distinguish between design docs and working code → fail
-- Marking GAP-001/002/003 as closed for any reason → fail (requires human + external audit)
+## Failure Behavior
+
+On failure inject failed criteria. Max 1 retry.
+E2 failure: inject "A gap is only CLOSED when there is a specific file, migration, or route as evidence — a design doc or plan is NOT sufficient evidence."
+E3 failure: inject "GAP-001 (SOC2), GAP-002 (HIPAA), and GAP-003 (FedRAMP) require external audits and can NEVER be marked closed by this skill, regardless of code evidence. Re-classify as OPEN or PARTIAL."
+E4 failure: inject "Every partially_closed entry MUST include both what_exists and what_remains, non-empty."

@@ -357,6 +357,157 @@ describe('POST /api/experience/crystal — tag_id auto-detected (non-streaming f
   });
 });
 
+// ── POST /api/experience/crystal — viz passthrough (assistant-ui migration G0) ──
+//
+// crystalHandler parses the upstream SSE 'answer' event and re-serializes only a
+// fixed set of fields into its JSON response (see experience.ts:524-548) — a
+// classic allowlist that silently drops any key CrystalOS adds later. `viz` is
+// the first such key (generative-UI G0 spike); this pins that it survives.
+
+describe('POST /api/experience/crystal — viz passthrough', () => {
+  it('forwards a present viz spec from the CrystalOS answer event untouched', async () => {
+    const vizSpec = {
+      viz_version: 1,
+      kind: 'nps_bar_chart',
+      title: 'NPS is 42 this quarter',
+      data: [{ segment: 'Enterprise', score: 55 }, { segment: 'SMB', score: 12 }],
+      source_insight_id: 'ins-nps-1',
+    };
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: fakeSSEBody([{ type: 'answer', answer: 'NPS is 42 this quarter.', suggestions: [], citations: ['ins-nps-1'], viz: vizSpec }]),
+    }));
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/experience/crystal',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'how is NPS split by segment?' }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().viz).toEqual(vizSpec);
+  });
+
+  it('returns viz: null (not omitted) on a chart-free turn', async () => {
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: fakeSSEBody([{ type: 'answer', answer: 'Shipping delays remain the top driver.', suggestions: [], citations: [] }]),
+    }));
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/experience/crystal',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'what is driving detractors?' }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect('viz' in body).toBe(true);
+    expect(body.viz).toBeNull();
+  });
+});
+
+// ── POST /api/experience/crystal — applied_filters passthrough (Phase 5) ────────
+//
+// Same allowlist as viz above (experience.ts:524-548) — applied_filters is the
+// next key added to the CrystalOS answer event and must survive the same
+// neutral-passthrough treatment, or it silently gets dropped like every other
+// unlisted SSE key.
+
+describe('POST /api/experience/crystal — applied_filters passthrough', () => {
+  it('forwards a present applied_filters list from the CrystalOS answer event untouched', async () => {
+    const appliedFilters = [
+      { kind: 'survey', label: 'Survey', value: 'Q3 NPS Survey', raw: { survey_id: 's1' }, sources: ['get_survey_overview'] },
+    ];
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: fakeSSEBody([{
+        type: 'answer', answer: 'NPS is 42 this quarter.', suggestions: [], citations: ['ins-nps-1'],
+        applied_filters: appliedFilters,
+      }]),
+    }));
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/experience/crystal',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'how is NPS split by segment?' }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().applied_filters).toEqual(appliedFilters);
+  });
+
+  it('returns applied_filters: null (not omitted) when absent from the upstream event', async () => {
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: fakeSSEBody([{ type: 'answer', answer: 'Shipping delays remain the top driver.', suggestions: [], citations: [] }]),
+    }));
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/experience/crystal',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'what is driving detractors?' }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect('applied_filters' in body).toBe(true);
+    expect(body.applied_filters).toBeNull();
+  });
+});
+
+// ── POST /api/experience/crystal — turn_id passthrough ──────────────────────
+//
+// CrystalOS mints turn_id before the first SSE frame ships and stamps it on
+// every answer event / REST response (the "G1 fix" — see crystalos/CLAUDE.md).
+// This handler used to drop it the same way it used to drop viz/applied_filters
+// before those were explicitly added to the allowlist below.
+
+describe('POST /api/experience/crystal — turn_id passthrough', () => {
+  it('forwards a present turn_id from the CrystalOS answer event untouched', async () => {
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: fakeSSEBody([{
+        type: 'answer', answer: 'NPS is 42 this quarter.', suggestions: [], citations: [],
+        turn_id: 'turn-abc-123',
+      }]),
+    }));
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/experience/crystal',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'how is NPS split by segment?' }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn_id).toBe('turn-abc-123');
+  });
+
+  it('returns turn_id: null (not omitted) when absent from the upstream event', async () => {
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: fakeSSEBody([{ type: 'answer', answer: 'Shipping delays remain the top driver.', suggestions: [], citations: [] }]),
+    }));
+
+    const res = await inject(buildApp(), {
+      method: 'POST',
+      url: '/api/experience/crystal',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'what is driving detractors?' }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect('turn_id' in body).toBe(true);
+    expect(body.turn_id).toBeNull();
+  });
+});
+
 // ── GET /api/experience/:id/trends ────────────────────────────────────────────
 
 describe('GET /api/experience/:id/trends', () => {

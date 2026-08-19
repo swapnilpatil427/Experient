@@ -1168,10 +1168,19 @@ class TestProposeAlert:
         assert any(t["name"] == "propose_alert" for t in TOOL_REGISTRY)
 
     def test_normalize_proposal_maps_alias_and_fills_id(self):
+        """G1 fix (docs/harness-engineering/assistant-ui-migration/MIGRATION_PLAN.md §4 blocker #2):
+        this used to pin id to a bare deterministic title slug, which let two
+        genuinely distinct emissions of the same recommendation collapse onto
+        one crystal_action_proposals row. Without a turn_id, id is now a
+        uniquely-minted uuid4 (never the old slug) — see
+        TestNormalizeProposalServerMintedId in test_crystal.py for the
+        turn_id-scoped-composite behavior when a turn_id IS available."""
+        import uuid as _uuid
         from crystalos.agents.crystal import _normalize_proposal
         out = _normalize_proposal({"proposal_type": "workflow", "title": "Alert CSM on low NPS"})
         assert out["type"] == "create_workflow"             # alias mapped
-        assert out["id"] == "alert-csm-on-low-nps"          # slug from title
+        assert out["id"] != "alert-csm-on-low-nps"          # no longer a bare title slug
+        _uuid.UUID(out["id"])                               # genuinely unique, server-minted
         assert out["requires_confirmation"] is True
         assert out["priority"] == "medium"
 

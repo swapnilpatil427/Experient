@@ -522,6 +522,9 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
       });
       if (streamRes.ok) {
         let answer = '', suggestions: unknown[] = [], citations: unknown[] = [];
+        let viz: unknown = null;
+        let applied_filters: unknown = null;
+        let turn_id: unknown = null;
         let buffer = '';
         for await (const chunk of streamRes.body) {
           buffer += (chunk as Buffer).toString('utf8');
@@ -537,6 +540,12 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
                 answer = (ev.answer as string) ?? '';
                 suggestions = (ev.suggestions as unknown[]) ?? [];
                 citations = (ev.citations as unknown[]) ?? [];
+                // Neutral passthrough (MIGRATION_PLAN.md §3 mitigation #5) — no
+                // backend-side interpretation, just don't let the allowlist below
+                // silently drop it like it does every other unlisted SSE key.
+                viz = ev.viz ?? null;
+                applied_filters = ev.applied_filters ?? null;
+                turn_id = ev.turn_id ?? null;
               }
             } catch { /* skip */ }
           }
@@ -545,7 +554,7 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
           await chargeCrystalTurn();
           // Pass citations as both insight_refs AND citations so the frontend
           // can find IDs regardless of which field it reads from.
-          res.json({ answer, suggestions, insight_refs: citations, citations, citation_map: ctx.citationMap });
+          res.json({ answer, suggestions, insight_refs: citations, citations, citation_map: ctx.citationMap, viz, applied_filters, turn_id });
           return;
         }
       }
@@ -563,11 +572,14 @@ async function crystalHandler(req: Request, res: Response): Promise<void> {
     const data = await directRes.json() as Record<string, unknown>;
     await chargeCrystalTurn();
     res.json({
-      answer:       (data.answer as string) ?? '',
-      suggestions:  (data.suggestions as unknown[]) ?? [],
-      insight_refs: (data.insight_refs as unknown[]) ?? [],
-      citations:    (data.citations as unknown[]) ?? [],
-      citation_map: ctx.citationMap,
+      answer:          (data.answer as string) ?? '',
+      suggestions:     (data.suggestions as unknown[]) ?? [],
+      insight_refs:    (data.insight_refs as unknown[]) ?? [],
+      citations:       (data.citations as unknown[]) ?? [],
+      citation_map:    ctx.citationMap,
+      viz:             data.viz ?? null,
+      applied_filters: data.applied_filters ?? null,
+      turn_id:         data.turn_id ?? null,
     });
   } catch (err: unknown) {
     serverError(res, err instanceof Error ? err : new Error(String(err)), { endpoint: 'crystal', orgId });

@@ -1,21 +1,22 @@
-# Gap Analyst Skill Evals
+# Evals
 
-## E1: Coverage score is in [0.0, 1.0]
-PASS: output.coverage_score >= 0.0 AND output.coverage_score <= 1.0
-FAIL: score outside range
+## Criteria
 
-## E2: Every gap has a suggested_survey with non-empty title and type
-PASS: all gaps have suggested_survey.title and suggested_survey.type
-FAIL: any gap missing suggested_survey
+| ID | Criterion | Weight | Threshold |
+|----|-----------|--------|-----------|
+| E1 | coverage_score is in [0.0, 1.0] | 15 | must pass |
+| E2 | Every gap has a suggested_survey with non-empty title and type | 25 | must pass |
+| E3 | Severity distribution is sensible — critical gaps <= 3 (not everything is critical) | 20 | >= 0.75 |
+| E4 | Summary is present and non-empty (2-3 sentence executive summary) | 15 | must pass |
+| E5 | No hallucinated survey types — suggested_survey.type values are standard XM types (nps, csat, ces, pulse, exit_interview, product_feedback, onboarding, engagement, custom) | 25 | >= 0.75 |
 
-## E3: Severity distribution is sensible
-PASS: critical gaps <= 3 (not everything is critical)
-FAIL: more than 3 critical gaps in a single output
+## Scoring
 
-## E4: Summary is present and non-empty
-PASS: len(output.summary) > 30
-FAIL: missing or too short summary
+Pass threshold: overall score >= 0.75
 
-## E5: No hallucinated survey types
-PASS: all suggested_survey.type values are standard XM survey types
-FAIL: invented survey types not in [nps, csat, ces, pulse, exit_interview, product_feedback, onboarding, engagement, custom]
+## Failure Behavior
+
+On failure inject failed criteria. Max 1 retry.
+E2 failure: inject "Every gap MUST include a suggested_survey with a non-empty title and type."
+E3 failure: inject "Reserve 'critical' severity for gaps that genuinely impair decision-making — no more than 3 per output."
+E5 failure: inject "suggested_survey.type MUST be one of: nps, csat, ces, pulse, exit_interview, product_feedback, onboarding, engagement, custom. Do not invent new types."
